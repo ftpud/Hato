@@ -55,7 +55,7 @@ cargo run -- --dev-watch   # opt-in: changed seeds are hot-swapped WITHOUT appro
 ```
 
 ACP agents are **not** bundled or installed by Hato. Install an adapter on each machine that hosts
-workspaces, e.g. `npm i -g @agentclientprotocol/claude-agent-acp` or `@zed-industries/codex-acp`, and
+workspaces, e.g. `npm i -g @agentclientprotocol/claude-agent-acp` or `@agentclientprotocol/codex-acp`, and
 authenticate it there. Profiles (`Codex`, `Claude`, or custom commands/absolute paths) are stored in SQLite.
 
 ## Using it
@@ -146,8 +146,8 @@ COMPATIBILITY.md (adapter/account incompatibility, not exercised end-to-end).
 * **SSH via system OpenSSH** (ControlMaster) + own SFTP v3 client instead of libssh2 — "or equivalent" per
   §3; rationale in COMPATIBILITY.md.
 * `sdk/` instead of `.sdk/` (visible directory; same role).
-* `select` is rendered as a native button + dropdown menu; split panes have fixed proportions from the
-  layout module (no drag-resize yet).
+* `select` is rendered as a native button + dropdown menu. Split panes support resizing and collapse;
+  workspace-layout persists panel placement and top/bottom bar controls.
 * Test-only surfaces: `--headless-script` adds `test.*` ops for a `__driver` module (only in that mode);
   `HATO_SSH_KNOWN_HOSTS` points OpenSSH at an alternate known_hosts file (host keys still verified).
 * `--dev-watch` activates changed seed builds without approval — explicit developer opt-in, off by default.

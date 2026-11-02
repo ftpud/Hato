@@ -1,0 +1,203 @@
+// Pure layout model for workspace-layout (no host calls, unit-testable).
+// Every panel lives in exactly one place: a column stack, the bottom dock, floating, a detached
+// OS window, or hidden. Bars (top/bottom) hold an ordered list of items.
+
+export const PANELS: Record<string, { slot: string; title: string }> = {
+  projects: { slot: "projects-panel", title: "Projects" },
+  files: { slot: "explorer", title: "Files" },
+  viewer: { slot: "viewer", title: "Source viewer" },
+  ai: { slot: "ai", title: "AI / ACP" },
+  terminal: { slot: "terminal-panel", title: "Terminal" },
+};
+
+export const BAR_ITEMS: Record<string, { title: string; grow?: boolean }> = {
+  title: { title: "App title" },
+  workspace: { title: "Active workspace", grow: true },
+  layoutMenu: { title: "Layout menu" },
+  modules: { title: "Modules button" },
+  machine: { title: "Execution machine" },
+  versions: { title: "Module versions", grow: true },
+  approvals: { title: "Approvals indicator" },
+};
+
+export type BarId = "top" | "bottom";
+export interface Column { panels: string[]; size: number; sizes: number[] }
+export interface Layout {
+  v: 1;
+  columns: Column[];
+  bottom: { panels: string[]; sizes: number[]; collapsed: boolean };
+  mainSizes: [number, number];
+  collapsed: Record<string, boolean>;
+  floating: Record<string, { x: number; y: number; width: number; height: number }>;
+  detached: Record<string, { width: number; height: number }>;
+  hidden: string[];
+  bars: Record<BarId, { visible: boolean; items: string[] }>;
+}
+
+export function defaultLayout(): Layout {
+  return {
+    v: 1,
+    columns: [
+      { panels: ["projects"], size: 0.17, sizes: [1] },
+      { panels: ["files"], size: 0.17, sizes: [1] },
+      { panels: ["viewer"], size: 0.38, sizes: [1] },
+      { panels: ["ai"], size: 0.28, sizes: [1] },
+    ],
+    bottom: { panels: ["terminal"], sizes: [1], collapsed: false },
+    mainSizes: [0.68, 0.32],
+    collapsed: {},
+    floating: {},
+    detached: {},
+    hidden: [],
+    bars: {
+      top: { visible: true, items: ["title", "workspace", "layoutMenu", "modules"] },
+      bottom: { visible: true, items: ["machine", "versions", "approvals"] },
+    },
+  };
+}
+
+const clone = <T>(x: T): T => JSON.parse(JSON.stringify(x));
+const norm = (xs: number[]) => {
+  const weights = xs.map((x) => Number.isFinite(x) && x > 0 ? x : 1);
+  const s = weights.reduce((a, b) => a + b, 0);
+  return weights.map((x) => x / s);
+};
+
+/** Where a panel currently lives. */
+export function locate(l: Layout, id: string): { kind: "column"; col: number; idx: number } | { kind: "bottom"; idx: number } | { kind: "floating" } | { kind: "detached" } | { kind: "hidden" } | null {
+  for (let c = 0; c < l.columns.length; c++) {
+    const i = l.columns[c].panels.indexOf(id);
+    if (i >= 0) return { kind: "column", col: c, idx: i };
+  }
+  const b = l.bottom.panels.indexOf(id);
+  if (b >= 0) return { kind: "bottom", idx: b };
+  if (l.floating[id]) return { kind: "floating" };
+  if (l.detached[id]) return { kind: "detached" };
+  if (l.hidden.includes(id)) return { kind: "hidden" };
+  return null;
+}
+
+/** Remove a panel from wherever it is; drop empty columns; renormalize sizes. */
+export function detach(l: Layout, id: string): Layout {
+  const n = clone(l);
+  for (const c of n.columns) {
+    const i = c.panels.indexOf(id);
+    if (i >= 0) { c.panels.splice(i, 1); c.sizes.splice(i, 1); c.sizes = norm(c.sizes); }
+  }
+  const before = n.columns.length;
+  n.columns = n.columns.filter((c) => c.panels.length > 0);
+  if (n.columns.length !== before) {
+    const s = norm(n.columns.map((c) => c.size));
+    n.columns.forEach((c, i) => (c.size = s[i]));
+  }
+  const b = n.bottom.panels.indexOf(id);
+  if (b >= 0) { n.bottom.panels.splice(b, 1); n.bottom.sizes.splice(b, 1); n.bottom.sizes = norm(n.bottom.sizes); }
+  delete n.floating[id];
+  delete n.detached[id];
+  n.hidden = n.hidden.filter((h) => h !== id);
+  return n;
+}
+
+/** Drop `id` relative to panel `target` at `region` (left/right/top/bottom/center). */
+export function dropPanel(l: Layout, id: string, target: string, region: string): Layout {
+  if (id === target || !PANELS[id]) return l;
+  let n = detach(l, id);
+  const t = locate(n, target);
+  if (!t) return l;
+  if (t.kind === "column") {
+    const col = n.columns[t.col];
+    if (region === "left" || region === "right") {
+      const half = col.size / 2;
+      col.size = half;
+      n.columns.splice(t.col + (region === "right" ? 1 : 0), 0, { panels: [id], size: half, sizes: [1] });
+    } else {
+      const at = t.idx + (region === "top" ? 0 : 1);
+      col.panels.splice(at, 0, id);
+      const each = 1 / col.panels.length;
+      col.sizes = norm([...col.sizes.slice(0, at).map((x) => x * (1 - each)), each, ...col.sizes.slice(at).map((x) => x * (1 - each))]);
+    }
+  } else if (t.kind === "bottom") {
+    const at = t.idx + (region === "left" || region === "top" ? 0 : 1);
+    n.bottom.panels.splice(at, 0, id);
+    n.bottom.sizes = norm([...n.bottom.sizes.slice(0, at), 1 / n.bottom.panels.length, ...n.bottom.sizes.slice(at)]);
+  } else {
+    return l;
+  }
+  const s = norm(n.columns.map((c) => c.size));
+  n.columns.forEach((c, i) => (c.size = s[i]));
+  return n;
+}
+
+export function moveTo(l: Layout, id: string, where: "column" | "bottom" | "floating" | "detached" | "hidden", geom?: any): Layout {
+  if (!PANELS[id]) return l;
+  let n = detach(l, id);
+  if (where === "bottom") { n.bottom.panels.push(id); n.bottom.sizes = norm([...n.bottom.sizes, 1 / n.bottom.panels.length]); n.bottom.collapsed = false; }
+  else if (where === "column") { n.columns.push({ panels: [id], size: 0.25, sizes: [1] }); const s = norm(n.columns.map((c) => c.size)); n.columns.forEach((c, i) => (c.size = s[i])); }
+  else if (where === "floating") n.floating[id] = geom || { x: 120, y: 120, width: 520, height: 380 };
+  else if (where === "detached") n.detached[id] = geom || { width: 760, height: 540 };
+  else n.hidden.push(id);
+  return n;
+}
+
+export function moveBarItem(l: Layout, item: string, bar: BarId, beforeItem: string | null, after = false): Layout {
+  if (!Object.prototype.hasOwnProperty.call(BAR_ITEMS, item) || (bar !== "top" && bar !== "bottom")) return l;
+  const n = clone(l);
+  for (const b of ["top", "bottom"] as BarId[]) n.bars[b].items = n.bars[b].items.filter((x) => x !== item);
+  const list = n.bars[bar].items;
+  let at = beforeItem ? list.indexOf(beforeItem) : list.length;
+  if (at < 0) at = list.length;
+  else if (after) at += 1;
+  list.splice(at, 0, item);
+  n.bars[bar].visible = true;
+  return n;
+}
+
+export function removeBarItem(l: Layout, item: string): Layout {
+  const n = clone(l);
+  for (const b of ["top", "bottom"] as BarId[]) n.bars[b].items = n.bars[b].items.filter((x) => x !== item);
+  return n;
+}
+
+/** Repair a persisted layout: unknown ids dropped, missing panels docked, sizes normalized. */
+export function repair(raw: any): Layout {
+  const d = defaultLayout();
+  if (!raw || raw.v !== 1) return d;
+  const l: Layout = { ...d, ...clone(raw), bars: { top: { ...d.bars.top, ...(raw.bars?.top || {}) }, bottom: { ...d.bars.bottom, ...(raw.bars?.bottom || {}) } } };
+  const seen = new Set<string>();
+  const keep = (id: string) => { if (!Object.prototype.hasOwnProperty.call(PANELS, id) || seen.has(id)) return false; seen.add(id); return true; };
+  l.columns = (Array.isArray(l.columns) ? l.columns : []).map((c: any) => {
+    c = c && typeof c === "object" ? c : {};
+    const panels = (Array.isArray(c?.panels) ? c.panels : []).filter(keep);
+    const sizes = norm(panels.map((_: any, i: number) => (Array.isArray(c.sizes) && c.sizes[i] > 0 ? c.sizes[i] : 1 / Math.max(1, panels.length))));
+    return { panels, sizes, size: c.size > 0 ? c.size : 0.25 };
+  }).filter((c) => c.panels.length);
+  const cs = norm(l.columns.map((c) => c.size));
+  l.columns.forEach((c, i) => (c.size = cs[i]));
+  const bp = (Array.isArray(l.bottom?.panels) ? l.bottom.panels : []).filter(keep);
+  l.bottom = { panels: bp, sizes: norm(bp.map((_: any, i: number) => l.bottom?.sizes?.[i] > 0 ? l.bottom.sizes[i] : 1)), collapsed: !!l.bottom?.collapsed };
+  l.floating = l.floating && typeof l.floating === "object" && !Array.isArray(l.floating) ? l.floating : {};
+  l.detached = l.detached && typeof l.detached === "object" && !Array.isArray(l.detached) ? l.detached : {};
+  for (const k of Object.keys(l.floating)) if (!keep(k)) delete l.floating[k];
+  for (const k of Object.keys(l.detached || {})) if (!keep(k)) delete l.detached[k];
+  l.hidden = (Array.isArray(l.hidden) ? l.hidden : []).filter(keep);
+  for (const id of Object.keys(PANELS)) if (!seen.has(id)) { if (l.columns.length) l.columns[l.columns.length - 1].panels.push(id), l.columns[l.columns.length - 1].sizes = norm([...l.columns[l.columns.length - 1].sizes, 0.3]); else l.columns.push({ panels: [id], size: 1, sizes: [1] }); }
+  const ms = Array.isArray(l.mainSizes) && l.mainSizes.length === 2 ? norm(l.mainSizes) : d.mainSizes;
+  l.mainSizes = [ms[0], ms[1]];
+  for (const b of ["top", "bottom"] as BarId[]) {
+    const s2 = new Set<string>();
+    l.bars[b].items = (Array.isArray(l.bars[b].items) ? l.bars[b].items : []).filter((x: string) => Object.prototype.hasOwnProperty.call(BAR_ITEMS, x) && !s2.has(x) && s2.add(x) && !(b === "bottom" && l.bars.top.items.includes(x)));
+    l.bars[b].visible = l.bars[b].visible !== false;
+  }
+  l.collapsed = l.collapsed && typeof l.collapsed === "object" && !Array.isArray(l.collapsed) ? l.collapsed : {};
+  for (const [id, g] of Object.entries(l.floating)) {
+    const fallback = { x: 120, y: 120, width: 520, height: 380 };
+    l.floating[id] = { ...fallback };
+    for (const k of ["x", "y", "width", "height"] as const) {
+      if (Number.isFinite(g?.[k]) && (k === "x" || k === "y" || g[k] > 0)) l.floating[id][k] = g[k];
+    }
+  }
+  for (const [id, g] of Object.entries(l.detached)) {
+    l.detached[id] = { width: Number.isFinite(g?.width) && g.width > 0 ? g.width : 760, height: Number.isFinite(g?.height) && g.height > 0 ? g.height : 540 };
+  }
+  return l;
+}

@@ -12,7 +12,7 @@
     "ai-sessions":  { "kind": "service", "capabilities": ["approvals.request"], "calls": ["persistence", "workspace", "acp", "internal-mcp"] },
     "internal-mcp": { "kind": "service", "capabilities": ["net.loopback", "ssh.connect", "ssh.forward", "fs.scope"], "calls": ["module-dev", "workspace"] },
     "module-dev":   { "kind": "service", "capabilities": ["modules.read", "modules.admin", "modules.source.read", "modules.source.write", "process.build", "fs.scope"], "calls": [] },
-    "workspace-layout": { "kind": "ui", "capabilities": [], "calls": ["workspace", "module-dev", "projects", "ai-sessions"] },
+    "workspace-layout": { "kind": "ui", "capabilities": [], "calls": ["workspace", "module-dev", "projects", "ai-sessions", "persistence"] },
     "projects-panel":   { "kind": "ui", "capabilities": ["ui.dialog"], "calls": ["projects", "workspace", "git-tasks"] },
     "explorer":         { "kind": "ui", "capabilities": [], "calls": ["files", "workspace"] },
     "viewer":           { "kind": "ui", "capabilities": [], "calls": ["files", "workspace"] },

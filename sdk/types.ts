@@ -182,10 +182,21 @@ export interface UiEvent {
   inputs: Record<string, string>;
 }
 
-interface Base { key: string; grow?: boolean; width?: number; height?: number; minWidth?: number; padding?: number; gap?: number; bg?: "panel" | "muted" | "accent" | "none"; border?: boolean; tooltip?: string }
+interface Base { key: string; grow?: boolean; width?: number; height?: number; /** Cap height (px); the node may shrink below it and should scroll. */ maxHeight?: number; minWidth?: number; padding?: number; gap?: number; bg?: "panel" | "muted" | "accent" | "none"; border?: boolean; tooltip?: string }
 export type UiNode =
   | (Base & { type: "row" | "column"; children: UiNode[]; align?: "start" | "center" | "end"; scroll?: boolean })
-  | (Base & { type: "split"; direction: "horizontal" | "vertical"; sizes?: number[]; children: UiNode[] })
+  | (Base & { type: "split"; direction: "horizontal" | "vertical"; sizes?: number[]; children: UiNode[];
+      /** Fixed size in px per child (null = flexible). */ fixed?: (number | null)[]; minSize?: number; resizable?: boolean;
+      /** Fired once when a divider drag ends: value {sizes}. */ resizeAction?: string;
+      /** Fired when a divider is dragged past a collapsible child's minimum: value {index}. */ collapseAction?: string; collapsible?: boolean[] })
+  /** Native drag source. A click (no movement) fires clickAction with `payload`. */
+  | (Base & { type: "dragHandle"; payload: Json; label?: string; clickAction?: string; children?: UiNode[] })
+  /** Native drop target; on drop fires `action` with {payload, region, zone}. */
+  | (Base & { type: "dropZone"; action: string; regions?: ("left" | "right" | "top" | "bottom" | "center")[]; children: UiNode[] })
+  /** Panel floating inside the main window; native move/resize; fires moveAction {x,y,width,height}. */
+  | (Base & { type: "floating"; x: number; y: number; width: number; height: number; title?: string; moveAction?: string; children: UiNode[] })
+  /** A real OS window rendering `children`; closing it fires closeAction {width,height}. */
+  | (Base & { type: "window"; title?: string; width?: number; height?: number; closeAction?: string; children: UiNode[] })
   | (Base & { type: "scroll"; children: UiNode[] })
   | (Base & { type: "tabs"; tabs: { key: string; label: string }[]; active: string; action: string; children: UiNode[] })
   | (Base & { type: "slot"; module: string })

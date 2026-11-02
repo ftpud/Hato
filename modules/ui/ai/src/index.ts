@@ -163,6 +163,13 @@ const mod: AppModule = {
     } else {
       kids.push({ type: "label", key: "empty", text: "No conversation for this workspace yet. Each project root and task has its own conversations.", color: "muted", wrap: true });
     }
+    // Settings (everything between the header and the transcript) scroll in a capped section so the
+    // transcript and prompt stay visible in short windows.
+    const d1 = kids.findIndex((k) => k.key === "d1");
+    if (d1 > 1) {
+      const settings = kids.splice(1, d1 - 1);
+      kids.splice(1, 0, { type: "column", key: "settings", gap: 6, scroll: true, maxHeight: 320, children: settings });
+    }
     return { type: "column", key: "ai-root", gap: 6, padding: 8, grow: true, children: kids };
   },
   async onEvent(ctx, ev) {

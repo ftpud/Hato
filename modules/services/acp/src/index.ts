@@ -14,7 +14,7 @@ const DEFAULT_PROFILES = [
 /** Known ACP adapters that can be installed/updated on request (npm global packages). */
 export const ADAPTERS = [
   { id: "claude", name: "Claude (claude-agent-acp)", pkg: "@agentclientprotocol/claude-agent-acp", bin: "claude-agent-acp" },
-  { id: "codex", name: "Codex (codex-acp)", pkg: "@zed-industries/codex-acp", bin: "codex-acp" },
+  { id: "codex", name: "Codex (codex-acp)", pkg: "@agentclientprotocol/codex-acp", bin: "codex-acp" },
 ];
 
 interface Conn {
@@ -116,7 +116,7 @@ async function start(ctx: ModuleContext, a: any) {
   const profile = await resolveProfile(ctx, a.profileId, desc.machineId);
   const det = await detect(ctx, desc, profile.executable);
   if (!det.found) {
-    throw new Error(`ACP adapter '${profile.executable}' was not found on ${desc.machineId}. Install and authenticate it on that machine (e.g. npm i -g @zed-industries/codex-acp or @agentclientprotocol/claude-agent-acp), or point the profile to an absolute path. Hato never installs agents automatically.`);
+    throw new Error(`ACP adapter '${profile.executable}' was not found on ${desc.machineId}. Install and authenticate it on that machine (e.g. npm i -g @agentclientprotocol/codex-acp or @agentclientprotocol/claude-agent-acp), or point the profile to an absolute path. Hato never installs agents automatically.`);
   }
   const g = await workspaceGrant(ctx, desc, "process");
   const env: Record<string, string> = { ...(profile.envRefs || {}) };

@@ -2,6 +2,7 @@
 //! hosts native controls (inputs, code viewer, terminal) whose state is keyed by stable keys,
 //! and owns the trusted chrome (approval dialogs, safe mode). Never blocks on JS: trees arrive
 //! asynchronously through the UI bridge and are cached.
+pub mod interact;
 pub mod terminal_view;
 
 use crate::bridge::{UiBridge, UiMsg};
@@ -57,6 +58,7 @@ pub struct Shell {
     approval_scroll: ScrollHandle,
     show_safe_mode: bool,
     submit_queue: Vec<(String, String, String)>,
+    lay: interact::Layout,
 }
 
 fn sid(module: &str, path: &str) -> SharedString { format!("{module}::{path}").into() }
@@ -99,6 +101,7 @@ impl Shell {
             approval_scroll: ScrollHandle::new(),
             show_safe_mode: false,
             submit_queue: Vec::new(),
+            lay: Default::default(),
         }
     }
 
@@ -168,7 +171,7 @@ impl Shell {
                 let err = self.render_errors.get(module).cloned();
                 let body = self.node(module, &tree, "", depth, window, cx);
                 match err {
-                    Some(e) => v_flex().size_full().child(self.error_strip(module, &e, cx)).child(div().flex_1().min_h_0().child(body)).into_any_element(),
+                    Some(e) => v_flex().size_full().min_h_0().overflow_hidden().child(self.error_strip(module, &e, cx)).child(div().flex_1().min_h_0().overflow_hidden().flex().flex_col().child(body)).into_any_element(),
                     None => body,
                 }
             }
@@ -208,8 +211,14 @@ impl Shell {
     }
 
     fn apply_base(&self, mut d: Div, n: &Value, cx: &App) -> Div {
+        let max_h = n.get("maxHeight").and_then(|h| h.as_f64());
         if n.get("grow").and_then(|g| g.as_bool()).unwrap_or(false) {
             d = d.flex_1().min_w_0().min_h_0();
+        } else if let Some(h) = max_h {
+            // Bounded but allowed to shrink when the panel is short.
+            d = d.max_h(px(h as f32)).min_h_0().flex_shrink(1.0);
+        } else {
+            d = d.flex_shrink_0();
         }
         if let Some(w) = n.get("width").and_then(|w| w.as_f64()) {
             d = d.w(px(w as f32)).flex_none();
@@ -265,36 +274,33 @@ impl Shell {
                         _ => d.items_center(),
                     };
                 }
-                d = self.apply_base(d, n, cx);
+                d = self.apply_base(d, n, cx).min_w_0().overflow_hidden();
+                if ty == "column" {
+                    d = d.min_h_0();
+                }
                 let kids = self.children(module, n, &path, depth, window, cx);
                 if b("scroll") {
-                    d.child(div().id(sid(module, &path)).size_full().overflow_y_scroll().child(v_flex().children(kids))).into_any_element()
+                    let gap = n.get("gap").and_then(|g| g.as_f64()).unwrap_or(0.0) as f32;
+                    d.child(div().id(sid(module, &path)).flex_1().min_h_0().w_full().overflow_y_scroll().child(v_flex().w_full().gap(px(gap)).children(kids))).into_any_element()
                 } else {
                     d.children(kids).into_any_element()
                 }
             }
             "scroll" => {
                 let kids = self.children(module, n, &path, depth, window, cx);
-                let d = self.apply_base(v_flex(), n, cx);
-                d.child(div().id(sid(module, &path)).flex_1().min_h_0().overflow_y_scroll().child(v_flex().children(kids))).into_any_element()
+                let d = self.apply_base(v_flex(), n, cx).min_h_0().min_w_0().overflow_hidden();
+                d.child(div().id(sid(module, &path)).flex_1().min_h_0().w_full().overflow_y_scroll().child(v_flex().w_full().children(kids))).into_any_element()
             }
-            "split" => {
-                let horizontal = s("direction") != "vertical";
-                let sizes: Vec<f32> = n.get("sizes").and_then(|s| s.as_array()).map(|a| a.iter().filter_map(|x| x.as_f64().map(|f| f as f32)).collect()).unwrap_or_default();
-                let kids = self.children(module, n, &path, depth, window, cx);
-                let count = kids.len().max(1);
-                let mut d = if horizontal { h_flex() } else { v_flex() };
-                d = self.apply_base(d, n, cx).size_full();
-                for (i, k) in kids.into_iter().enumerate() {
-                    let frac = sizes.get(i).cloned().unwrap_or(1.0 / count as f32);
-                    let mut cell = div().overflow_hidden().border_color(cx.theme().border).flex();
-                    cell = if horizontal { cell.h_full().w(relative(frac)).flex_none() } else { cell.w_full().h(relative(frac)).flex_none() };
-                    if i > 0 {
-                        cell = if horizontal { cell.border_l_1() } else { cell.border_t_1() };
-                    }
-                    d = d.child(cell.child(div().size_full().flex().flex_col().child(k)));
-                }
-                d.into_any_element()
+            "split" => self.render_split(module, n, &path, key, depth, window, cx),
+            "dragHandle" => self.render_drag_handle(module, n, &path, key, window, cx),
+            "dropZone" => self.render_drop_zone(module, n, &path, key, depth, window, cx),
+            "floating" => {
+                self.lay.floats.push((module.to_string(), path.clone(), n.clone()));
+                div().into_any_element()
+            }
+            "window" => {
+                self.note_window(module, &path, key, n);
+                div().into_any_element()
             }
             "tabs" => {
                 let active = s("active");
@@ -316,14 +322,14 @@ impl Shell {
                 let mut d = self.apply_base(v_flex(), n, cx).child(bar);
                 if let Some(c) = kids.iter().find(|c| c.get("key").and_then(|k| k.as_str()) == Some(active.as_str())).or(kids.first()) {
                     let el = self.node(module, c, &path, depth, window, cx);
-                    d = d.child(div().flex_1().min_h_0().child(el));
+                    d = d.child(div().flex_1().min_h_0().overflow_hidden().flex().flex_col().child(el));
                 }
                 d.into_any_element()
             }
             "slot" => {
                 let m = s("module");
                 let el = self.render_slot(&m, depth + 1, window, cx);
-                self.apply_base(v_flex(), n, cx).size_full().child(el).into_any_element()
+                self.apply_base(v_flex(), n, cx).flex_1().size_full().min_w_0().min_h_0().overflow_hidden().child(el).into_any_element()
             }
             "label" => {
                 let text = s("text");
@@ -521,7 +527,7 @@ impl Shell {
                     row = row.child(chevron).child(div().w(px(12.0)).text_xs().flex_none().child(icon)).child(label);
                     list = list.child(row);
                 }
-                self.apply_base(v_flex(), n, cx).child(div().id(sid(module, &path)).size_full().overflow_y_scroll().child(list)).into_any_element()
+                self.apply_base(v_flex(), n, cx).min_h_0().min_w_0().overflow_hidden().child(div().id(sid(module, &path)).flex_1().min_h_0().w_full().overflow_y_scroll().child(list)).into_any_element()
             }
             "fileList" => {
                 let entries = n.get("entries").and_then(|r| r.as_array()).cloned().unwrap_or_default();
@@ -551,7 +557,7 @@ impl Shell {
                     }
                     list = list.child(row);
                 }
-                self.apply_base(v_flex(), n, cx).child(div().id(sid(module, &path)).size_full().overflow_y_scroll().child(list)).into_any_element()
+                self.apply_base(v_flex(), n, cx).min_h_0().min_w_0().overflow_hidden().child(div().id(sid(module, &path)).flex_1().min_h_0().w_full().overflow_y_scroll().child(list)).into_any_element()
             }
             "status" => {
                 let color = match n.get("level").and_then(|l| l.as_str()) {
@@ -593,7 +599,7 @@ impl Shell {
                         self.editors.remove(&k);
                     }
                 }
-                self.apply_base(div(), n, cx).size_full().overflow_hidden().child(body).into_any_element()
+                self.apply_base(div(), n, cx).flex().flex_col().size_full().min_w_0().min_h_0().overflow_hidden().child(body).into_any_element()
             }
             "terminal" => {
                 let pty = n.get("pty").and_then(|d| d.as_str()).map(|s| s.to_string());
@@ -604,7 +610,7 @@ impl Shell {
                     }
                     None => div().p_3().text_sm().text_color(theme_muted).child(s("placeholder")).into_any_element(),
                 };
-                self.apply_base(div(), n, cx).size_full().overflow_hidden().child(body).into_any_element()
+                self.apply_base(div(), n, cx).flex().flex_col().size_full().min_w_0().min_h_0().overflow_hidden().child(body).into_any_element()
             }
             "chatTranscript" => {
                 let msgs = n.get("messages").and_then(|m| m.as_array()).cloned().unwrap_or_default();
@@ -643,7 +649,11 @@ impl Shell {
                     }
                     list = list.child(card);
                 }
-                self.apply_base(v_flex(), n, cx).child(div().id(sid(module, &path)).size_full().overflow_y_scroll().track_scroll(&handle).child(list)).into_any_element()
+                // The transcript must take only the space its parent gives it and scroll internally;
+                // flex_1 + min_h_0 (rather than a percentage height) keeps it bounded when messages grow.
+                self.apply_base(v_flex(), n, cx).min_h_0().overflow_hidden()
+                    .child(div().id(sid(module, &path)).flex_1().min_h_0().w_full().overflow_y_scroll().track_scroll(&handle).child(list))
+                    .into_any_element()
             }
             "approvalPanel" => {
                 let count = self.kernel.approvals.count();
@@ -672,7 +682,7 @@ impl Shell {
         let m = module.to_string();
         let inputs = self.module_inputs(module);
         div().absolute().top_0().left_0().size_full().bg(black().opacity(0.35)).flex().items_center().justify_center()
-            .child(v_flex().id(sid(module, &format!("{path}/card"))).w(px(640.0)).max_h(relative(0.85)).overflow_y_scroll().gap_2().p_4().rounded(px(8.0))
+            .child(v_flex().id(sid(module, &format!("{path}/card"))).w(px(640.0)).max_w(relative(0.95)).max_h(relative(0.85)).overflow_y_scroll().gap_2().p_4().rounded(px(8.0))
                 .bg(cx.theme().background).border_1().border_color(cx.theme().border).shadow_lg()
                 .child(h_flex().child(div().flex_1().font_weight(FontWeight::BOLD).child(title))
                     .when_some(close, |d, a| d.child(Button::new(sid(module, &format!("{path}/close"))).label("✕").ghost().small()
@@ -698,7 +708,7 @@ impl Shell {
             buttons = buttons.child(btn.on_click(move |_, _, _| k.approvals.resolve_from_native_ui(&id, &oid)));
         }
         Some(div().absolute().top_0().left_0().size_full().bg(black().opacity(0.5)).flex().items_center().justify_center()
-            .child(v_flex().w(px(760.0)).max_h(relative(0.9)).gap_2().p_4().rounded(px(10.0)).bg(cx.theme().background).border_2().border_color(cx.theme().warning).shadow_lg()
+            .child(v_flex().w(px(760.0)).max_w(relative(0.95)).max_h(relative(0.9)).gap_2().p_4().rounded(px(10.0)).bg(cx.theme().background).border_2().border_color(cx.theme().warning).shadow_lg()
                 .child(h_flex().gap_2().child(div().text_xs().px_2().rounded(px(4.0)).bg(cx.theme().warning.opacity(0.25)).child("KERNEL APPROVAL"))
                     .child(div().text_xs().text_color(cx.theme().muted_foreground).child(format!("requested by module '{}' (generation {}) · operation {}", req.module, req.generation, req.operation))))
                 .child(div().text_lg().font_weight(FontWeight::BOLD).child(req.title.clone()))
@@ -746,6 +756,7 @@ fn human(n: u64) -> String {
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.modals.clear();
+        self.begin_frame();
         let layout_ok = self.trees.contains_key("workspace-layout") || self.kernel.router.active("workspace-layout").is_some();
         let body = if layout_ok && !self.show_safe_mode {
             self.render_slot("workspace-layout", 0, window, cx)
@@ -755,6 +766,10 @@ impl Render for Shell {
         // Drop native state for terminals whose PTY handle disappeared.
         let live: HashSet<String> = self.kernel.handles.handles_of_kind("pty").into_iter().collect();
         self.terminals.retain(|h, _| live.contains(h));
+        let floats = std::mem::take(&mut self.lay.floats);
+        let float_els: Vec<AnyElement> = floats.iter().map(|(m, p, n)| self.render_float(m, p, n, window, cx)).collect();
+        let drag_layer = self.drag_overlay(cx);
+        self.sync_windows(window, cx);
         let modals = std::mem::take(&mut self.modals);
         let modal_els: Vec<AnyElement> = modals.iter().map(|(m, p, n)| self.render_modal(m, p, n, window, cx)).collect();
         let approvals = self.render_approvals(cx);
@@ -764,11 +779,13 @@ impl Render for Shell {
             toasts = toasts.child(div().p_2().rounded(px(6.0)).text_xs().bg(cx.theme().background).border_1().border_color(c).text_color(c).child(text.clone()));
         }
         let _ = &self.submit_queue;
-        div().size_full().relative().bg(cx.theme().background).text_color(cx.theme().foreground).font_family(cx.theme().font_family.clone())
-            .child(body)
+        div().size_full().relative().flex().flex_col().overflow_hidden().bg(cx.theme().background).text_color(cx.theme().foreground).font_family(cx.theme().font_family.clone())
+            .child(div().flex_1().min_h_0().min_w_0().overflow_hidden().flex().flex_col().child(body))
+            .children(float_els)
             .children(modal_els)
             .child(toasts)
             .children(approvals)
+            .children(drag_layer)
     }
 }
 
@@ -805,12 +822,18 @@ pub fn run(cfg: Config) {
                 cx.new(|cx| Shell::new(k3.clone(), rx, window, cx))
             },
         );
+        let main_id = match &opened {
+            Ok((h, _)) => Some(h.window_id()),
+            Err(_) => None,
+        };
         if let Err(e) = opened {
             eprintln!("hato: cannot open window: {e:#}");
             std::process::exit(1);
         }
-        cx.on_window_closed(|cx, _| {
-            if cx.windows().is_empty() {
+        // Quit when the main window closes (detached panel windows close independently).
+        cx.on_window_closed(move |cx, _| {
+            let main_open = main_id.map(|id| cx.windows().iter().any(|w| w.window_id() == id)).unwrap_or(false);
+            if !main_open || cx.windows().is_empty() {
                 cx.quit();
             }
         })

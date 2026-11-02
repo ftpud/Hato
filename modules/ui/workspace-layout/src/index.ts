@@ -1,18 +1,29 @@
-// workspace-layout: main window composition. Other UI modules are embedded through `slot` nodes,
-// so each keeps rendering even if another fails. Also hosts the module diagnostics drawer
-// (developer workflow: rebuild/activate/rollback via module-dev; each step needs native approval).
+// workspace-layout: main window composition, fully script-controlled.
+// * Panels (projects, files, viewer, ai, terminal) live in column stacks, a bottom dock, floating
+//   panels inside the window, detached OS windows, or are hidden.
+// * Splits are natively resizable; dragging a pane past its minimum collapses it.
+// * Panel titles are drag handles: drop onto another panel's left/right/top/bottom/center to re-dock.
+// * The top and bottom bars are data too: show/hide, reorder/move items by dragging their ⋮ grip.
+// The kernel only provides the primitives (split, dragHandle, dropZone, floating, window); all
+// policy lives here and is persisted through the persistence service ("layout.v1").
 import type { AppModule, ModuleContext, UiNode } from "../../../../sdk/types";
-import { errMsg } from "../../../../sdk/runtime";
+import { debounce, errMsg } from "../../../../sdk/runtime";
+import { BAR_ITEMS, PANELS, defaultLayout, dropPanel, locate, moveBarItem, moveTo, removeBarItem, repair, type BarId, type Layout } from "./model";
 
 let ws: any = null;
 let modules: any[] = [];
 let showModules = false;
+let showLayout = false;
 let diag: string | null = null;
 let busy: string | null = null;
 let upd: Record<string, any> = {};
 let updSummary: { available: string[]; errors: string[] } = { available: [], errors: [] };
 let scanningUpd = false;
-let sizes = { columns: [0.17, 0.17, 0.38, 0.28], rows: [0.68, 0.32] };
+let layout: Layout = defaultLayout();
+let save: () => void = () => {};
+
+const COLLAPSED_ROW = 30;
+const COLLAPSED_COL = 36;
 
 async function loadUpdates(ctx: ModuleContext, scan: boolean, full = false) {
   try {
@@ -30,16 +41,234 @@ async function loadModules(ctx: ModuleContext) {
   ctx.ui.invalidate();
 }
 
-function summary() {
+function versionsSummary() {
   const ui = modules.filter((m) => m.active).map((m) => m.active.label).sort();
   return ui.length ? ui.join("  ") : "modules: loading…";
+}
+
+// ---- panels -------------------------------------------------------------------------------------
+
+function btn(key: string, text: string, action: string, value: any, tooltip: string): UiNode {
+  return { type: "button", key, text, action, value, small: true, variant: "ghost", tooltip };
+}
+
+function panelHeader(id: string, mode: "dock" | "float" | "window"): UiNode {
+  const p = PANELS[id];
+  const collapsed = !!layout.collapsed[id];
+  const kids: UiNode[] = [];
+  if (mode === "dock") {
+    kids.push({ type: "dragHandle", key: "drag", payload: { kind: "panel", id }, label: `⠿ ${p.title}`, grow: true, tooltip: "Drag onto another panel to re-dock" });
+    kids.push(btn("collapse", collapsed ? "+" : "–", "toggleCollapse", id, collapsed ? "Expand" : "Collapse"));
+    kids.push(btn("float", "⧉", "float", id, "Float inside the window"));
+    kids.push(btn("detach", "⇗", "detach", id, "Open in its own window"));
+    kids.push(btn("hide", "×", "hide", id, "Hide (reopen from Layout)"));
+  } else {
+    kids.push({ type: "spacer", key: "sp" });
+    kids.push(btn("dock", "⇙ Dock", "dock", id, "Dock back into the main window"));
+    if (mode === "float") kids.push(btn("detach", "⇗", "detach", id, "Open in its own window"));
+    else kids.push(btn("float", "⧉", "float", id, "Float inside the main window"));
+  }
+  return { type: "row", key: "ph", gap: 2, padding: 2, bg: "muted", align: "center", children: kids };
+}
+
+function panelBody(id: string, mode: "dock" | "float" | "window"): UiNode {
+  const collapsed = mode === "dock" && !!layout.collapsed[id];
+  return { type: "column", key: "panel-" + id, grow: true, children: [
+    panelHeader(id, mode),
+    ...(collapsed ? [] : [{ type: "slot", key: "slot", module: PANELS[id].slot, grow: true } as UiNode]),
+  ] };
+}
+
+function dockedPanel(id: string): UiNode {
+  return { type: "dropZone", key: "panel:" + id, action: "dropPanel", grow: true, children: [panelBody(id, "dock")] };
+}
+
+/** Narrow strip for a collapsed panel inside a horizontal stack. */
+function strip(ids: string[], key: string): UiNode {
+  return { type: "column", key, gap: 4, padding: 3, bg: "muted", grow: true, children: ids.map((id) => ({
+    type: "dropZone", key: "panel:" + id, action: "dropPanel", grow: false, children: [
+      { type: "button", key: "x-" + id, text: PANELS[id].title.slice(0, 2), action: "toggleCollapse", value: id, small: true, tooltip: `Expand ${PANELS[id].title}` },
+    ] } as UiNode)) };
+}
+
+function columnNode(ci: number): UiNode {
+  const col = layout.columns[ci];
+  if (col.panels.every((p) => layout.collapsed[p])) return strip(col.panels, `col-strip-${ci}`);
+  if (col.panels.length === 1) return dockedPanel(col.panels[0]);
+  return { type: "split", key: `col:${ci}`, direction: "vertical", sizes: col.sizes, minSize: 80,
+    fixed: col.panels.map((p) => (layout.collapsed[p] ? COLLAPSED_ROW : null)), collapsible: col.panels.map(() => true),
+    resizeAction: "resize", collapseAction: "collapse", children: col.panels.map(dockedPanel) } as UiNode;
+}
+
+function bottomNode(): UiNode | null {
+  const b = layout.bottom;
+  if (!b.panels.length) return null;
+  if (b.collapsed || b.panels.every((p) => layout.collapsed[p])) {
+    return { type: "row", key: "bottom-collapsed", gap: 6, padding: 3, bg: "muted", align: "center", grow: true, children: [
+      ...b.panels.map((id) => ({ type: "button", key: "exp-" + id, text: `▴ ${PANELS[id].title}`, action: "expandBottom", value: id, small: true, variant: "ghost" } as UiNode)),
+    ] };
+  }
+  if (b.panels.length === 1) return dockedPanel(b.panels[0]);
+  return { type: "split", key: "bottom", direction: "horizontal", sizes: b.sizes, minSize: 120,
+    fixed: b.panels.map((p) => (layout.collapsed[p] ? COLLAPSED_COL : null)), collapsible: b.panels.map(() => true),
+    resizeAction: "resize", collapseAction: "collapse",
+    children: b.panels.map((p) => (layout.collapsed[p] ? strip([p], "bstrip-" + p) : dockedPanel(p))) } as UiNode;
+}
+
+function dockArea(): UiNode {
+  const cols = layout.columns;
+  let top: UiNode;
+  if (!cols.length) {
+    top = { type: "column", key: "empty", padding: 16, grow: true, children: [{ type: "label", key: "l", text: "No docked panels. Open Layout to dock panels back.", color: "muted" }] };
+  } else if (cols.length === 1) {
+    top = columnNode(0);
+  } else {
+    top = { type: "split", key: "cols", direction: "horizontal", sizes: cols.map((c) => c.size), minSize: 120,
+      fixed: cols.map((c) => (c.panels.every((p) => layout.collapsed[p]) ? COLLAPSED_COL : null)), collapsible: cols.map(() => true),
+      resizeAction: "resize", collapseAction: "collapse", children: cols.map((_, i) => columnNode(i)) } as UiNode;
+  }
+  const bottom = bottomNode();
+  if (!bottom) return { type: "column", key: "dock", grow: true, children: [top] };
+  const bottomCollapsed = layout.bottom.collapsed || layout.bottom.panels.every((p) => layout.collapsed[p]);
+  return { type: "split", key: "main", direction: "vertical", sizes: layout.mainSizes, minSize: 90, grow: true,
+    fixed: [null, bottomCollapsed ? COLLAPSED_ROW + 4 : null], collapsible: [false, true],
+    resizeAction: "resize", collapseAction: "collapse", children: [top, bottom] } as UiNode;
+}
+
+// ---- bars ---------------------------------------------------------------------------------------
+
+function itemContent(it: string): UiNode {
+  const where = ws ? `${ws.name}  ·  ${ws.location === "ssh" ? `SSH ${ws.ssh?.user}@${ws.ssh?.host}` : "Local"}  ·  ${ws.rootAbsolutePath}` : "No workspace selected";
+  switch (it) {
+    case "title": return { type: "label", key: "c", text: "Hato", weight: "bold" };
+    case "workspace": return { type: "label", key: "c", text: where, size: "sm", color: "muted", grow: true };
+    case "layoutMenu": return { type: "button", key: "c", text: showLayout ? "Hide layout" : "Layout", action: "toggleLayoutMenu", small: true };
+    case "modules": {
+      const n = updSummary.available.length;
+      return { type: "button", key: "c", text: showModules ? "Hide modules" : n ? `Modules (${n} update${n > 1 ? "s" : ""})` : "Modules", action: "toggleModules", small: true, variant: n && !showModules ? "primary" : "default" };
+    }
+    case "machine": return { type: "label", key: "c", text: ws ? `files/terminal/agent run on: ${ws.machineId}` : "no workspace", size: "xs", color: "muted" };
+    case "versions": return { type: "label", key: "c", text: versionsSummary(), size: "xs", color: "muted", mono: true, grow: true };
+    case "approvals": return { type: "approvalPanel", key: "c" };
+    default: return { type: "label", key: "c", text: it };
+  }
+}
+
+function barNode(b: BarId): UiNode | null {
+  const bar = layout.bars[b];
+  if (!bar.visible) return null;
+  const items: UiNode[] = bar.items.map((it) => ({
+    type: "dropZone", key: `baritem:${b}:${it}`, action: "dropBar", regions: ["left", "right"], grow: !!BAR_ITEMS[it].grow, children: [
+      { type: "row", key: "r", gap: 3, align: "center", grow: !!BAR_ITEMS[it].grow, children: [
+        { type: "dragHandle", key: "grip", payload: { kind: "item", id: it }, label: "⋮", width: 10, tooltip: `Drag to move "${BAR_ITEMS[it].title}"` },
+        itemContent(it),
+      ] },
+    ] } as UiNode));
+  if (!items.length) items.push({ type: "label", key: "empty", text: `${b} bar is empty — drag items here or add them from Layout`, size: "xs", color: "muted", grow: true });
+  return { type: "dropZone", key: `bar:${b}`, action: "dropBar", regions: ["center"], grow: false, children: [
+    { type: "row", key: "bar-" + b, gap: 8, padding: 4, bg: "panel", border: true, align: "center", children: items },
+  ] };
+}
+
+// ---- layout menu --------------------------------------------------------------------------------
+
+function where(id: string): string {
+  const l = locate(layout, id);
+  if (!l) return "?";
+  if (l.kind === "column") return `column ${l.col + 1}${layout.columns[l.col].panels.length > 1 ? `, #${l.idx + 1}` : ""}${layout.collapsed[id] ? " (collapsed)" : ""}`;
+  if (l.kind === "bottom") return `bottom dock${layout.collapsed[id] || layout.bottom.collapsed ? " (collapsed)" : ""}`;
+  return l.kind;
+}
+
+function layoutMenu(): UiNode {
+  const panelRows: UiNode[] = Object.keys(PANELS).map((id) => {
+    const k = locate(layout, id)?.kind;
+    return { type: "row", key: "p-" + id, gap: 4, align: "center", children: [
+      { type: "label", key: "n", text: PANELS[id].title, width: 120, weight: "bold", size: "sm" },
+      { type: "label", key: "w", text: where(id), size: "xs", color: "muted", grow: true },
+      { type: "button", key: "col", text: "Column", action: "toColumn", value: id, small: true, disabled: k === "column" },
+      { type: "button", key: "bot", text: "Bottom", action: "toBottom", value: id, small: true, disabled: k === "bottom" },
+      { type: "button", key: "flt", text: "Float", action: "float", value: id, small: true, disabled: k === "floating" },
+      { type: "button", key: "win", text: "Window", action: "detach", value: id, small: true, disabled: k === "detached" },
+      { type: "button", key: "hid", text: "Hide", action: "hide", value: id, small: true, disabled: k === "hidden" },
+    ] } as UiNode;
+  });
+  const onBars = new Set([...layout.bars.top.items, ...layout.bars.bottom.items]);
+  const itemRows: UiNode[] = Object.keys(BAR_ITEMS).map((it) => {
+    const bar = layout.bars.top.items.includes(it) ? "top" : layout.bars.bottom.items.includes(it) ? "bottom" : null;
+    return { type: "row", key: "i-" + it, gap: 4, align: "center", children: [
+      { type: "label", key: "n", text: BAR_ITEMS[it].title, width: 160, size: "sm" },
+      { type: "label", key: "w", text: bar ? `${bar} bar` : "hidden", size: "xs", color: "muted", grow: true },
+      { type: "button", key: "t", text: "Top", action: "itemToBar", value: { item: it, bar: "top" }, small: true, disabled: bar === "top" },
+      { type: "button", key: "b", text: "Bottom", action: "itemToBar", value: { item: it, bar: "bottom" }, small: true, disabled: bar === "bottom" },
+      { type: "button", key: "h", text: "Hide", action: "removeItem", value: it, small: true, disabled: !onBars.has(it) },
+    ] } as UiNode;
+  });
+  return { type: "modal", key: "layout-modal", title: "Layout", closeAction: "toggleLayoutMenu", children: [
+    { type: "label", key: "hint", text: "Drag panel titles (⠿) onto another panel's edge or center to re-dock. Drag dividers to resize; drag past the minimum to collapse. Drag the ⋮ grips on the bars to reorder or move items. Everything here is the workspace-layout TypeScript module — it can be changed and hot-swapped like any other module.", size: "xs", color: "muted", wrap: true },
+    { type: "label", key: "h1", text: "Bars", weight: "bold", size: "sm" },
+    { type: "row", key: "bars", gap: 12, children: [
+      { type: "toggle", key: "tb", label: "Show top bar", checked: layout.bars.top.visible, action: "toggleBar", value: "top" } as UiNode,
+      { type: "toggle", key: "bb", label: "Show bottom bar", checked: layout.bars.bottom.visible, action: "toggleBar", value: "bottom" } as UiNode,
+    ] },
+    ...itemRows,
+    { type: "divider", key: "d1" },
+    { type: "label", key: "h2", text: "Panels", weight: "bold", size: "sm" },
+    ...panelRows,
+    { type: "divider", key: "d2" },
+    { type: "row", key: "foot", gap: 6, children: [
+      { type: "spacer", key: "sp" },
+      { type: "button", key: "reset", text: "Reset layout", action: "resetLayout", small: true, variant: "danger" },
+      { type: "button", key: "close", text: "Close", action: "toggleLayoutMenu", small: true },
+    ] },
+  ] };
+}
+
+function modulesModal(): UiNode {
+  const rank = (m: any) => (upd[m.id]?.status === "update-available" ? 0 : upd[m.id]?.status === "build-error" ? 1 : 2);
+  const sorted = [...modules].sort((a, b) => rank(a) - rank(b) || a.id.localeCompare(b.id));
+  const rows: UiNode[] = sorted.map((m) => {
+    const u = upd[m.id];
+    const st = !u ? { t: "checking…", c: "muted" } : u.status === "update-available" ? { t: "● update available (source changed)", c: "warning" } : u.status === "build-error" ? { t: `✖ source does not build: ${(u.diagnostics || "").split("\n")[0]}`, c: "danger" } : { t: "up to date", c: "success" };
+    return { type: "row", key: "m-" + m.id, gap: 6, align: "center", children: [
+      { type: "label", key: "n", text: m.active ? m.active.label : `${m.id} (inactive)`, mono: true, size: "sm", width: 210 },
+      { type: "label", key: "k", text: m.kind, size: "xs", color: "muted", width: 50 },
+      { type: "label", key: "u", text: st.t, size: "xs", color: st.c as any, width: 230 },
+      { type: "label", key: "e", text: m.lastError ? `⚠ ${m.lastError}` : `${m.versions.length} version(s); previous: ${m.previous.slice(-3).join(",") || "-"}`, size: "xs", color: m.lastError ? "danger" : "muted", grow: true },
+      { type: "button", key: "b", text: u && u.status === "update-available" ? "Update" : "Rebuild & activate", action: "rebuild", value: m.id, small: true, variant: u && u.status === "update-available" ? "primary" : "default", disabled: !!busy },
+      { type: "button", key: "r", text: "Rollback", action: "rollback", value: m.id, small: true, disabled: !!busy || !(m.previous && m.previous.length) },
+    ] } as UiNode;
+  });
+  return { type: "modal", key: "modules-modal", title: "Modules (hot-swappable TypeScript)", closeAction: "toggleModules", children: [
+    { type: "label", key: "hint", text: "Edit sources under modules/, then Rebuild & activate. Builds, activation and rollback each require native approval; the Rust kernel is never rebuilt.", size: "xs", color: "muted", wrap: true },
+    { type: "row", key: "upd-bar", gap: 6, align: "center", children: [
+      { type: "label", key: "upd-sum", text: scanningUpd ? "Checking module sources for updates…" : updSummary.available.length ? `${updSummary.available.length} module(s) with updates: ${updSummary.available.join(", ")}` : "All modules match their sources.", size: "sm", color: updSummary.available.length ? "warning" : "muted", grow: true },
+      { type: "button", key: "upd-all", text: `Activate all updates (${updSummary.available.length})`, action: "activateAll", small: true, variant: "primary", disabled: !!busy || !updSummary.available.length },
+      { type: "button", key: "upd-scan", text: "Rescan", action: "rescan", small: true, disabled: scanningUpd || !!busy, tooltip: "Rebuild every module in memory and compare with the active version" },
+    ] },
+    ...(busy ? [{ type: "progress", key: "busy", indeterminate: true, label: busy } as UiNode] : []),
+    ...(diag ? [{ type: "status", key: "diag", text: diag, level: diag.startsWith("✓") ? "success" : "error" } as UiNode] : []),
+    { type: "column", key: "list", gap: 2, scroll: true, children: rows },
+  ] };
+}
+
+// ---- module ---------------------------------------------------------------------------------------
+
+function set(ctx: ModuleContext, next: Layout) {
+  layout = next;
+  save();
+  ctx.ui.invalidate();
 }
 
 const mod: AppModule = {
   id: "workspace-layout",
   moduleApiVersion: 1,
   async activate(ctx, prev) {
-    if (prev) { showModules = !!prev.showModules; if (prev.sizes) sizes = prev.sizes; }
+    save = debounce(() => { ctx.modules.call("persistence", "settings.set", { key: "layout.v1", value: layout as any }).catch((e) => ctx.log.warn("save layout", errMsg(e))); }, 300);
+    if (prev) { showModules = !!prev.showModules; showLayout = !!prev.showLayout; }
+    try {
+      layout = repair(prev && prev.layout ? prev.layout : await ctx.modules.call("persistence", "settings.get", { key: "layout.v1" }));
+    } catch (e) { ctx.log.warn("load layout", errMsg(e)); layout = defaultLayout(); }
     ws = ctx.state.get("workspace.selected") || null;
     ctx.state.watch("workspace.selected", (v: any) => { ws = v; ctx.ui.invalidate(); });
     ctx.events.on("kernel.modules.changed", () => loadModules(ctx));
@@ -47,80 +276,138 @@ const mod: AppModule = {
     await loadModules(ctx);
     loadUpdates(ctx, false);
   },
-  snapshot: () => ({ showModules, sizes }),
+  snapshot: () => ({ showModules, showLayout, layout }),
+  methods: {
+    getLayout: () => layout,
+    setLayout: (ctx, a) => { set(ctx, repair(a.layout)); return layout; },
+    resetLayout: (ctx) => { set(ctx, defaultLayout()); return layout; },
+  },
   render(): UiNode {
-    const where = ws ? `${ws.name}  ·  ${ws.location === "ssh" ? `SSH ${ws.ssh?.user}@${ws.ssh?.host}` : "Local"}  ·  ${ws.rootAbsolutePath}` : "No workspace selected";
-    const header: UiNode = { type: "row", key: "header", gap: 10, padding: 6, bg: "panel", border: true, align: "center", children: [
-      { type: "label", key: "app", text: "Hato", weight: "bold" },
-      { type: "label", key: "ws", text: where, size: "sm", color: "muted", grow: true },
-      { type: "button", key: "mods", text: showModules ? "Hide modules" : updSummary.available.length ? `Modules (${updSummary.available.length} update${updSummary.available.length > 1 ? "s" : ""})` : "Modules", action: "toggleModules", small: true, variant: updSummary.available.length && !showModules ? "primary" : "default" },
-    ] };
-    const main: UiNode = { type: "split", key: "main", direction: "vertical", sizes: sizes.rows, grow: true, children: [
-      { type: "split", key: "top", direction: "horizontal", sizes: sizes.columns, children: [
-        { type: "slot", key: "s-projects", module: "projects-panel" },
-        { type: "slot", key: "s-explorer", module: "explorer" },
-        { type: "slot", key: "s-viewer", module: "viewer" },
-        { type: "slot", key: "s-ai", module: "ai" },
-      ] },
-      { type: "slot", key: "s-terminal", module: "terminal-panel" },
-    ] };
-    const status: UiNode = { type: "row", key: "status", gap: 10, padding: 4, bg: "panel", border: true, align: "center", children: [
-      { type: "label", key: "loc", text: ws ? `Active workspace · files/terminal/agent run on: ${ws.machineId}` : "Active workspace: none", size: "xs", color: "muted" },
-      { type: "label", key: "mods", text: summary(), size: "xs", color: "muted", mono: true, grow: true },
-      { type: "approvalPanel", key: "approvals" },
-    ] };
-    const kids: UiNode[] = [header, main, status];
-    if (showModules) {
-      const rank = (m: any) => (upd[m.id]?.status === "update-available" ? 0 : upd[m.id]?.status === "build-error" ? 1 : 2);
-      const sorted = [...modules].sort((a, b) => rank(a) - rank(b) || a.id.localeCompare(b.id));
-      const rows: UiNode[] = sorted.map((m) => {
-        const u = upd[m.id];
-        const st = !u ? { t: "checking…", c: "muted" } : u.status === "update-available" ? { t: "● update available (source changed)", c: "warning" } : u.status === "build-error" ? { t: `✖ source does not build: ${(u.diagnostics || "").split("\n")[0]}`, c: "danger" } : { t: "up to date", c: "success" };
-        return { type: "row", key: "m-" + m.id, gap: 6, align: "center", children: [
-        { type: "label", key: "n", text: m.active ? m.active.label : `${m.id} (inactive)`, mono: true, size: "sm", width: 210 },
-        { type: "label", key: "k", text: m.kind, size: "xs", color: "muted", width: 50 },
-        { type: "label", key: "u", text: st.t, size: "xs", color: st.c as any, width: 230 },
-        { type: "label", key: "e", text: m.lastError ? `⚠ ${m.lastError}` : `${m.versions.length} version(s); previous: ${m.previous.slice(-3).join(",") || "-"}`, size: "xs", color: m.lastError ? "danger" : "muted", grow: true },
-        { type: "button", key: "b", text: u && u.status === "update-available" ? "Update" : "Rebuild & activate", action: "rebuild", value: m.id, small: true, variant: u && u.status === "update-available" ? "primary" : "default", disabled: !!busy },
-        { type: "button", key: "r", text: "Rollback", action: "rollback", value: m.id, small: true, disabled: !!busy || !(m.previous && m.previous.length) },
-      ] } as UiNode; });
-      kids.push({ type: "modal", key: "modules-modal", title: "Modules (hot-swappable TypeScript)", closeAction: "toggleModules", children: [
-        { type: "label", key: "hint", text: "Edit sources under modules/, then Rebuild & activate. Builds, activation and rollback each require native approval; the Rust kernel is never rebuilt.", size: "xs", color: "muted", wrap: true },
-        { type: "row", key: "upd-bar", gap: 6, align: "center", children: [
-          { type: "label", key: "upd-sum", text: scanningUpd ? "Checking module sources for updates…" : updSummary.available.length ? `${updSummary.available.length} module(s) with updates: ${updSummary.available.join(", ")}` : "All modules match their sources.", size: "sm", color: updSummary.available.length ? "warning" : "muted", grow: true },
-          { type: "button", key: "upd-all", text: `Activate all updates (${updSummary.available.length})`, action: "activateAll", small: true, variant: "primary", disabled: !!busy || !updSummary.available.length },
-          { type: "button", key: "upd-scan", text: "Rescan", action: "rescan", small: true, disabled: scanningUpd || !!busy, tooltip: "Rebuild every module in memory and compare with the active version" },
-        ] },
-        ...(busy ? [{ type: "progress", key: "busy", indeterminate: true, label: busy } as UiNode] : []),
-        ...(diag ? [{ type: "status", key: "diag", text: diag, level: diag.startsWith("✓") ? "success" : "error" } as UiNode] : []),
-        { type: "column", key: "list", gap: 2, scroll: true, children: rows },
-      ] });
+    const kids: UiNode[] = [];
+    const top = barNode("top");
+    if (top) kids.push(top);
+    if (!["top", "bottom"].some((b) => layout.bars[b as BarId].visible && layout.bars[b as BarId].items.includes("layoutMenu"))) {
+      kids.push({ type: "row", key: "layout-access", children: [btn("open-layout", "Layout", "toggleLayoutMenu", null, "Configure panels and bars")] });
     }
+    kids.push(dockArea());
+    const bottom = barNode("bottom");
+    if (bottom) kids.push(bottom);
+    for (const [id, g] of Object.entries(layout.floating)) {
+      kids.push({ type: "floating", key: "float:" + id, title: PANELS[id].title, x: g.x, y: g.y, width: g.width, height: g.height, moveAction: "moveFloat", children: [panelBody(id, "float")] } as UiNode);
+    }
+    for (const [id, g] of Object.entries(layout.detached)) {
+      kids.push({ type: "window", key: "win:" + id, title: `Hato — ${PANELS[id].title}`, width: g.width, height: g.height, closeAction: "windowClosed", children: [panelBody(id, "window")] } as UiNode);
+    }
+    if (showLayout) kids.push(layoutMenu());
+    if (showModules) kids.push(modulesModal());
     return { type: "column", key: "layout-root", grow: true, children: kids };
   },
   async onEvent(ctx, ev) {
-    if (ev.action === "toggleModules") { showModules = !showModules; diag = null; if (showModules) { await loadModules(ctx); loadUpdates(ctx, true); } }
-    else if (ev.action === "rescan") { await loadUpdates(ctx, true, true); }
-    else if (ev.action === "activateAll") {
-      busy = `Updating ${updSummary.available.join(", ")}…`; diag = null; ctx.ui.invalidate();
-      try {
-        const r = await ctx.modules.call("module-dev", "activateUpdates", {}, { timeoutMs: 1800000 });
-        diag = r.ok ? `✓ updated ${r.results.map((x: any) => x.label).join(", ")}` : r.results.filter((x: any) => !x.ok).map((x: any) => `${x.id}: ${x.error}`).join("\n");
-      } catch (e) { diag = errMsg(e); }
-      busy = null;
-      await loadModules(ctx);
-      await loadUpdates(ctx, true);
-    }
-    else if (ev.action === "rebuild" || ev.action === "rollback") {
-      const id = String(ev.value);
-      busy = `${ev.action === "rebuild" ? "Building" : "Rolling back"} ${id}…`; diag = null; ctx.ui.invalidate();
-      try {
-        const r = await ctx.modules.call("module-dev", ev.action === "rebuild" ? "buildAndActivate" : "rollback", { id }, { timeoutMs: 900000 });
-        diag = r.ok === false ? `${id}: ${r.error || "failed"}\n${(r.diagnostics || "").slice(0, 2000)}` : `✓ ${r.label || id} active${r.swapMs !== undefined ? ` (swap ${r.swapMs} ms)` : ""}`;
-      } catch (e) { diag = `${id}: ${errMsg(e)}`; }
-      busy = null;
-      await loadModules(ctx);
-      await loadUpdates(ctx, true);
+    const v: any = ev.value;
+    const dockBack = (id: string) => moveTo(layout, id, id === "terminal" ? "bottom" : "column");
+    switch (ev.action) {
+      // -- docking / panels
+      case "dropPanel": {
+        if (v && v.payload && v.payload.kind === "panel" && typeof v.zone === "string" && v.zone.startsWith("panel:")) {
+          set(ctx, dropPanel(layout, v.payload.id, v.zone.slice(6), v.region));
+        }
+        break;
+      }
+      case "toggleCollapse": {
+        const c = { ...layout.collapsed };
+        c[v] = !c[v];
+        const next = { ...layout, collapsed: c };
+        if (!c[v] && layout.bottom.panels.includes(v)) next.bottom = { ...layout.bottom, collapsed: false };
+        set(ctx, next);
+        break;
+      }
+      case "expandBottom": {
+        const c = { ...layout.collapsed };
+        for (const p of layout.bottom.panels) delete c[p];
+        set(ctx, { ...layout, collapsed: c, bottom: { ...layout.bottom, collapsed: false } });
+        break;
+      }
+      case "collapse": {
+        const i = v && typeof v.index === "number" ? v.index : -1;
+        const c = { ...layout.collapsed };
+        let next: Layout = { ...layout, collapsed: c };
+        if (ev.key === "cols" && layout.columns[i]) for (const p of layout.columns[i].panels) c[p] = true;
+        else if (ev.key.startsWith("col:")) { const col = layout.columns[Number(ev.key.slice(4))]; if (col && col.panels[i]) c[col.panels[i]] = true; }
+        else if (ev.key === "bottom" && layout.bottom.panels[i]) c[layout.bottom.panels[i]] = true;
+        else if (ev.key === "main" && i === 1) next = { ...next, bottom: { ...layout.bottom, collapsed: true } };
+        set(ctx, next);
+        break;
+      }
+      case "resize": {
+        const s: number[] = v && Array.isArray(v.sizes) ? v.sizes : [];
+        const next: Layout = JSON.parse(JSON.stringify(layout));
+        if (ev.key === "cols" && s.length === next.columns.length) next.columns.forEach((c, i) => (c.size = s[i]));
+        else if (ev.key === "main" && s.length === 2) next.mainSizes = [s[0], s[1]];
+        else if (ev.key === "bottom" && s.length === next.bottom.panels.length) next.bottom.sizes = s;
+        else if (ev.key.startsWith("col:")) { const col = next.columns[Number(ev.key.slice(4))]; if (col && s.length === col.panels.length) col.sizes = s; }
+        set(ctx, next);
+        break;
+      }
+      case "float": set(ctx, moveTo(layout, v, "floating")); break;
+      case "detach": set(ctx, moveTo(layout, v, "detached")); break;
+      case "hide": set(ctx, moveTo(layout, v, "hidden")); break;
+      case "dock": set(ctx, dockBack(v)); break;
+      case "toColumn": set(ctx, moveTo(layout, v, "column")); break;
+      case "toBottom": set(ctx, moveTo(layout, v, "bottom")); break;
+      case "moveFloat": {
+        const id = ev.key.slice("float:".length);
+        if (layout.floating[id] && v) set(ctx, { ...layout, floating: { ...layout.floating, [id]: { x: v.x, y: v.y, width: v.width, height: v.height } } });
+        break;
+      }
+      case "windowClosed": set(ctx, dockBack(ev.key.slice("win:".length))); break;
+      // -- bars
+      case "dropBar": {
+        if (!v || !v.payload || v.payload.kind !== "item") break;
+        const zone: string = v.zone || "";
+        if (zone.startsWith("bar:")) set(ctx, moveBarItem(layout, v.payload.id, zone.slice(4) as BarId, null));
+        else if (zone.startsWith("baritem:")) {
+          const [, bar, target] = zone.split(":");
+          if (target !== v.payload.id) set(ctx, moveBarItem(layout, v.payload.id, bar as BarId, target, v.region === "right"));
+        }
+        break;
+      }
+      case "toggleBar": {
+        const b = typeof v === "boolean" ? (ev.key === "tb" ? "top" : ev.key === "bb" ? "bottom" : null) : v;
+        if (b !== "top" && b !== "bottom") break;
+        set(ctx, { ...layout, bars: { ...layout.bars, [b]: { ...layout.bars[b], visible: typeof v === "boolean" ? v : !layout.bars[b].visible } } });
+        break;
+      }
+      case "itemToBar": set(ctx, moveBarItem(layout, v.item, v.bar, null)); break;
+      case "removeItem": set(ctx, removeBarItem(layout, v)); break;
+      case "resetLayout": set(ctx, defaultLayout()); break;
+      case "toggleLayoutMenu": showLayout = !showLayout; break;
+      // -- modules window
+      case "toggleModules": showModules = !showModules; diag = null; if (showModules) { await loadModules(ctx); loadUpdates(ctx, true); } break;
+      case "rescan": await loadUpdates(ctx, true, true); break;
+      case "activateAll": {
+        busy = `Updating ${updSummary.available.join(", ")}…`; diag = null; ctx.ui.invalidate();
+        try {
+          const r = await ctx.modules.call("module-dev", "activateUpdates", {}, { timeoutMs: 1800000 });
+          diag = r.ok ? `✓ updated ${r.results.map((x: any) => x.label).join(", ")}` : r.results.filter((x: any) => !x.ok).map((x: any) => `${x.id}: ${x.error}`).join("\n");
+        } catch (e) { diag = errMsg(e); }
+        busy = null;
+        await loadModules(ctx);
+        await loadUpdates(ctx, true);
+        break;
+      }
+      case "rebuild":
+      case "rollback": {
+        const id = String(v);
+        busy = `${ev.action === "rebuild" ? "Building" : "Rolling back"} ${id}…`; diag = null; ctx.ui.invalidate();
+        try {
+          const r = await ctx.modules.call("module-dev", ev.action === "rebuild" ? "buildAndActivate" : "rollback", { id }, { timeoutMs: 900000 });
+          diag = r.ok === false ? `${id}: ${r.error || "failed"}\n${(r.diagnostics || "").slice(0, 2000)}` : `✓ ${r.label || id} active${r.swapMs !== undefined ? ` (swap ${r.swapMs} ms)` : ""}`;
+        } catch (e) { diag = `${id}: ${errMsg(e)}`; }
+        busy = null;
+        await loadModules(ctx);
+        await loadUpdates(ctx, true);
+        break;
+      }
     }
     ctx.ui.invalidate();
   },

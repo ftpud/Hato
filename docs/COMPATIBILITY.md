@@ -13,7 +13,7 @@
 | SFTP | own SFTP v3 client (kernel/src/host/sftp.rs) over the `sftp` subsystem | realpath, stat, readdir, read, atomic write (posix-rename) |
 | TS build | `esbuild 0.24.2`, `typescript 5.7.3` (typecheck only) | Dev-time only; artifacts are plain ESM run by QuickJS |
 | Node.js | 20.17 (dev machine) | Build tooling, the tiny MCP stdio proxy, and Node-based ACP adapters; never embedded |
-| ACP adapters tested | `@agentclientprotocol/claude-agent-acp 0.100.0`, `@zed-industries/codex-acp 0.16.0` | Installed by the user on each workspace machine; Hato never installs agents |
+| ACP adapters previously tested | `@agentclientprotocol/claude-agent-acp 0.100.0`, `@zed-industries/codex-acp 0.16.0` | Installed by the user on each workspace machine; Hato never installs agents |
 | MCP | protocol versions `2025-06-18`, `2025-03-26`, `2024-11-05` (stdio framing) | Server implemented in TS (`modules/services/internal-mcp`) |
 
 ## Platforms
@@ -37,9 +37,13 @@ uses the system OpenSSH client with a per-profile ControlMaster:
 
 All remote command lines are built by one audited POSIX quoting adapter (`kernel/src/quoting.rs`).
 
+The configured Codex install/update package is now `@agentclientprotocol/codex-acp`
+(executable `codex-acp`). The historical test results above predate this switch; the new adapter
+has not yet been verified with a live authenticated session.
+
 ## Known limitations
 
-* Codex: `codex-acp 0.16.0` (latest on npm at the time of testing) embeds an older Codex core; with the
+* Historical Codex adapter: `@zed-industries/codex-acp 0.16.0` (latest on npm at the time of testing) embeds an older Codex core; with the
   test account's ChatGPT login every model was rejected by the backend (`model_not_found`). Hato handles
   and displays the agent's error correctly; the end-to-end agent tests were therefore run with the Claude
   adapter. This is an adapter/account compatibility problem, not an ACP client problem.
@@ -48,4 +52,4 @@ All remote command lines are built by one audited POSIX quoting adapter (`kernel
   resources, and module-source/activation approvals.
 * QuickJS isolation separates module state and lifecycles; the real trust boundary is the kernel's
   capability broker.
-* Split panes have fixed proportions defined by the layout module (no drag-resize yet).
+* Split panes can be resized and collapsed. The workspace-layout module persists docking, floating panels, detached windows, and bar visibility/item order.

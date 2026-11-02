@@ -48,3 +48,16 @@ tests/integration/run-integration.sh tests/integration/m5m7-ssh.js /tmp/hato-d5 
 
 When the SSH "remote" is the same machine, the suite writes `~/.local/state/hato/{bin,worktrees}` in
 your home directory; remove it afterwards. Perf: `tests/integration/perf.js` (results in modules.log).
+
+## Workspace layout
+
+After `npm run modules:build` and `cargo build`, run both phases with the same fresh data directory:
+
+```sh
+HATO_T_PHASE=1 tests/integration/run-integration.sh tests/integration/layout.js /tmp/hato-layout-test
+HATO_T_PHASE=2 tests/integration/run-integration.sh tests/integration/layout.js /tmp/hato-layout-test
+```
+
+These cover docking, resize/collapse events, floating and detached panel trees, bar controls,
+recovery access when bars or the Layout item are hidden, persistence across restart, and reset.
+Native pointer interactions and OS window appearance still require a desktop smoke test.
