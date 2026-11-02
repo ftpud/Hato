@@ -42,6 +42,8 @@ pub struct SpawnSpec {
     pub args: Vec<String>,
     pub cwd: String,
     pub env: Vec<(String, String)>,
+    /// Variables removed from the inherited environment (e.g. to keep an API key away from an agent).
+    pub env_remove: Vec<String>,
     pub login_shell: bool,
 }
 
@@ -53,12 +55,15 @@ pub fn spawn(spec: SpawnSpec) -> HResult<Arc<ProcessRes>> {
             for (k, v) in &spec.env {
                 c.env(k, v);
             }
+            for k in &spec.env_remove {
+                c.env_remove(k);
+            }
             c
         }
         Target::Ssh { .. } => {
             let ssh = spec.ssh.as_ref().ok_or_else(|| HostError::new("ENOTCONN", "SSH connection unavailable"))?;
             ssh.ensure_alive()?;
-            let remote = quoting::remote_command(&spec.cwd, &spec.executable, &spec.args, &spec.env, spec.login_shell)
+            let remote = quoting::remote_command(&spec.cwd, &spec.executable, &spec.args, &spec.env, &spec.env_remove, spec.login_shell)
                 .map_err(HostError::invalid)?;
             let mut c = ssh.client_command(&["-T"]);
             c.arg("--").arg(remote);

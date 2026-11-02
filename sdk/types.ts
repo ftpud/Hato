@@ -33,6 +33,8 @@ export interface SpawnRequest {
   args: string[];
   cwd: string;
   env?: Record<string, string>;
+  /** Names removed from the inherited environment (local) / via `env -u` (remote). */
+  envRemove?: string[];
   /** Remote only: run through the user's login shell so PATH from profile files applies. */
   loginShell?: boolean;
 }

@@ -777,6 +777,10 @@ fn spawn_spec(k: &Kernel, g: &ScopeGrant, req: &Value) -> HResult<SpawnSpec> {
     let cwd = req.get("cwd").and_then(|c| c.as_str()).unwrap_or(&g.root).to_string();
     let login_shell = req.get("loginShell").and_then(|b| b.as_bool()).unwrap_or(false);
     let env = env_pairs(req)?;
+    let env_remove: Vec<String> = req.get("envRemove").and_then(|a| a.as_array()).map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default();
+    if env_remove.iter().any(|k| k.is_empty() || k.contains('=') || k.contains('\0') || k.len() > 128) {
+        return Err(HostError::invalid("invalid envRemove entry"));
+    }
     check_target(g, req)?;
     match g.kind {
         ScopeKind::Process => {}
@@ -798,7 +802,7 @@ fn spawn_spec(k: &Kernel, g: &ScopeGrant, req: &Value) -> HResult<SpawnSpec> {
                     }
                 }
             }
-            if login_shell || !env.is_empty() {
+            if login_shell || !env.is_empty() || !env_remove.is_empty() {
                 return Err(HostError::denied("build grant does not allow env or login shell"));
             }
         }
@@ -824,7 +828,7 @@ fn spawn_spec(k: &Kernel, g: &ScopeGrant, req: &Value) -> HResult<SpawnSpec> {
         }
     };
     let ssh = ssh_for(k, &g.target);
-    Ok(SpawnSpec { target: g.target.clone(), ssh, executable: exe, args, cwd, env, login_shell })
+    Ok(SpawnSpec { target: g.target.clone(), ssh, executable: exe, args, cwd, env, env_remove, login_shell })
 }
 
 fn request_grant(k: &Arc<Kernel>, gen: &Arc<Generation>, args: &Value) -> HResult<Value> {

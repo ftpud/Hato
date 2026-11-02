@@ -26,7 +26,7 @@ fn valid_env_name(k: &str) -> bool {
 /// Build the remote command line: `cd -- <cwd> && exec [env K=V...] <exe> <args...>`.
 /// When `login_shell` is set the inner command is run through the user's login shell so that
 /// PATH from profile files applies (the inner command is itself quoted as one word).
-pub fn remote_command(cwd: &str, exe: &str, args: &[String], env: &[(String, String)], login_shell: bool) -> Result<String, String> {
+pub fn remote_command(cwd: &str, exe: &str, args: &[String], env: &[(String, String)], env_remove: &[String], login_shell: bool) -> Result<String, String> {
     if exe.is_empty() {
         return Err("empty executable".into());
     }
@@ -34,8 +34,16 @@ pub fn remote_command(cwd: &str, exe: &str, args: &[String], env: &[(String, Str
         return Err("NUL byte in command".into());
     }
     let mut inner = format!("cd -- {} && exec ", sh_quote(cwd));
-    if !env.is_empty() {
+    if !env.is_empty() || !env_remove.is_empty() {
         inner.push_str("env ");
+        for k in env_remove {
+            if !valid_env_name(k) {
+                return Err(format!("invalid environment variable name {k:?}"));
+            }
+            inner.push_str("-u ");
+            inner.push_str(k);
+            inner.push(' ');
+        }
         for (k, v) in env {
             if !valid_env_name(k) {
                 return Err(format!("invalid environment variable name {k:?}"));
@@ -77,10 +85,13 @@ mod tests {
     }
     #[test]
     fn command() {
-        let c = remote_command("/tmp/x y", "git", &["-C".into(), "/a;b".into()], &[], false).unwrap();
+        let c = remote_command("/tmp/x y", "git", &["-C".into(), "/a;b".into()], &[], &[], false).unwrap();
         assert_eq!(c, "cd -- '/tmp/x y' && exec git -C '/a;b'");
-        let c = remote_command("/r", "node", &[], &[("A".into(), "1 2".into())], true).unwrap();
+        let c = remote_command("/r", "node", &[], &[("A".into(), "1 2".into())], &[], true).unwrap();
         assert!(c.starts_with("exec \"${SHELL:-/bin/sh}\" -lc "));
-        assert!(remote_command("/r", "x", &[], &[("A;B".into(), "1".into())], false).is_err());
+        assert!(remote_command("/r", "x", &[], &[("A;B".into(), "1".into())], &[], false).is_err());
+        let c = remote_command("/r", "agent", &[], &[], &["ANTHROPIC_API_KEY".into()], false).unwrap();
+        assert_eq!(c, "cd -- /r && exec env -u ANTHROPIC_API_KEY agent");
+        assert!(remote_command("/r", "x", &[], &[], &["A B".into()], false).is_err());
     }
 }

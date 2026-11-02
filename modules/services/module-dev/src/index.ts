@@ -5,6 +5,7 @@
 // natively). The kernel itself knows nothing about TypeScript or esbuild.
 import type { AppModule, ModuleContext } from "../../../../sdk/types";
 import { errMsg } from "../../../../sdk/runtime";
+import { sha256Hex } from "../../../../sdk/sha256";
 
 const BUILD_ARGS = ["--bundle", "--format=esm", "--platform=neutral", "--target=es2020", "--log-level=warning", "--charset=utf8", "--legal-comments=none", "--loader:.sql=text", "--loader:.md=text"];
 let srcRead: Promise<string> | null = null;
@@ -140,18 +141,30 @@ async function readSrc(ctx: ModuleContext, rel: string): Promise<string | null> 
   }
 }
 
-async function build(ctx: ModuleContext, id: string) {
+/** Run esbuild for a module (output to stdout). Does not stage anything. */
+async function compile(ctx: ModuleContext, id: string): Promise<{ ok: boolean; code: string; diagnostics: string; ms: number; error?: string }> {
   const info = await ctx.host.modules.sourceInfo();
-  if (!info.buildTool) return { ok: false, error: "esbuild is not installed in the repository (run `npm ci`)" };
+  if (!info.buildTool) return { ok: false, code: "", diagnostics: "", ms: 0, error: "esbuild is not installed in the repository (run `npm ci`)" };
   const d: any = await ctx.host.modules.describe(id);
   const entry = `${d.sourceDir}/${d.manifest.entry}`;
   const g = await ctx.host.capabilities.request({ kind: "build" });
   const t0 = Date.now();
-  const r = await ctx.host.process.run(g.grant, { executable: info.buildTool, args: [entry, ...BUILD_ARGS], cwd: info.repoRoot }, { timeoutMs: 120000, limitBytes: 8 * 1024 * 1024 });
-  await ctx.host.capabilities.release(g.grant).catch(() => {});
-  const diagnostics = r.stderr.trim();
-  if (r.code !== 0 || !r.stdout.trim()) {
-    const res = { ok: false, id, error: `build failed (exit ${r.code})`, diagnostics, buildMs: Date.now() - t0 };
+  try {
+    const r = await ctx.host.process.run(g.grant, { executable: info.buildTool, args: [entry, ...BUILD_ARGS], cwd: info.repoRoot }, { timeoutMs: 120000, limitBytes: 8 * 1024 * 1024 });
+    const ok = r.code === 0 && !!r.stdout.trim();
+    return { ok, code: r.stdout, diagnostics: r.stderr.trim(), ms: Date.now() - t0, error: ok ? undefined : `build failed (exit ${r.code})` };
+  } finally {
+    await ctx.host.capabilities.release(g.grant).catch(() => {});
+  }
+}
+
+async function build(ctx: ModuleContext, id: string) {
+  const c = await compile(ctx, id);
+  const t0 = Date.now() - c.ms;
+  const r = { stdout: c.code };
+  const diagnostics = c.diagnostics;
+  if (!c.ok) {
+    const res = { ok: false, id, error: c.error, diagnostics, buildMs: c.ms };
     lastBuild.set(id, res);
     return res;
   }
@@ -167,10 +180,80 @@ async function build(ctx: ModuleContext, id: string) {
   }
 }
 
+// ---- automatic update detection ------------------------------------------------------------------
+// A module has an update when building its current source produces a different artifact than the
+// active one (exact: SHA-256 of the esbuild output vs the kernel's recorded artifact hash). Cheap
+// source fingerprints (path/size/mtime) decide when a module needs to be re-checked.
+interface UpdateInfo { id: string; kind: string; active: string | null; status: "current" | "update-available" | "build-error" | "unknown"; builtHash: string | null; activeHash: string | null; diagnostics: string; fingerprint: string; checkedAt: number }
+const updates = new Map<string, UpdateInfo>();
+let scanning: Promise<UpdateInfo[]> | null = null;
+
+async function fingerprint(ctx: ModuleContext, id: string): Promise<string> {
+  const g = await grantRead(ctx);
+  const dir = await moduleDir(ctx, id);
+  const files: string[] = [];
+  await listTree(ctx, g, dir, files);
+  const parts: string[] = [];
+  for (const f of files) {
+    try { const st = await ctx.host.fs.stat(g, f); parts.push(`${f}:${st.size}:${st.mtime}`); } catch { parts.push(`${f}:?`); }
+  }
+  return parts.join("|");
+}
+
+async function scan(ctx: ModuleContext, full: boolean): Promise<UpdateInfo[]> {
+  if (scanning) return scanning;
+  scanning = (async () => {
+    const mods: any[] = await ctx.host.modules.list();
+    let changed = false;
+    for (const m of mods) {
+      const prev = updates.get(m.id);
+      const activeHash = m.active ? m.active.sha256 : null;
+      let fp = "";
+      try { fp = await fingerprint(ctx, m.id); } catch { fp = "?"; }
+      if (!full && prev && prev.fingerprint === fp && prev.activeHash === activeHash) continue;
+      const c = await compile(ctx, m.id).catch((e) => ({ ok: false, code: "", diagnostics: "", ms: 0, error: errMsg(e) }));
+      const builtHash = c.ok ? sha256Hex(c.code) : null;
+      const status: UpdateInfo["status"] = !c.ok ? "build-error" : !activeHash ? "update-available" : builtHash === activeHash ? "current" : "update-available";
+      const info: UpdateInfo = { id: m.id, kind: m.kind, active: m.active ? m.active.label : null, status, builtHash, activeHash, diagnostics: c.ok ? c.diagnostics : `${c.error || ""}\n${c.diagnostics}`.trim(), fingerprint: fp, checkedAt: Date.now() };
+      if (!prev || prev.status !== info.status || prev.builtHash !== info.builtHash || prev.active !== info.active) changed = true;
+      updates.set(m.id, info);
+    }
+    if (changed) ctx.events.emit("module-dev.updatesChanged", summary());
+    return Array.from(updates.values());
+  })();
+  try { return await scanning; } finally { scanning = null; }
+}
+
+function summary() {
+  const list = Array.from(updates.values());
+  return { available: list.filter((u) => u.status === "update-available").map((u) => u.id), errors: list.filter((u) => u.status === "build-error").map((u) => u.id) };
+}
+
 const mod: AppModule = {
   id: "module-dev",
   moduleApiVersion: 1,
+  async activate(ctx) {
+    // Initial full check shortly after start, then a light fingerprint-driven poll.
+    setTimeout(() => { scan(ctx, true).catch((e) => ctx.log.warn("update scan", errMsg(e))); }, 1500);
+    setInterval(() => { scan(ctx, false).catch(() => {}); }, 4000);
+  },
   methods: {
+    /** Cached update status of every module. */
+    updates: () => ({ modules: Array.from(updates.values()).map(({ fingerprint, ...u }) => u), ...summary() }),
+    /** Re-check now (`full` rebuilds every module; otherwise only those whose sources changed). */
+    async scanUpdates(ctx, a) {
+      const list = await scan(ctx, !!(a && a.full));
+      return { modules: list.map(({ fingerprint, ...u }) => u), ...summary() };
+    },
+    /** Build + activate every module with an available update (each step natively approved). */
+    async activateUpdates(ctx) {
+      await scan(ctx, false);
+      const results: any[] = [];
+      for (const id of summary().available) {
+        results.push(await mod.methods!.buildAndActivate(ctx, { id }, { caller: "module-dev" }));
+      }
+      return { ok: results.every((r) => r.ok), results };
+    },
     list: (ctx) => ctx.host.modules.list(),
     describe: async (ctx, a) => {
       const d: any = await ctx.host.modules.describe(String(a.id));
@@ -249,6 +332,7 @@ const mod: AppModule = {
 
     async rollback(ctx, a) {
       const r = await ctx.host.modules.rollback(String(a.id), a.toVersion ? { toVersion: Number(a.toVersion) } : undefined);
+      scan(ctx, false).catch(() => {});
       return { ...r, ok: true };
     },
 
@@ -257,6 +341,7 @@ const mod: AppModule = {
       if (!b.ok) return b;
       try {
         const r = await ctx.host.modules.activate(String(a.id), b.stageId);
+        scan(ctx, false).catch(() => {});
         return { ...r, ok: true, build: b };
       } catch (e: any) {
         return { ok: false, id: a.id, error: errMsg(e), code: e.code, build: b };

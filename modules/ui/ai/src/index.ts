@@ -9,6 +9,46 @@ let error: string | null = null;
 let busy: string | null = null;
 let draft: string | undefined = undefined;
 let refresh: () => void = () => {};
+// ACP adapter install/update window
+let adaptersOpen = false;
+let adapters: any[] | null = null;
+let adaptersBusy: string | null = null;
+let adaptersMsg: { level: "success" | "error"; text: string } | null = null;
+
+async function loadAdapters(ctx: ModuleContext) {
+  if (!ws) return;
+  adaptersBusy = "check"; ctx.ui.invalidate();
+  try { adapters = await ctx.modules.call("ai-sessions", "adapters", { workspaceId: ws.id }, { timeoutMs: 300000 }); }
+  catch (e) { adaptersMsg = { level: "error", text: errMsg(e) }; }
+  finally { adaptersBusy = null; ctx.ui.invalidate(); }
+}
+
+function adapterWindow(): UiNode {
+  const rows: UiNode[] = (adapters || []).map((a: any) => {
+    const upToDate = a.installed && a.latest && a.installed === a.latest;
+    const label = !a.installed ? "Install" : upToDate ? "Reinstall" : "Update";
+    const status = a.error ? a.error : !a.installed ? `not installed · latest ${a.latest || "?"}` : `installed ${a.installed}${a.latest ? upToDate ? " · up to date" : ` · update available: ${a.latest}` : ""}`;
+    return { type: "row", key: "ad-" + a.id, gap: 8, align: "center", border: true, padding: 6, children: [
+      { type: "column", key: "info", grow: true, gap: 2, children: [
+        { type: "label", key: "n", text: a.name, weight: "bold", size: "sm" },
+        { type: "label", key: "p", text: `${a.pkg}${a.path ? " → " + a.path : ""}`, size: "xs", color: "muted", mono: true },
+        { type: "label", key: "s", text: status, size: "xs", color: a.error ? "danger" : upToDate ? "success" : a.installed ? "warning" : "muted", wrap: true },
+      ] },
+      { type: "button", key: "b", text: adaptersBusy === a.id ? "Working…" : label, action: "installAdapter", value: a.id, small: true, variant: upToDate ? "default" : "primary", disabled: !!adaptersBusy },
+    ] } as UiNode;
+  });
+  return { type: "modal", key: "adapters-modal", title: `ACP adapters on ${ws ? ws.machineId : "?"}`, closeAction: "closeAdapters", children: [
+    { type: "label", key: "hint", text: "Agents run on the workspace's machine. Install or update an adapter there with npm (you will be asked to confirm). Authenticate it afterwards (e.g. `claude` login or `codex login`).", size: "xs", color: "muted", wrap: true },
+    ...(adaptersMsg ? [{ type: "status", key: "msg", text: adaptersMsg.text, level: adaptersMsg.level } as UiNode] : []),
+    ...(adaptersBusy ? [{ type: "progress", key: "busy", indeterminate: true, label: adaptersBusy === "check" ? "Checking installed and latest versions…" : `Installing ${adaptersBusy}… (npm install -g)` } as UiNode] : []),
+    ...(adapters ? rows : []),
+    { type: "row", key: "foot", gap: 6, children: [
+      { type: "spacer", key: "sp" },
+      { type: "button", key: "recheck", text: "Check versions", action: "checkAdapters", small: true, disabled: !!adaptersBusy },
+      { type: "button", key: "close", text: "Close", action: "closeAdapters", small: true },
+    ] },
+  ] };
+}
 
 async function load(ctx: ModuleContext) {
   if (!ws) { view = null; ctx.ui.invalidate(); return; }
@@ -63,6 +103,8 @@ const mod: AppModule = {
     ctx.state.watch("workspace.selected", (v: any) => { const changed = (ws && ws.id) !== (v && v.id); ws = v; if (changed) load(ctx); });
     ctx.events.on("ai-sessions.changed", () => refresh());
     ctx.events.on("acp.status", () => refresh());
+    ctx.events.on("acp.adaptersChanged", () => { if (adaptersOpen) loadAdapters(ctx); });
+    ctx.events.on("acp.authChanged", () => refresh());
     await load(ctx);
   },
   snapshot: () => ({ draft }),
@@ -70,8 +112,10 @@ const mod: AppModule = {
     const kids: UiNode[] = [{ type: "row", key: "hdr", gap: 6, align: "center", children: [
       { type: "label", key: "t", text: "AI / ACP", size: "sm", weight: "bold", color: "muted" },
       { type: "spacer", key: "sp" },
+      { type: "button", key: "adapters", text: "Agents…", action: "openAdapters", small: true, disabled: !ws, tooltip: "Install or update ACP adapters" },
       { type: "button", key: "new", text: "+ New chat", action: "newChat", small: true, disabled: !ws },
     ] }];
+    if (adaptersOpen && ws) kids.push(adapterWindow());
     if (!ws) { kids.push({ type: "label", key: "none", text: "Select a project or task to chat with an agent running on its machine.", color: "muted", wrap: true }); return { type: "column", key: "ai-root", gap: 6, padding: 8, grow: true, children: kids }; }
     if (error) kids.push({ type: "status", key: "err", text: error, level: "error" });
     if (!view) { kids.push({ type: "progress", key: "ld", indeterminate: true }); return { type: "column", key: "ai-root", gap: 6, padding: 8, grow: true, children: kids }; }
@@ -81,6 +125,15 @@ const mod: AppModule = {
     const connected = !!live && ["ready", "busy"].includes(live.status);
     kids.push({ type: "select", key: "conv", label: "Chat", options: view.conversations.map((c: any) => ({ value: c.id, label: `${c.title} · ${c.status}` })), value: view.activeId, action: "selectConv", placeholder: "no conversations" });
     kids.push({ type: "select", key: "agent", label: "Agent", options: view.profiles.map((p: any) => ({ value: p.id, label: p.name })), value: conv ? conv.acpProfileId : null, action: "setProfile", disabled: !conv, placeholder: "—" });
+    const profile = conv ? view.profiles.find((p: any) => p.id === conv.acpProfileId) : null;
+    if (profile && profile.provider === "claude") {
+      const sub = !view.auth || view.auth.claudeSubscription !== false;
+      const live0 = a ? a.live : null;
+      const connectedNow = !!live0 && ["ready", "busy"].includes(live0.status);
+      kids.push({ type: "toggle", key: "claude-sub", label: "Use Claude subscription (ignore ANTHROPIC_API_KEY)", checked: sub, action: "toggleClaudeSub" });
+      kids.push({ type: "label", key: "claude-sub-hint", text: sub ? "API-key variables from the shell are removed from the agent's environment; it uses your Claude login." : "The agent may use ANTHROPIC_API_KEY from the environment (API billing)." + "", size: "xs", color: "muted", wrap: true });
+      if (connectedNow) kids.push({ type: "label", key: "claude-sub-reconnect", text: "Changes apply on the next Connect.", size: "xs", color: "warning" });
+    }
     if (conv) {
       const where = live && live.machineId ? live.machineId : view.workspace.machineId;
       kids.push({ type: "label", key: "loc", text: `Agent location: ${where} · cwd ${view.workspace.root}`, size: "xs", color: "muted", wrap: true });
@@ -116,6 +169,20 @@ const mod: AppModule = {
     const conv = view && view.active ? view.active.conversation : null;
     const call = (m: string, args: any, timeoutMs = 120000) => ctx.modules.call("ai-sessions", m, args, { timeoutMs });
     try {
+      if (ev.action === "openAdapters" && ws) { adaptersOpen = true; adaptersMsg = null; await loadAdapters(ctx); return; }
+      if (ev.action === "closeAdapters") { adaptersOpen = false; return; }
+      if (ev.action === "checkAdapters") { adaptersMsg = null; await loadAdapters(ctx); return; }
+      if (ev.action === "installAdapter" && ws) {
+        adaptersBusy = String(ev.value); adaptersMsg = null; ctx.ui.invalidate();
+        try {
+          const r = await call("installAdapter", { workspaceId: ws.id, adapterId: ev.value }, 17 * 60 * 1000);
+          adaptersMsg = { level: "success", text: `✓ ${r.adapterId} installed/updated on ${r.machineId}` };
+        } catch (e) { adaptersMsg = { level: "error", text: errMsg(e) }; }
+        adaptersBusy = null;
+        await loadAdapters(ctx);
+        return;
+      }
+      if (ev.action === "toggleClaudeSub") { await ctx.modules.call("acp", "setAuthSettings", { claudeSubscription: !!ev.value }); return; }
       if (ev.action === "newChat" && ws) await call("create", { workspaceId: ws.id });
       else if (ev.action === "selectConv" && ws) await call("select", { workspaceId: ws.id, conversationId: ev.value });
       else if (!conv) return;

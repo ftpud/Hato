@@ -229,7 +229,8 @@ const mod: AppModule = {
         const c = await load(ctx, activeId);
         active = { conversation: c.row, messages: c.messages.slice(-400).map(toChat), live: c.live, busy: c.busy };
       }
-      return { workspace: { id: desc.id, name: desc.name, machineId: desc.machineId, root: desc.rootAbsolutePath, location: desc.location }, conversations: list.map((x: any) => ({ id: x.id, title: x.title, status: x.status })), activeId, active, profiles };
+      const auth = await ctx.modules.call("acp", "authSettings", {});
+      return { auth, workspace: { id: desc.id, name: desc.name, machineId: desc.machineId, root: desc.rootAbsolutePath, location: desc.location }, conversations: list.map((x: any) => ({ id: x.id, title: x.title, status: x.status })), activeId, active, profiles };
     },
 
     connect: (ctx, a) => connect(ctx, a.conversationId),
@@ -294,6 +295,29 @@ const mod: AppModule = {
       await update(ctx, a.conversationId, { acpProfileId: a.profileId, providerSessionId: null, status: "offline", config: {} });
       notify();
       return null;
+    },
+
+    adapters: (ctx, a) => ctx.modules.call("acp", "adapters", { workspaceId: a.workspaceId }, { timeoutMs: 300000 }),
+
+    /** User-initiated install/update of a known adapter, confirmed in a native dialog first. */
+    async installAdapter(ctx, a) {
+      const desc = await ctx.modules.call("workspace", "resolve", { workspaceId: a.workspaceId });
+      const list: any[] = await ctx.modules.call("acp", "adapters", { workspaceId: desc.id }, { timeoutMs: 300000 });
+      const ad = list.find((x) => x.id === a.adapterId);
+      if (!ad) throw new Error(`unknown adapter ${a.adapterId}`);
+      const verb = ad.installed ? "Update" : "Install";
+      const r = await ctx.host.approvals.request({
+        title: `${verb} ${ad.name} on ${desc.machineId}?`,
+        operation: "acp-adapter-install",
+        detail: [
+          `Command (runs on ${desc.machineId}):`, `  npm install -g ${ad.pkg}@latest`, "",
+          `Installed: ${ad.installed || "not installed"}   Latest: ${ad.latest || "unknown"}`, "",
+          "This downloads and installs code from the npm registry. The agent will afterwards still need to be authenticated on that machine.",
+        ].join("\n"),
+        options: [{ id: "allow", label: verb, kind: "allow" }, { id: "deny", label: "Cancel", kind: "deny" }],
+      });
+      if (r.optionId !== "allow") throw new Error(`${verb} cancelled`);
+      return ctx.modules.call("acp", "installAdapter", { workspaceId: desc.id, adapterId: ad.id }, { timeoutMs: 16 * 60 * 1000 });
     },
 
     /** Called by `acp` for session/request_permission. */

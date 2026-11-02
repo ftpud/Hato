@@ -11,6 +11,12 @@ const DEFAULT_PROFILES = [
   { id: "claude", machineId: "*", provider: "claude", name: "Claude (claude-agent-acp)", executable: "claude-agent-acp", args: [], envRefs: {}, enabled: true },
 ];
 
+/** Known ACP adapters that can be installed/updated on request (npm global packages). */
+export const ADAPTERS = [
+  { id: "claude", name: "Claude (claude-agent-acp)", pkg: "@agentclientprotocol/claude-agent-acp", bin: "claude-agent-acp" },
+  { id: "codex", name: "Codex (codex-acp)", pkg: "@zed-industries/codex-acp", bin: "codex-acp" },
+];
+
 interface Conn {
   conversationId: string;
   workspaceId: string;
@@ -82,6 +88,27 @@ async function detect(ctx: ModuleContext, desc: WorkspaceDescriptor, executable:
   return { found: !!found, path: found, pathEnv };
 }
 
+/** Runs npm on the workspace machine (local: absolute npm + login PATH; SSH: login shell). */
+async function npmRunner(ctx: ModuleContext, desc: WorkspaceDescriptor) {
+  const det = await detect(ctx, desc, "npm");
+  if (!det.found) return { ok: false as const, error: `npm was not found on ${desc.machineId}; install Node.js there first`, run: null as any };
+  const g = await workspaceGrant(ctx, desc, "process");
+  const target = await targetFor(ctx, desc);
+  const env: Record<string, string> = {};
+  if (det.pathEnv) env.PATH = det.pathEnv;
+  const run = (args: string[], timeoutMs: number) => ctx.host.process.run(g.grant, {
+    target, executable: desc.location === "ssh" ? "npm" : det.path, args, cwd: desc.rootAbsolutePath, env, loginShell: desc.location === "ssh",
+  }, { timeoutMs, limitBytes: 1 << 20 });
+  return { ok: true as const, error: "", run };
+}
+
+const CLAUDE_API_VARS = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"];
+
+async function authSettings(ctx: ModuleContext): Promise<{ claudeSubscription: boolean }> {
+  const v = await ctx.modules.call("persistence", "settings.get", { key: "acp.claude.useSubscription" });
+  return { claudeSubscription: v === null || v === undefined ? true : !!v };
+}
+
 async function start(ctx: ModuleContext, a: any) {
   const existing = conns.get(a.conversationId);
   if (existing && (existing.status === "ready" || existing.status === "busy" || existing.status === "starting")) return publicState(existing);
@@ -94,10 +121,17 @@ async function start(ctx: ModuleContext, a: any) {
   const g = await workspaceGrant(ctx, desc, "process");
   const env: Record<string, string> = { ...(profile.envRefs || {}) };
   if (det.pathEnv) env.PATH = det.pathEnv;
+  // Claude subscription mode (default): keep API-key variables from the shell/profile away from the
+  // adapter so it authenticates with the user's Claude login instead of billing an API account.
+  const auth = await authSettings(ctx);
+  const envRemove: string[] = [];
+  if (profile.provider === "claude" && auth.claudeSubscription) {
+    for (const k of CLAUDE_API_VARS) { envRemove.push(k); delete env[k]; }
+  }
   const spawned = await ctx.host.process.spawn(g.grant, {
     target: await targetFor(ctx, desc),
     executable: desc.location === "ssh" ? profile.executable : det.path,
-    args: profile.args || [], cwd: desc.rootAbsolutePath, env, loginShell: desc.location === "ssh",
+    args: profile.args || [], cwd: desc.rootAbsolutePath, env, envRemove, loginShell: desc.location === "ssh",
   });
   const c: Conn = {
     conversationId: a.conversationId, workspaceId: desc.id, machineId: desc.machineId, cwd: desc.rootAbsolutePath, profileId: profile.id,
@@ -229,6 +263,12 @@ const mod: AppModule = {
       return a && a.machineId ? all.filter((p: any) => p.machineId === "*" || p.machineId === a.machineId) : all;
     },
     saveProfile: async (ctx, a) => { await ctx.modules.call("persistence", "acpProfiles.upsert", { profile: a.profile }); return null; },
+    authSettings: (ctx) => authSettings(ctx),
+    async setAuthSettings(ctx, a) {
+      if (typeof a.claudeSubscription === "boolean") await ctx.modules.call("persistence", "settings.set", { key: "acp.claude.useSubscription", value: a.claudeSubscription });
+      ctx.events.emit("acp.authChanged", await authSettings(ctx));
+      return authSettings(ctx);
+    },
     detect: async (ctx, a) => {
       const desc = await ctx.modules.call("workspace", "resolve", { workspaceId: a.workspaceId });
       const p = await resolveProfile(ctx, a.profileId, desc.machineId);
@@ -286,6 +326,44 @@ const mod: AppModule = {
       return null;
     },
     list: () => Array.from(conns.values()).map(publicState),
+
+    /** Installed/latest versions of the known adapters on the workspace's machine. */
+    async adapters(ctx, a) {
+      const desc: WorkspaceDescriptor = await ctx.modules.call("workspace", "resolve", { workspaceId: a.workspaceId });
+      const npm = await npmRunner(ctx, desc);
+      const out: any[] = [];
+      for (const ad of ADAPTERS) {
+        const row: any = { id: ad.id, name: ad.name, pkg: ad.pkg, bin: ad.bin, machineId: desc.machineId, installed: null, latest: null, path: null, error: null };
+        try {
+          if (!npm.ok) throw new Error(npm.error);
+          const ls = await npm.run(["ls", "-g", "--depth=0", "--json", ad.pkg], 60000);
+          try { row.installed = JSON.parse(ls.stdout || "{}").dependencies?.[ad.pkg]?.version || null; } catch { row.installed = null; }
+          const view = await npm.run(["view", ad.pkg, "version"], 60000);
+          row.latest = view.code === 0 ? view.stdout.trim().split("\n").pop() || null : null;
+          if (view.code !== 0) row.error = `cannot reach npm registry: ${view.stderr.trim().split("\n").pop()}`;
+          const d = await detect(ctx, desc, ad.bin);
+          row.path = d.found ? d.path : null;
+        } catch (e) { row.error = errMsg(e); }
+        out.push(row);
+      }
+      return out;
+    },
+
+    /** Install/update one known adapter with `npm install -g <pkg>@latest` on the workspace machine.
+     *  Only accepted from ai-sessions, which obtains the user's approval first. */
+    async installAdapter(ctx, a, meta) {
+      if (meta.caller !== "ai-sessions") throw new Error("adapter installation must be requested through ai-sessions (approval required)");
+      const ad = ADAPTERS.find((x) => x.id === a.adapterId);
+      if (!ad) throw new Error(`unknown adapter ${a.adapterId}`);
+      const desc: WorkspaceDescriptor = await ctx.modules.call("workspace", "resolve", { workspaceId: a.workspaceId });
+      const npm = await npmRunner(ctx, desc);
+      if (!npm.ok) throw new Error(npm.error);
+      const r = await npm.run(["install", "-g", `${ad.pkg}@latest`], 15 * 60 * 1000);
+      const tail = (r.stderr + "\n" + r.stdout).trim().split("\n").slice(-12).join("\n");
+      ctx.events.emit("acp.adaptersChanged", { machineId: desc.machineId, adapterId: ad.id });
+      if (r.code !== 0) throw new Error(`npm install -g ${ad.pkg}@latest failed on ${desc.machineId} (exit ${r.code}):\n${tail}`);
+      return { ok: true, adapterId: ad.id, machineId: desc.machineId, output: tail };
+    },
   },
 };
 export default mod;
