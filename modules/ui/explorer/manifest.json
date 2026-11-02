@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "id": "explorer",
+  "kind": "ui",
+  "entry": "src/index.ts",
+  "moduleApiVersion": 1,
+  "dependencies": ["files","workspace"],
+  "capabilities": [],
+  "stateVersion": 1,
+  "description": "Workspace file explorer."
+}

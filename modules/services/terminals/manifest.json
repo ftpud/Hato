@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "id": "terminals",
+  "kind": "service",
+  "entry": "src/index.ts",
+  "moduleApiVersion": 1,
+  "dependencies": ["workspace"],
+  "capabilities": ["pty.scope","ssh.connect"],
+  "stateVersion": 1,
+  "description": "Maps (workspace, key) to persistent native PTY handles, local or over SSH."
+}

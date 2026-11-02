@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "id": "git-tasks",
+  "kind": "service",
+  "entry": "src/index.ts",
+  "moduleApiVersion": 1,
+  "dependencies": ["persistence","projects","workspace"],
+  "capabilities": ["fs.scope","process.scope","ssh.connect"],
+  "stateVersion": 1,
+  "description": "Git task branches with linked worktrees on the project machine; reconciliation."
+}

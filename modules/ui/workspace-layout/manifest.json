@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "id": "workspace-layout",
+  "kind": "ui",
+  "entry": "src/index.ts",
+  "moduleApiVersion": 1,
+  "dependencies": ["workspace","module-dev"],
+  "capabilities": [],
+  "stateVersion": 1,
+  "description": "Main window composition."
+}

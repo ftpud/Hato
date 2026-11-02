@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "id": "projects",
+  "kind": "service",
+  "entry": "src/index.ts",
+  "moduleApiVersion": 1,
+  "dependencies": ["persistence","workspace","git-tasks"],
+  "capabilities": ["fs.scope","process.scope","ssh.connect","ui.dialog"],
+  "stateVersion": 1,
+  "description": "Local and SSH project registration, git detection, project tree."
+}

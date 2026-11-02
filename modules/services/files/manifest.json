@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "id": "files",
+  "kind": "service",
+  "entry": "src/index.ts",
+  "moduleApiVersion": 1,
+  "dependencies": ["workspace","persistence"],
+  "capabilities": ["fs.scope","ssh.connect","ui.document"],
+  "stateVersion": 1,
+  "description": "Workspace-scoped file listing and native document handles."
+}

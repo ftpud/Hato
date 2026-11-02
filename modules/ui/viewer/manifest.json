@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "id": "viewer",
+  "kind": "ui",
+  "entry": "src/index.ts",
+  "moduleApiVersion": 1,
+  "dependencies": ["files","workspace"],
+  "capabilities": [],
+  "stateVersion": 1,
+  "description": "Read-only syntax-highlighted code viewer."
+}

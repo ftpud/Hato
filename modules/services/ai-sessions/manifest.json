@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "id": "ai-sessions",
+  "kind": "service",
+  "entry": "src/index.ts",
+  "moduleApiVersion": 1,
+  "dependencies": ["persistence","workspace","acp","internal-mcp"],
+  "capabilities": ["approvals.request"],
+  "stateVersion": 1,
+  "description": "Conversation state, transcript persistence, streaming projection, approval policy."
+}

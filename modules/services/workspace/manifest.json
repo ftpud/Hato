@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "id": "workspace",
+  "kind": "service",
+  "entry": "src/index.ts",
+  "moduleApiVersion": 1,
+  "dependencies": ["persistence","projects","git-tasks"],
+  "capabilities": ["events.publish"],
+  "stateVersion": 1,
+  "description": "Resolves and selects workspaces (project root or task worktree) and per-workspace view state."
+}

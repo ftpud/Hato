@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "id": "internal-mcp",
+  "kind": "service",
+  "entry": "src/index.ts",
+  "moduleApiVersion": 1,
+  "dependencies": ["module-dev","workspace"],
+  "capabilities": ["net.loopback","ssh.connect","ssh.forward","fs.scope"],
+  "stateVersion": 1,
+  "description": "Internal MCP server with module tools and skills; local and SSH-bridged endpoints."
+}

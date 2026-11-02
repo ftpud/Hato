@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "_comment": "Install-time capability upper bounds for first-party modules. Compiled into the kernel binary (include_str!), so modules cannot widen it at runtime. 'calls' lists the modules each module may RPC.",
+  "modules": {
+    "persistence":  { "kind": "service", "capabilities": ["db:persistence"], "calls": [] },
+    "workspace":    { "kind": "service", "capabilities": ["events.publish"], "calls": ["persistence", "projects", "git-tasks"] },
+    "projects":     { "kind": "service", "capabilities": ["fs.scope", "process.scope", "ssh.connect", "ui.dialog"], "calls": ["persistence", "workspace", "git-tasks"] },
+    "git-tasks":    { "kind": "service", "capabilities": ["fs.scope", "process.scope", "ssh.connect"], "calls": ["persistence", "projects", "workspace"] },
+    "files":        { "kind": "service", "capabilities": ["fs.scope", "ssh.connect", "ui.document"], "calls": ["workspace", "persistence"] },
+    "terminals":    { "kind": "service", "capabilities": ["pty.scope", "ssh.connect"], "calls": ["workspace"] },
+    "acp":          { "kind": "service", "capabilities": ["process.scope", "ssh.connect"], "calls": ["workspace", "persistence", "ai-sessions", "internal-mcp"] },
+    "ai-sessions":  { "kind": "service", "capabilities": ["approvals.request"], "calls": ["persistence", "workspace", "acp", "internal-mcp"] },
+    "internal-mcp": { "kind": "service", "capabilities": ["net.loopback", "ssh.connect", "ssh.forward", "fs.scope"], "calls": ["module-dev", "workspace"] },
+    "module-dev":   { "kind": "service", "capabilities": ["modules.read", "modules.admin", "modules.source.read", "modules.source.write", "process.build", "fs.scope"], "calls": [] },
+    "workspace-layout": { "kind": "ui", "capabilities": [], "calls": ["workspace", "module-dev", "projects", "ai-sessions"] },
+    "projects-panel":   { "kind": "ui", "capabilities": ["ui.dialog"], "calls": ["projects", "workspace", "git-tasks"] },
+    "explorer":         { "kind": "ui", "capabilities": [], "calls": ["files", "workspace"] },
+    "viewer":           { "kind": "ui", "capabilities": [], "calls": ["files", "workspace"] },
+    "terminal-panel":   { "kind": "ui", "capabilities": [], "calls": ["terminals", "workspace"] },
+    "ai":               { "kind": "ui", "capabilities": [], "calls": ["ai-sessions", "acp", "workspace"] }
+  }
+}

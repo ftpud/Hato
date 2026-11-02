@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "id": "acp",
+  "kind": "service",
+  "entry": "src/index.ts",
+  "moduleApiVersion": 1,
+  "dependencies": ["workspace","persistence","ai-sessions","internal-mcp"],
+  "capabilities": ["process.scope","ssh.connect"],
+  "stateVersion": 1,
+  "description": "Agent Client Protocol client: profiles, transports, sessions, config options."
+}

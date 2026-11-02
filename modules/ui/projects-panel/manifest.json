@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "id": "projects-panel",
+  "kind": "ui",
+  "entry": "src/index.ts",
+  "moduleApiVersion": 1,
+  "dependencies": ["projects","workspace","git-tasks"],
+  "capabilities": ["ui.dialog"],
+  "stateVersion": 1,
+  "description": "Left tree of projects and tasks."
+}

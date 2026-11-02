@@ -1,0 +1,208 @@
+//! PTY sessions with a native terminal emulator (alacritty_terminal) owned by the kernel.
+//! PTY bytes never cross into JS: they are parsed natively and rendered by the GPUI terminal
+//! element. Sessions are independent of module generations and survive TS hot-swaps.
+use crate::util::{HResult, HostError};
+use alacritty_terminal::event::{Event, EventListener};
+use alacritty_terminal::grid::Dimensions;
+use alacritty_terminal::term::{Config as TermConfig, Term};
+use alacritty_terminal::vte::ansi::Processor;
+use parking_lot::Mutex;
+use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
+use serde_json::{json, Value};
+use std::io::{Read, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+
+#[derive(Clone, Copy, Debug)]
+pub struct TermDims {
+    pub cols: usize,
+    pub rows: usize,
+}
+impl Dimensions for TermDims {
+    fn total_lines(&self) -> usize { self.rows }
+    fn screen_lines(&self) -> usize { self.rows }
+    fn columns(&self) -> usize { self.cols }
+}
+
+type SharedWriter = Arc<Mutex<Box<dyn Write + Send>>>;
+
+#[derive(Clone)]
+pub struct Listener {
+    writer: SharedWriter,
+    title: Arc<Mutex<String>>,
+}
+impl EventListener for Listener {
+    fn send_event(&self, event: Event) {
+        match event {
+            Event::PtyWrite(s) => {
+                let mut w = self.writer.lock();
+                let _ = w.write_all(s.as_bytes());
+                let _ = w.flush();
+            }
+            Event::Title(t) => *self.title.lock() = t,
+            _ => {}
+        }
+    }
+}
+
+pub struct PtySession {
+    pub term: Mutex<Term<Listener>>,
+    processor: Mutex<Processor>,
+    writer: SharedWriter,
+    master: Mutex<Box<dyn MasterPty + Send>>,
+    child: Mutex<Box<dyn Child + Send + Sync>>,
+    pub exit: Mutex<Option<String>>,
+    pub size: Mutex<TermDims>,
+    pub title: Arc<Mutex<String>>,
+    pub machine_id: String,
+    pub cwd: String,
+    pub description: String,
+    pub dirty: AtomicBool,
+    pub notify: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    pub bytes_in: std::sync::atomic::AtomicU64,
+}
+
+pub struct PtySpec {
+    pub program: String,
+    pub args: Vec<String>,
+    pub cwd: Option<String>,
+    pub env: Vec<(String, String)>,
+    pub cols: u16,
+    pub rows: u16,
+    pub machine_id: String,
+    pub display_cwd: String,
+}
+
+pub fn open(spec: PtySpec) -> HResult<Arc<PtySession>> {
+    let sys = native_pty_system();
+    let cols = spec.cols.clamp(10, 1000);
+    let rows = spec.rows.clamp(3, 500);
+    let pair = sys
+        .openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
+        .map_err(|e| HostError::new("EPTY", format!("openpty: {e}")))?;
+    let mut cmd = CommandBuilder::new(&spec.program);
+    cmd.args(&spec.args);
+    if let Some(cwd) = &spec.cwd {
+        cmd.cwd(cwd);
+    }
+    cmd.env("TERM", "xterm-256color");
+    cmd.env("COLORTERM", "truecolor");
+    for (k, v) in &spec.env {
+        cmd.env(k, v);
+    }
+    let child = pair.slave.spawn_command(cmd).map_err(|e| HostError::new("ENOEXEC", format!("spawn {}: {e}", spec.program)))?;
+    drop(pair.slave);
+    let mut reader = pair.master.try_clone_reader().map_err(|e| HostError::new("EPTY", e.to_string()))?;
+    let writer: SharedWriter = Arc::new(Mutex::new(pair.master.take_writer().map_err(|e| HostError::new("EPTY", e.to_string()))?));
+    let title = Arc::new(Mutex::new(String::new()));
+    let listener = Listener { writer: writer.clone(), title: title.clone() };
+    let dims = TermDims { cols: cols as usize, rows: rows as usize };
+    let term = Term::new(TermConfig { scrolling_history: 5000, ..TermConfig::default() }, &dims, listener);
+    let sess = Arc::new(PtySession {
+        term: Mutex::new(term),
+        processor: Mutex::new(Processor::new()),
+        writer,
+        master: Mutex::new(pair.master),
+        child: Mutex::new(child),
+        exit: Mutex::new(None),
+        size: Mutex::new(dims),
+        title,
+        machine_id: spec.machine_id,
+        cwd: spec.display_cwd,
+        description: format!("{} {}", spec.program, spec.args.join(" ")),
+        dirty: AtomicBool::new(true),
+        notify: Mutex::new(None),
+        bytes_in: Default::default(),
+    });
+    let s2 = sess.clone();
+    std::thread::Builder::new()
+        .name("pty-reader".into())
+        .spawn(move || {
+            let mut buf = vec![0u8; 64 * 1024];
+            loop {
+                match reader.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => s2.feed(&buf[..n]),
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(_) => break,
+                }
+            }
+            let status = s2.child.lock().wait().map(|s| format!("exited with code {}", s.exit_code())).unwrap_or_else(|e| format!("exited ({e})"));
+            *s2.exit.lock() = Some(status.clone());
+            s2.feed(format!("\r\n\x1b[1;31m[process {status}]\x1b[0m\r\n").as_bytes());
+        })
+        .map_err(HostError::io)?;
+    Ok(sess)
+}
+
+impl PtySession {
+    pub fn feed(&self, bytes: &[u8]) {
+        self.bytes_in.fetch_add(bytes.len() as u64, Ordering::Relaxed);
+        {
+            let mut term = self.term.lock();
+            let mut p = self.processor.lock();
+            p.advance(&mut *term, bytes);
+        }
+        if !self.dirty.swap(true, Ordering::SeqCst) {
+            if let Some(n) = self.notify.lock().clone() {
+                n();
+            }
+        }
+    }
+
+    pub fn write(&self, data: &[u8]) -> HResult<()> {
+        if self.exit.lock().is_some() {
+            return Err(HostError::new("EPIPE", "terminal process has exited"));
+        }
+        let mut w = self.writer.lock();
+        w.write_all(data).and_then(|_| w.flush()).map_err(|e| HostError::new("EPIPE", e.to_string()))
+    }
+
+    pub fn resize(&self, cols: u16, rows: u16) -> HResult<()> {
+        let cols = cols.clamp(10, 1000);
+        let rows = rows.clamp(3, 500);
+        {
+            let mut s = self.size.lock();
+            if s.cols == cols as usize && s.rows == rows as usize {
+                return Ok(());
+            }
+            *s = TermDims { cols: cols as usize, rows: rows as usize };
+        }
+        self.term.lock().resize(TermDims { cols: cols as usize, rows: rows as usize });
+        self.master
+            .lock()
+            .resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
+            .map_err(|e| HostError::new("EPTY", e.to_string()))?;
+        self.dirty.store(true, Ordering::SeqCst);
+        Ok(())
+    }
+
+    pub fn kill(&self) {
+        let _ = self.child.lock().kill();
+    }
+
+    pub fn is_exited(&self) -> bool { self.exit.lock().is_some() }
+
+    pub fn info(&self) -> Value {
+        let s = *self.size.lock();
+        json!({"machineId": self.machine_id, "cwd": self.cwd, "columns": s.cols, "rows": s.rows,
+               "exit": self.exit.lock().clone(), "title": self.title.lock().clone(), "description": self.description,
+               "bytesIn": self.bytes_in.load(Ordering::Relaxed)})
+    }
+
+    /// Plain-text dump of the visible screen (diagnostics / headless tests).
+    pub fn screen_text(&self) -> String {
+        let term = self.term.lock();
+        let content = term.renderable_content();
+        let rows = term.screen_lines();
+        let cols = term.columns();
+        let mut lines = vec![vec![' '; cols]; rows];
+        for cell in content.display_iter {
+            let line = cell.point.line.0 + content.display_offset as i32;
+            if line >= 0 && (line as usize) < rows && cell.point.column.0 < cols {
+                lines[line as usize][cell.point.column.0] = cell.c;
+            }
+        }
+        lines.into_iter().map(|l| l.into_iter().collect::<String>().trim_end().to_string()).collect::<Vec<_>>().join("\n")
+    }
+}

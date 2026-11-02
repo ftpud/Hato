@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "id": "terminal-panel",
+  "kind": "ui",
+  "entry": "src/index.ts",
+  "moduleApiVersion": 1,
+  "dependencies": ["terminals","workspace"],
+  "capabilities": [],
+  "stateVersion": 1,
+  "description": "Native terminal bound to the workspace PTY."
+}

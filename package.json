@@ -1,0 +1,17 @@
+{
+  "name": "hato-modules",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Hot-swappable TypeScript modules for the Hato microkernel",
+  "scripts": {
+    "modules:build": "node tools/build-modules.mjs",
+    "modules:watch": "node tools/build-modules.mjs --watch",
+    "typecheck": "tsc --noEmit -p .",
+    "test": "npm run typecheck && node --test tests/ts/"
+  },
+  "devDependencies": {
+    "esbuild": "0.24.2",
+    "typescript": "5.7.3"
+  }
+}

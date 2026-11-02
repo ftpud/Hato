@@ -1,0 +1,208 @@
+// Hato module SDK types (moduleApiVersion 1, host ABI 1).
+// This file describes the ModuleContext the kernel prelude provides inside every module
+// generation's private QuickJS runtime. There are NO Node APIs: all privileged work goes through
+// `ctx.host`, a capability broker implemented by the Rust kernel.
+
+export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
+/** Opaque, kernel-owned handle. Unforgeable: the kernel checks kind and owning module on every use. */
+export type Handle = string;
+
+export type ExecutionTarget =
+  | { kind: "local" }
+  | { kind: "ssh"; connection: Handle; machineId: string };
+
+export interface HostError extends Error { code: string }
+
+export interface ScopeGrantRequest {
+  kind: "fs" | "process" | "pty" | "source" | "build";
+  /** Absolute root ON the target machine (ignored for source/build). */
+  root?: string;
+  target?: ExecutionTarget;
+  write?: boolean;
+  purpose?: string;
+}
+export interface ScopeGrant { grant: Handle; root: string; machineId: string; kind: string; write: boolean }
+
+export interface FileEntry { name: string; kind: "dir" | "file" | "symlink" | "other"; size: number; symlink: boolean }
+export interface FileStat { kind: string; size: number; mtime: number | null; path: string }
+export interface FileRead { path: string; binary: boolean; size: number; truncated: boolean; text?: string; base64?: string }
+
+export interface SpawnRequest {
+  target?: ExecutionTarget;
+  executable: string;
+  args: string[];
+  cwd: string;
+  env?: Record<string, string>;
+  /** Remote only: run through the user's login shell so PATH from profile files applies. */
+  loginShell?: boolean;
+}
+export interface RunResult { code: number | null; signal: number | null; stdout: string; stderr: string; truncated: boolean }
+export interface PtyRequest { target?: ExecutionTarget; cwd: string; shell?: string; columns: number; rows: number; env?: Record<string, string> }
+
+export interface SshProfileSpec { profileId: string; host: string; port: number; user: string; identityFile?: string | null }
+export interface SqlStatement { sql: string; params?: Json[] }
+
+export interface StreamSubscription { subId: string; close(): Promise<void> }
+export interface StreamOptions { channel?: "stdout" | "stderr"; encoding?: "utf8" | "base64"; highWaterMark?: number }
+
+export interface ApprovalOption { id: string; label: string; kind?: "allow" | "deny" | "neutral" }
+
+export interface NativeHost {
+  readonly abiVersion: 1;
+  env: { info(): EnvInfo };
+  capabilities: {
+    request(req: ScopeGrantRequest): Promise<ScopeGrant>;
+    release(grant: Handle): Promise<void>;
+  };
+  fs: {
+    stat(grant: Handle, path: string): Promise<FileStat>;
+    list(grant: Handle, path: string): Promise<{ path: string; entries: FileEntry[] }>;
+    realpath(grant: Handle, path: string): Promise<string>;
+    read(grant: Handle, path: string, limitBytes?: number): Promise<FileRead>;
+    writeAtomic(grant: Handle, path: string, text: string, opts?: { reason?: string; mode?: number }): Promise<{ path: string; bytes: number }>;
+    mkdir(grant: Handle, path: string): Promise<{ path: string }>;
+  };
+  process: {
+    spawn(grant: Handle, request: SpawnRequest): Promise<{ handle: Handle; pid: number; machineId: string }>;
+    run(grant: Handle, request: SpawnRequest, opts?: { timeoutMs?: number; limitBytes?: number; stdin?: string }): Promise<RunResult>;
+    write(handle: Handle, text: string): Promise<void>;
+    closeStdin(handle: Handle): Promise<void>;
+    terminate(handle: Handle, signal?: string): Promise<void>;
+    wait(handle: Handle): Promise<{ code: number | null; signal: number | null } | null>;
+    info(handle: Handle): Promise<Json>;
+  };
+  pty: {
+    open(grant: Handle, req: PtyRequest): Promise<{ handle: Handle; machineId: string; cwd: string }>;
+    write(pty: Handle, text: string): Promise<void>;
+    resize(pty: Handle, columns: number, rows: number): Promise<void>;
+    close(pty: Handle): Promise<void>;
+    info(pty: Handle): Promise<{ machineId: string; cwd: string; columns: number; rows: number; exit: string | null; screen: string }>;
+  };
+  ssh: {
+    connect(profile: SshProfileSpec): Promise<{ connection: Handle; machineId: string; home: string | null }>;
+    status(connection: Handle): Promise<{ alive: boolean; machineId: string; lastError: string | null }>;
+    disconnect(connection: Handle): Promise<void>;
+    forwardLoopback(connection: Handle, request: { listener: Handle }): Promise<{ handle: Handle; remotePort: number; localPort: number }>;
+    cancelForward(handle: Handle): Promise<void>;
+  };
+  net: {
+    listenLoopback(): Promise<{ handle: Handle; port: number }>;
+    write(handle: Handle, text: string): Promise<void>;
+    close(handle: Handle): Promise<void>;
+  };
+  db: {
+    openNamespace(namespace: string): Promise<Handle>;
+    query<T = Record<string, Json>>(db: Handle, sql: string, params?: Json[]): Promise<T[]>;
+    exec(db: Handle, sql: string, params?: Json[]): Promise<{ changes: number; lastInsertRowid?: number }>;
+    transaction(db: Handle, statements: SqlStatement[]): Promise<{ changes: number }>;
+  };
+  streams: {
+    listen(handle: Handle, opts: StreamOptions | undefined, onData: (chunk: string) => void, onEnd?: (err: HostError | null) => void): Promise<StreamSubscription>;
+    subscribe(handle: Handle, opts?: StreamOptions): AsyncIterable<string>;
+    unsubscribe(subId: string): Promise<void>;
+  };
+  resources: {
+    retainForWorkspace(handle: Handle, stableKey: string): Promise<void>;
+    lookup(stableKey: string): Promise<Handle | null>;
+    info(handle: Handle): Promise<Json>;
+    release(handle: Handle): Promise<void>;
+  };
+  modules: {
+    list(): Promise<ModuleStatus[]>;
+    describe(id: string): Promise<Json>;
+    logs(id: string, limit?: number): Promise<Json[]>;
+    stageArtifact(id: string, code: string): Promise<{ stageId: string; id: string; version: number; label: string; sha256: string }>;
+    activate(id: string, stageId: string): Promise<{ ok: boolean; version: number; label: string; previous: string | null; swapMs: number }>;
+    rollback(id: string, opts?: { toVersion?: number }): Promise<{ ok: boolean; version: number; label: string; previous: string | null }>;
+    discard(stageId: string): Promise<void>;
+    sourceInfo(): Promise<{ repoRoot: string; modulesRoot: string; buildTool: string | null }>;
+  };
+  approvals: {
+    request(req: { title: string; detail?: string; options?: ApprovalOption[]; operation?: string; timeoutMs?: number }): Promise<{ optionId: string | null; expired?: boolean }>;
+  };
+  ui: {
+    invalidate(moduleId?: string): void;
+    documentOpen(workspaceKey: string, text: string, language: string, opts?: { path?: string }): Promise<Handle>;
+    pickFolder(): Promise<string | null>;
+    toast(level: "info" | "warn" | "error", text: string): void;
+  };
+}
+
+export interface EnvInfo {
+  abiVersion: 1; appName: string; platform: string; arch: string; home: string | null;
+  dataDir: string; sharedDir: string; initialRoot: string | null; repoRoot: string; uptimeMs: number; headless: boolean;
+}
+
+export interface ModuleStatus {
+  id: string; kind: "service" | "ui";
+  active: { version: number; generation: number; label: string; sha256: string; capabilities: string[] } | null;
+  lastKnownGood: number | null; previous: number[];
+  versions: { version: number; sha256: string; created: string; origin: string; status: string; note: string }[];
+  generations: { generation: number; version: number; status: string; inflight: number; errors: number; subscriptions: number }[];
+  lastError: string | null; fenced: boolean;
+}
+
+export interface ModuleContext {
+  readonly moduleId: string;
+  readonly generation: number;
+  readonly version: number;
+  readonly host: NativeHost;
+  modules: { call<T = any>(id: string, method: string, args?: Json | object, opts?: { timeoutMs?: number }): Promise<T> };
+  events: { emit(topic: string, payload?: Json | object): void; on(topic: string, listener: (payload: any) => void): () => void };
+  state: { get<T = Json>(key: string): T | undefined; set(key: string, value: Json | object): void; watch(key: string, listener: (value: any) => void): () => void };
+  ui: { invalidate(): void };
+  log: Console;
+}
+
+export interface CallMeta { caller: string }
+
+export interface AppModule {
+  id: string;
+  moduleApiVersion: 1;
+  activate?(ctx: ModuleContext, previousState?: any): Promise<void> | void;
+  deactivate?(ctx: ModuleContext): Promise<void> | void;
+  snapshot?(ctx: ModuleContext): Promise<Json | object> | Json | object;
+  /** Return { ok: false, reason } to defer a hot swap (e.g. while a protocol session is busy). */
+  canSwap?(ctx: ModuleContext): Promise<{ ok: boolean; reason?: string }> | { ok: boolean; reason?: string };
+  render?(ctx: ModuleContext): UiNode | Promise<UiNode>;
+  onEvent?(ctx: ModuleContext, event: UiEvent): Promise<void> | void;
+  methods?: Record<string, (ctx: ModuleContext, args: any, meta: CallMeta) => any>;
+}
+
+// ---- Keyed UI protocol ---------------------------------------------------------------------------
+export interface UiEvent {
+  action: string;
+  key: string;
+  /** Row key for tree/fileList; selected value for select/toggle/tabs. */
+  rowKey?: string;
+  value?: Json;
+  /** Current text of every textInput in this module's tree (read natively at event time). */
+  inputs: Record<string, string>;
+}
+
+interface Base { key: string; grow?: boolean; width?: number; height?: number; minWidth?: number; padding?: number; gap?: number; bg?: "panel" | "muted" | "accent" | "none"; border?: boolean; tooltip?: string }
+export type UiNode =
+  | (Base & { type: "row" | "column"; children: UiNode[]; align?: "start" | "center" | "end"; scroll?: boolean })
+  | (Base & { type: "split"; direction: "horizontal" | "vertical"; sizes?: number[]; children: UiNode[] })
+  | (Base & { type: "scroll"; children: UiNode[] })
+  | (Base & { type: "tabs"; tabs: { key: string; label: string }[]; active: string; action: string; children: UiNode[] })
+  | (Base & { type: "slot"; module: string })
+  | (Base & { type: "label"; text: string; size?: "xs" | "sm" | "md" | "lg"; weight?: "normal" | "bold"; color?: "default" | "muted" | "accent" | "danger" | "success" | "warning"; mono?: boolean; wrap?: boolean })
+  | (Base & { type: "button"; text: string; action: string; variant?: "primary" | "ghost" | "danger" | "default"; disabled?: boolean; value?: Json; small?: boolean })
+  | (Base & { type: "textInput"; placeholder?: string; value?: string; submitAction?: string; secret?: boolean; multiline?: boolean; rows?: number; disabled?: boolean })
+  | (Base & { type: "select"; options: { value: string; label: string; disabled?: boolean }[]; value: string | null; action: string; disabled?: boolean; placeholder?: string; label?: string; disabledReason?: string })
+  | (Base & { type: "toggle"; label: string; checked: boolean; action: string; disabled?: boolean })
+  | (Base & { type: "tree"; rows: TreeRow[]; selectAction: string; expandAction: string })
+  | (Base & { type: "fileList"; entries: { key: string; name: string; kind: string; size?: number; selected?: boolean }[]; action: string })
+  | (Base & { type: "status"; text: string; level?: "info" | "warn" | "error" | "success" })
+  | (Base & { type: "progress"; value?: number; indeterminate?: boolean; label?: string })
+  | (Base & { type: "codeViewer"; document: Handle | null; placeholder?: string })
+  | (Base & { type: "terminal"; pty: Handle | null; placeholder?: string })
+  | (Base & { type: "chatTranscript"; messages: ChatMessage[] })
+  | (Base & { type: "approvalPanel" })
+  | (Base & { type: "divider" })
+  | (Base & { type: "spacer" })
+  | (Base & { type: "modal"; title: string; children: UiNode[]; closeAction?: string });
+
+export interface TreeRow { key: string; label: string; depth: number; expandable: boolean; expanded: boolean; selected: boolean; badge?: string; detail?: string; icon?: "folder" | "git" | "remote" | "task" | "file" | "warning" }
+export interface ChatMessage { key: string; role: "user" | "assistant" | "thought" | "tool" | "system" | "error" | "plan"; text: string; title?: string; status?: string }
