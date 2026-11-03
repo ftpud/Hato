@@ -333,6 +333,18 @@ const mod: AppModule = {
       const c = await load(ctx, a.conversationId);
       if (images.length && c.live && !c.live.agentCapabilities?.promptCapabilities?.image) throw new Error("This agent does not support image prompts.");
       if (c.submitting) throw new Error("The previous message is still being submitted. Try again in a moment.");
+      if (c.busy && c.steering.length === 0) {
+        // Preferred: inject into the running turn (ACP `_session/steering`), no interruption.
+        let outcome = "unsupported";
+        try { outcome = (await ctx.modules.call("acp", "steer", { conversationId: c.row.id, text, images })).outcome; }
+        catch (e) { ctx.log.warn("steering failed; falling back to interrupt", errMsg(e)); }
+        if (outcome === "steered") { add(c, "user", { text, images }); notify(); await flush(ctx); return { accepted: true, steering: true }; }
+        if (outcome === "promptRequired" && c.busy) {
+          // The turn is finishing; send this as the next prompt when it ends (no cancel needed).
+          c.steering.push({ text, images }); add(c, "user", { text, images }); notify(); await flush(ctx);
+          return { accepted: true, steering: true };
+        }
+      }
       if (c.busy) {
         const first = c.steering.length === 0;
         imageAttachments([...c.steering.flatMap((p) => p.images), ...images]);
@@ -456,7 +468,7 @@ const mod: AppModule = {
         chosen = r.optionId; how = r.expired ? "expired" : "user";
       }
       const label = options.find((o) => o.optionId === chosen)?.name || (chosen ? chosen : "cancelled");
-      add(c, "system", { text: `Permission for "${tool.title || tool.kind || "tool"}": ${label} (${how})` });
+      ctx.log.info(`permission "${tool.title || tool.kind || "tool"}": ${label} (${how})`);
       flushSoon(); notify();
       if (!chosen) return { outcome: { outcome: "cancelled" } };
       if (reject && chosen === reject.optionId) return { outcome: { outcome: "selected", optionId: chosen } };

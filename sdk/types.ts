@@ -268,7 +268,7 @@ export type UiNode =
       terminal?: { light?: string[]; dark?: string[] };
       chrome?: { toasts?: { position?: "bottom-right" | "bottom-left" | "top-right" | "top-left"; width?: number; durationMs?: number; max?: number } } })
   | (Base & { type: "titleBar"; children: UiNode[] })
-  | (Base & { type: "row" | "column"; children: UiNode[]; align?: "start" | "center" | "end" | "stretch"; wrap?: boolean; scroll?: boolean })
+  | (Base & { type: "row" | "column"; children: UiNode[]; /** Embedded wallpaper, cover-cropped behind children. */ backgroundImage?: ImageAttachment; align?: "start" | "center" | "end" | "stretch"; wrap?: boolean; scroll?: boolean })
   | (Base & { type: "split"; direction: "horizontal" | "vertical"; sizes?: number[]; children: UiNode[];
       /** Fixed size in px per child (null = flexible). */ fixed?: (number | null)[]; minSize?: number; resizable?: boolean;
       /** Fired once when a divider drag ends: value {sizes}. */ resizeAction?: string;

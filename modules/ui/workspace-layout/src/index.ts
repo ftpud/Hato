@@ -9,6 +9,8 @@
 import type { AppModule, ModuleContext, UiNode } from "../../../../sdk/types";
 import { exportSettings } from "../../../../sdk/settings";
 import { fontOptions, typography } from "../../../../sdk/typography";
+import { animePalette, animeTerminal } from "./anime";
+import { animeWallpaper } from "./anime-wallpaper";
 import { colorScheme } from "../../../../sdk/color-scheme";
 import { debounce, errMsg } from "../../../../sdk/runtime";
 import { BAR_ITEMS, PANELS, defaultLayout, dropPanel, homeOf, locate, moveBarItem, moveTo, panelSignature, removeBarItem, repair, setPanels, type BarId, type Layout, type PanelDef } from "./model";
@@ -23,6 +25,10 @@ let mode: "light" | "dark" | "system" = "system";
 const modeOptions = [{ value: "dark", label: "Dark" }, { value: "light", label: "Light" }, { value: "system", label: "Keep current" }];
 const sizeOptions = [{ value: "14", label: "Small" }, { value: "15", label: "Compact" }, { value: "16", label: "Standard" }, { value: "18", label: "Large" }];
 const weightOptions = [{ value: "400", label: "Regular" }, { value: "500", label: "Medium" }];
+let appearanceTheme = "classic";
+let panelOpacity = "balanced";
+const themeOptions = [{ value: "classic", label: "Classic" }, { value: "anime", label: "Anime · Sakura Twilight" }];
+const opacityOptions = [{ value: "airy", label: "Airy · 40%" }, { value: "balanced", label: "Balanced · 60%" }, { value: "solid", label: "Readable · 85%" }];
 let ws: any = null;
 let modules: any[] = [];
 let showModules = false;
@@ -107,7 +113,7 @@ function panelHeader(id: string, mode: "dock" | "float" | "window"): UiNode {
 
 function panelBody(id: string, mode: "dock" | "float" | "window"): UiNode {
   const collapsed = mode === "dock" && !!layout.collapsed[id];
-  return { type: "column", key: "panel-" + id, grow: true, bg: "panel", children: [
+  return { type: "column", key: "panel-" + id, grow: true, bg: "panel", ...(appearanceTheme === "anime" ? { style: { radius: 16, borderWidth: 1, borderColor: "border", shadow: "lg" as const, padding: 6 } } : {}), children: [
     ...(mode === "dock" || layout.showPanelControls ? [panelHeader(id, mode)] : []),
     ...(collapsed ? [] : [{ type: "slot", key: "slot", module: PANELS[id].slot, grow: true } as UiNode]),
   ] };
@@ -350,9 +356,17 @@ const mod: AppModule = {
     fontWeight = weightOptions.some(option => option.value === savedWeight) ? savedWeight : "400";
     const savedMode = await ctx.modules.call("persistence", "settings.get", { key: "appearance.mode" });
     mode = savedMode === "light" || savedMode === "dark" ? savedMode : "system";
+    const savedTheme = await ctx.modules.call("persistence", "settings.get", { key: "appearance.theme" });
+    appearanceTheme = themeOptions.some(option => option.value === savedTheme) ? savedTheme : "classic";
+    const savedOpacity = await ctx.modules.call("persistence", "settings.get", { key: "appearance.panelOpacity" });
+    panelOpacity = opacityOptions.some(option => option.value === savedOpacity) ? savedOpacity : "balanced";
     exportSettings(ctx, () => [{ key: "appearance", title: "Appearance", fields: [
+      { key: "theme", label: "Theme", type: "select", value: appearanceTheme, options: themeOptions,
+        description: "Sakura Twilight pairs an original anime wallpaper with floating indigo glass and pink accents." },
+      { key: "panelOpacity", label: "Anime panel opacity", type: "select", value: panelOpacity, options: opacityOptions,
+        description: "Keep the scenery visible or increase opacity for easier reading." },
       { key: "mode", label: "Color mode", type: "select", value: mode, options: modeOptions,
-        description: "Soft blue and white surfaces with indigo accents in light mode. Colors come from sdk/color-scheme.ts." },
+        description: "Classic follows this color mode. Sakura Twilight uses its own twilight palette." },
     ] }, { key: "typography", title: "Typography", fields: [
       { key: "fontFamily", label: "Interface font", type: "select", value: fontFamily, options: fontOptions,
         description: "Applies to panels, chat, file previews and terminals. JetBrains Mono is bundled." },
@@ -360,6 +374,15 @@ const mod: AppModule = {
       { key: "fontWeight", label: "Text weight", type: "select", value: fontWeight, options: weightOptions },
     ] }], async (section, key, value) => {
       if (section === "appearance") {
+        if (key === "theme" || key === "panelOpacity") {
+          const options = key === "theme" ? themeOptions : opacityOptions;
+          if (!options.some(option => option.value === value)) throw new Error("Invalid appearance preference");
+          await ctx.modules.call("persistence", "settings.set", { key: `appearance.${key}`, value });
+          if (key === "theme") appearanceTheme = String(value);
+          else panelOpacity = String(value);
+          ctx.ui.invalidate();
+          return;
+        }
         if (key !== "mode" || !modeOptions.some(option => option.value === value)) throw new Error("Invalid appearance preference");
         await ctx.modules.call("persistence", "settings.set", { key: "appearance.mode", value });
         mode = value as typeof mode;
@@ -416,7 +439,7 @@ const mod: AppModule = {
     resetLayout: (ctx) => { set(ctx, defaultLayout()); return layout; },
   },
   render(): UiNode {
-    const kids: UiNode[] = [{ type: "theme", key: "color-scheme", palette: colorScheme, typography: typography(fontFamily, fontSize, fontWeight), ...(mode === "system" ? {} : { mode }) }];
+    const kids: UiNode[] = [{ type: "theme", key: "color-scheme", palette: appearanceTheme === "anime" ? animePalette(panelOpacity) : colorScheme, ...(appearanceTheme === "anime" ? { terminal: { light: animeTerminal, dark: animeTerminal } } : {}), typography: typography(fontFamily, fontSize, fontWeight), ...(mode === "system" ? {} : { mode }) }];
     const top = barNode("top");
     if (top) kids.push(top);
     if (!["top", "bottom"].some((b) => layout.bars[b as BarId].visible && layout.bars[b as BarId].items.includes("layoutMenu"))) {
@@ -433,9 +456,10 @@ const mod: AppModule = {
     const sidebars = (side: "left" | "right") => (side === "left" ? layout.showLeftSidebar : layout.showRightSidebar)
       ? (contributions?.sidebars || []).filter((s) => s.side === side).map((s) => ({ type: "slot", key: `sidebar:${s.module}`, module: s.module, width: s.width || 44 } as UiNode))
       : [];
+    // Bars and sidebars keep classic spacing in every theme; only the panel area floats inset.
     kids.push({ type: "row", key: "workspace-content", grow: true, align: "stretch", children: [
       ...sidebars("left"),
-      { type: "column", key: "workspace-panels", grow: true, children: [dockArea(), ...(collapsed ? [collapsed] : [])] },
+      { type: "column", key: "workspace-panels", grow: true, ...(appearanceTheme === "anime" ? { padding: 8 } : {}), children: [dockArea(), ...(collapsed ? [collapsed] : [])] },
       ...sidebars("right"),
     ] });
     const bottom = barNode("bottom");
@@ -448,7 +472,7 @@ const mod: AppModule = {
     }
     if (showLayout) kids.push(layoutMenu());
     if (showModules) kids.push(modulesModal());
-    return { type: "column", key: "layout-root", grow: true, bg: "accent", children: kids };
+    return { type: "column", key: "layout-root", grow: true, ...(appearanceTheme === "anime" ? { backgroundImage: animeWallpaper, style: { background: "#11152b" } } : { bg: "accent" as const }), children: kids };
   },
   async onEvent(ctx, ev) {
     const v: any = ev.value;

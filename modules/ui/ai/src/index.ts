@@ -117,7 +117,7 @@ async function load(ctx: ModuleContext) {
       backgroundPage=page;
       const session=page.session;
       view={profiles:[session.profile],conversations:[],activeId:session.id,active:{
-        conversation:{id:session.id,title:session.name,acpProfileId:session.profile.id,status:session.status,approvalPolicy:"ask",mcpSelection:session.mcps.map(m=>m.id)},
+        conversation:{id:session.id,title:session.name,acpProfileId:session.profile.id,status:session.status,approvalPolicy:session.autopilot?"autopilot":"ask",mcpSelection:session.mcps.map(m=>m.id)},
         live:{...session,profileId:session.profile.id},messages:page.messages,windowed:true,hasOlder:page.before!==null,hasLoadedOlder:false,hasNewer:historyBefore.length>0,
         busy:["busy","waiting"].includes(session.status),steering:page.queued.length,
       }};
@@ -212,6 +212,8 @@ const mod: AppModule = {
       if(response.error)pending.reject(new Error(response.error));else pending.resolve(response.value);
     });
     ctx.events.on("agents-panel.openChat",(selection:any)=>{void openBackground(ctx,selection);});
+    ctx.events.on("agents-panel.agentRemoved",(e:any)=>{if(e?.id){backgroundDrafts.delete(e.id);if(background?.id===e.id){leaveBackground(ctx);void load(ctx);}}});
+    ctx.events.on("agents-panel.agentCleared",(e:any)=>{if(background?.id===e?.id){resetChatWindows();void load(ctx);}});
     ctx.events.on("ai-sessions.changed", () => refresh());
     ctx.events.on("acp.status", () => refresh());
     ctx.events.on("acp.adaptersChanged", () => { if (adaptersOpen) loadAdapters(ctx); });
@@ -254,7 +256,7 @@ const mod: AppModule = {
       iconButton("new", "plus", "newChat", "New chat"),
       iconButton("history-toggle", "message-square", "toggleHistory", "Chat history"),
     ] };
-    if(background)header.children=header.children.filter(n=>!["auto","new","history-toggle"].includes(n.key));
+    if(background)header.children=header.children.filter(n=>!["new","history-toggle"].includes(n.key)).map(n=>n.key==="auto"?{...n,tooltip:"Autopilot: approve this background agent's tool permissions and Git task creation automatically, even while Hato is closed."}:n);
     const kids: UiNode[] = [header];
     if(background) {
       kids.push({type:"row",key:"background-session",padding:8,gap:6,children:[
@@ -385,6 +387,7 @@ const mod: AppModule = {
         }else if(ev.action==="chooseModel") {await persistent(ctx,"setModel",{model:ev.value});modelsOpen=false;}
         else if(ev.action==="cancel")await persistent(ctx,"cancel");
         else if(ev.action==="stopBackground")await persistent(ctx,"stop");
+        else if(ev.action==="toggleAuto")await persistent(ctx,"setAutopilot",{enabled:!!ev.value});
         else if(ev.action==="reconnect"||ev.action==="connect")await persistent(ctx,"reconnect");
         else if(ev.action==="reviewBackgroundPermission")await persistent(ctx,"reviewPermission",{permissionId:ev.value});
         else if(["revealOlder","loadOlder","olderMessages"].includes(ev.action)) {

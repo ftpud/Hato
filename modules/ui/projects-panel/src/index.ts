@@ -13,8 +13,24 @@ let sshForm = false;
 let addForm = false;
 let filter = "";
 let taskFormFor: string | null = null;
+// workspaceId -> number of working AI chats (ai-sessions) and background agents (persistent-agents).
+let chatBusy: Record<string, number> = {};
+let agentBusy: Record<string, number> = {};
 let aiBusy: Record<string, number> = {};
-const busyText = (n: number) => `AI working${n > 1 ? ` in ${n} chats` : ""}`;
+const busyText = (n: number) => `AI working${n > 1 ? ` (${n})` : ""}`;
+// Busy rows swap their icon for a rotating spinner; frames only tick while something is working.
+let frame = 0;
+let animation: ReturnType<typeof setInterval> | null = null;
+const spinnerSvg = () => `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="8" opacity="0.2"/><path d="M12 4a8 8 0 0 1 8 8" stroke-linecap="round" transform="rotate(${frame * 30} 12 12)"/></svg>`;
+function updateBusy(ctx: ModuleContext) {
+  aiBusy = { ...chatBusy };
+  for (const [k, n] of Object.entries(agentBusy)) aiBusy[k] = (aiBusy[k] || 0) + n;
+  const working = Object.values(aiBusy).some((n) => n > 0);
+  if (working && !animation) animation = setInterval(() => { frame = (frame + 1) % 12; ctx.ui.invalidate(); }, 80);
+  else if (!working && animation) { clearInterval(animation); animation = null; }
+  ctx.ui.invalidate();
+}
+const asCounts = (v: any): Record<string, number> => (v && typeof v === "object" ? v : {});
 
 async function reload(ctx: ModuleContext) {
   try { tree = await ctx.modules.call("projects", "tree"); error = null; }
@@ -35,19 +51,18 @@ function rows(): TreeRow[] {
     // A collapsed project also reports activity in its hidden tasks.
     const busyCount = (aiBusy[key] || 0) + (open ? 0 : p.tasks.reduce((n: number, t: any) => n + (aiBusy[`task:${t.id}`] || 0), 0));
     out.push({
-      busy: busyCount > 0,
       key, label: p.name, depth: 0, expandable: tasks.length > 0, expanded: !!query || p.expanded, selected: selected === key,
       badge: p.offline ? "Offline" : tasks.length ? `${tasks.length} ${tasks.length === 1 ? "task" : "tasks"}` : undefined,
       detail: p.offline ? `Offline · ${p.offline}` : busyCount ? `${busyText(busyCount)} · ${location}` : location,
       icon: p.offline ? "warning" : p.kind === "ssh" ? "remote" : "folder",
-      iconSvg: p.offline ? uiIcons.warning : p.kind === "ssh" ? uiIcons.terminal : uiIcons.folder, iconColor: "muted", weight: "semibold",
+      iconSvg: busyCount ? spinnerSvg() : p.offline ? uiIcons.warning : p.kind === "ssh" ? uiIcons.terminal : uiIcons.folder, iconColor: busyCount ? "primary" : "muted", weight: "semibold",
     });
     if (query || p.expanded) for (const [index, t] of tasks.entries()) {
       const tk = `task:${t.id}`;
       const taskBusy = aiBusy[tk] || 0;
-      out.push({ busy: taskBusy > 0, key: tk, label: t.name, connector: index === tasks.length - 1 ? "last" : "branch", depth: 1, expandable: false, expanded: false, selected: selected === tk,
+      out.push({ key: tk, label: t.name, connector: index === tasks.length - 1 ? "last" : "branch", depth: 1, expandable: false, expanded: false, selected: selected === tk,
         badge: t.status !== "ready" ? t.status : undefined, detail: taskBusy ? `${busyText(taskBusy)} · ${t.branch}` : t.branch, icon: t.status === "ready" ? "task" : "warning",
-        iconSvg: t.status === "ready" ? uiIcons["git-branch"] : uiIcons.warning, iconColor: "muted" });
+        iconSvg: taskBusy ? spinnerSvg() : t.status === "ready" ? uiIcons["git-branch"] : uiIcons.warning, iconColor: taskBusy ? "primary" : "muted" });
     }
   }
   return out;
@@ -70,12 +85,16 @@ const mod: AppModule = {
     const sel: any = ctx.state.get("workspace.selected");
     selected = sel ? sel.id : null;
     ctx.state.watch("workspace.selected", (v: any) => { selected = v ? v.id : null; ctx.ui.invalidate(); });
-    aiBusy = (ctx.state.get("ai-sessions.busy") as any) || {};
-    ctx.state.watch("ai-sessions.busy", (v: any) => { aiBusy = v && typeof v === "object" ? v : {}; ctx.ui.invalidate(); });
+    chatBusy = asCounts(ctx.state.get("ai-sessions.busy"));
+    agentBusy = asCounts(ctx.state.get("persistent-agents.busy"));
+    ctx.state.watch("ai-sessions.busy", (v: any) => { chatBusy = asCounts(v); updateBusy(ctx); });
+    ctx.state.watch("persistent-agents.busy", (v: any) => { agentBusy = asCounts(v); updateBusy(ctx); });
+    updateBusy(ctx);
     ctx.events.on("projects.changed", () => reload(ctx));
     ctx.events.on("git-tasks.changed", () => reload(ctx));
     await reload(ctx);
   },
+  deactivate() { if (animation) clearInterval(animation); animation = null; },
   snapshot: () => ({ sshForm, taskFormFor, addForm, filter }),
   render(): UiNode {
     const proj = selectedProject();
@@ -102,11 +121,12 @@ const mod: AppModule = {
           { type: "label", key: "tf-l", text: `New Git task in ${proj.name}`, size: "sm", weight: "bold" },
           ...(error ? [{ type: "status", key: "task-error", text: error, level: "error" } as UiNode] : []),
           { type: "textInput", key: "task-name", placeholder: "Task name (e.g. Fix login bug)", submitAction: "createTask" },
+          { type: "textInput", key: "task-branch", placeholder: "Branch (optional, e.g. feature/login-fix)", submitAction: "createTask" },
           { type: "row", key: "tf-b", gap: 4, children: [
             { type: "button", key: "tf-create", text: "Create worktree", action: "createTask", variant: "primary", small: true, disabled: !!busy },
             { type: "button", key: "tf-cancel", text: "Cancel", action: "cancelTask", small: true },
           ] },
-          { type: "label", key: "tf-hint", text: "Creates a separate branch and worktree from HEAD. Uncommitted changes stay in the original project.", size: "xs", color: "muted", wrap: true },
+          { type: "label", key: "tf-hint", text: "Creates a worktree on its own branch. Leave Branch empty to generate task/<name>; an existing local or remote branch is checked out, otherwise a new one starts from HEAD. Uncommitted changes stay in the original project.", size: "xs", color: "muted", wrap: true },
         ] });
       }
     }
@@ -181,9 +201,10 @@ const mod: AppModule = {
       case "cancelTask": taskFormFor = null; break;
       case "createTask": {
         const name = (ev.inputs["task-name"] || "").trim();
+        const branch = (ev.inputs["task-branch"] || "").trim();
         const projectId = taskFormFor;
-        if (!name || !projectId) { error = "Enter a task name"; break; }
-        const r = await run("Creating worktree…", () => ctx.modules.call("git-tasks", "create", { projectId, name }, { timeoutMs: 300000 }));
+        if ((!name && !branch) || !projectId) { error = "Enter a task name or a branch"; break; }
+        const r = await run("Creating worktree…", () => ctx.modules.call("git-tasks", "create", { projectId, name, branch }, { timeoutMs: 300000 }));
         if (r) { taskFormFor = null; notice = r.warning || null; }
         break;
       }

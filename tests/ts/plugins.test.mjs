@@ -5,11 +5,11 @@ import { P, builtinPlugins, builtinPanelDefs } from "./plugin-fixture.mjs";
 
 test("built-in manifests contribute the default panels, sidebars and overlays", () => {
   const c = P.collectContributions(builtinPlugins());
-  assert.deepEqual(Object.keys(c.panels).sort(), ["agents", "ai", "files", "git", "mcps", "projects", "remote", "terminal", "viewer"]);
+  assert.deepEqual(Object.keys(c.panels).sort(), ["agents", "ai", "files", "git", "git-changes", "mcps", "projects", "remote", "terminal", "viewer"]);
   assert.equal(c.panels.files.module, "explorer");
   assert.deepEqual(c.sidebars.map((s) => [s.module, s.side]), [["left-sidebar", "left"], ["sidebar", "right"]]);
   assert.deepEqual(c.overlays.map((o) => o.module), ["settings"]);
-  assert.deepEqual(P.activityPanels(c, "right").map((p) => p.id), ["projects", "files", "agents", "mcps", "git", "remote"]);
+  assert.deepEqual(P.activityPanels(c, "right").map((p) => p.id), ["projects", "files", "agents", "mcps", "git", "git-changes", "remote"]);
   assert.deepEqual(P.activityPanels(c, "left").map((p) => p.id), ["ai", "terminal"]);
 });
 
@@ -19,7 +19,7 @@ test("disabled plugins contribute nothing; a user plugin can add a panel and sid
   const c = P.collectContributions(list);
   assert.ok(!c.panels.git);
   assert.equal(c.panels.notes.module, "notes");
-  assert.deepEqual(P.activityPanels(c, "right").map((p) => p.id), ["notes", "projects", "files", "agents", "mcps", "remote"]);
+  assert.deepEqual(P.activityPanels(c, "right").map((p) => p.id), ["notes", "projects", "files", "agents", "mcps", "git-changes", "remote"]);
   const defs = builtinPanelDefs(list);
   assert.deepEqual(defs.notes.dock, { column: 4, size: undefined });
 });

@@ -5,6 +5,8 @@ export interface AgentSpec {
   id: string; name: string; workspaceId: string; workspaceName: string; root: string; machineId: string;
   profile: AgentProfile; model: string; agentFile: string | null; skills: string[]; mcps: AgentMcp[];
   claudeSubscription: boolean; workspaceMcp?: boolean; daemon?: {bin:string;dir:string};
+  /** Approve the agent's tool permissions (allow-once) without asking, also while the desktop is closed. */
+  autopilot?: boolean;
 }
 export interface AgentSession extends AgentSpec {
   status: "starting" | "ready" | "busy" | "waiting" | "stopped" | "interrupted" | "error";

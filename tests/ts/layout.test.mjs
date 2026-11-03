@@ -39,7 +39,7 @@ test("float / detach / hide / back to bottom keep a single location", () => {
   l = M.moveTo(l, "ai", "detached");
   assert.ok(l.detached.ai && !l.floating.ai);
   l = M.moveTo(l, "ai", "hidden");
-  assert.deepEqual(l.hidden, ["agents", "git", "mcps", "remote", "ai"]); // git and remote are hidden by default
+  assert.deepEqual(l.hidden, ["agents", "git-changes", "git", "mcps", "remote", "ai"]); // git and remote are hidden by default
   l = M.moveTo(l, "ai", "bottom");
   assert.deepEqual(l.bottom.panels, ["terminal", "ai"]);
   assert.deepEqual(all(l), Object.keys(M.PANELS).sort());
@@ -114,8 +114,43 @@ test("collapsed panes use full-name restore buttons without reserving columns or
 test('new default-hidden panels stay hidden in older saved layouts instead of docking', () => {
   const saved = { v: 1, columns: [{ panels: ['projects', 'files', 'viewer', 'ai'], size: 1, sizes: [0.25, 0.25, 0.25, 0.25] }], bottom: { panels: ['terminal'], sizes: [1], collapsed: false }, hidden: [] };
   const l = M.repair(saved);
-  assert.deepEqual(l.hidden, ['agents', 'git', 'mcps', 'remote']);
+  assert.deepEqual(l.hidden, ['agents', 'git-changes', 'git', 'mcps', 'remote']);
   assert.ok(!l.columns.some((c) => c.panels.includes('git')));
   const shown = M.dropPanel(l, 'git', 'files', 'bottom');
   assert.deepEqual(shown.columns[0].panels.slice(0, 3), ['projects', 'files', 'git']);
+});
+
+test('anime appearance restores preferences and switches without changing panel layout', async () => {
+  const built = await esbuild.build({ entryPoints: [path.join(root, 'modules/ui/workspace-layout/src/index.ts')], bundle: true, format: 'esm', write: false });
+  const mod = (await import('data:text/javascript;base64,' + Buffer.from(built.outputFiles[0].text).toString('base64'))).default;
+  const settings = new Map([['appearance.theme', 'anime'], ['appearance.panelOpacity', 'airy']]);
+  const events = new Map(), state = new Map();
+  const ctx = { moduleId: 'workspace-layout', host: { plugins: pluginsHost() },
+    modules: { async call(_, method, args) {
+      if (method === 'settings.get') return settings.get(args.key);
+      if (method === 'settings.set') { settings.set(args.key, args.value); return; }
+      if (method === 'list') return [];
+      if (method === 'updates') return { modules: [], available: [], errors: [] };
+    } }, state: { get() { return null; }, set(k, v) { state.set(k, v); }, watch() {} },
+    events: { on(k, fn) { events.set(k, fn); return () => {}; } }, ui: { invalidate() {} }, log: { warn() {} } };
+  await mod.activate(ctx);
+  const original = JSON.stringify(mod.methods.getLayout());
+  let tree = mod.render();
+  assert.equal(tree.backgroundImage.mimeType, 'image/png');
+  assert.equal(tree.children[0].palette.dark.panel, '#191c3866');
+  const edit = async (key, value) => {
+    events.get('settings.change')({ module: ctx.moduleId, section: 'appearance', key, value });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.equal(state.get('workspace-layout.settings').error, null);
+  };
+  await edit('panelOpacity', 'solid');
+  assert.equal(mod.render().children[0].palette.dark.panel, '#191c38d9');
+  assert.equal(settings.get('appearance.panelOpacity'), 'solid');
+  await edit('theme', 'classic');
+  assert.equal(mod.render().backgroundImage, undefined);
+  assert.equal(JSON.stringify(mod.methods.getLayout()), original);
+  await edit('theme', 'anime');
+  assert.ok(mod.render().backgroundImage.data.length > 1000);
+  assert.equal(JSON.stringify(mod.methods.getLayout()), original);
+  mod.deactivate();
 });

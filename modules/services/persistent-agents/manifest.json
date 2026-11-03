@@ -10,7 +10,8 @@
     "persistence",
     "agent-runner",
     "internal-local-mcp",
-    "internal-remote-mcp"
+    "internal-remote-mcp",
+    "git-tasks"
   ],
   "capabilities": [
     "remote.daemon",

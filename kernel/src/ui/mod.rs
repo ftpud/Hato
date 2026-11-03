@@ -51,6 +51,9 @@ impl AnyInput {
 struct InputSlot {
     input: AnyInput,
     applied: Option<String>,
+    /// Values this input reported through `changeAction` that the module may echo back as `value`.
+    /// Echoes are acknowledged without `set_value`, which would reset the caret mid-typing.
+    echoes: Vec<String>,
     _sub: Subscription,
 }
 
@@ -180,6 +183,13 @@ impl Shell {
                 Self::fire(&kernel, &module, &[], &action, &key, None, json!(href.to_string()), cx);
             }
         })
+    }
+
+    fn note_echo(&mut self, ik: &(String, String), text: &str) {
+        if let Some(slot) = self.inputs.get_mut(ik) {
+            if slot.echoes.len() >= 64 { slot.echoes.remove(0); }
+            slot.echoes.push(text.to_string());
+        }
     }
 
     fn module_inputs(&self, module: &str) -> Vec<(String, AnyInput)> {
@@ -318,6 +328,11 @@ impl Shell {
                     };
                 }
                 d = self.apply_base(d, n, cx).min_w_0().overflow_hidden();
+                if let Some(image) = images::preview(&n["backgroundImage"]) {
+                    d = d.relative().child(
+                        img(image).absolute().inset_0().size_full().object_fit(ObjectFit::Cover)
+                    );
+                }
                 if ty == "column" {
                     d = d.min_h_0();
                 }
@@ -500,33 +515,38 @@ impl Shell {
                     let m = module.to_string();
                     let key2 = key.to_string();
                     let change = n.get("changeAction").and_then(|v| v.as_str()).map(str::to_owned);
+                    let ik2 = ik.clone();
                     let slot = if multiline {
                         let st = cx.new(|cx| TextareaState::new(window, cx).placeholder(placeholder).submit_on_enter(submit.is_some()).default_value(value.clone().unwrap_or_default()));
                         let sub = cx.subscribe_in(&st, window, move |this: &mut Shell, _st, ev: &InputEvent, _w, cx| {
                             if let (InputEvent::Change, Some(a)) = (ev, change.as_ref()) {
+                                let text = _st.read(cx).value().to_string();
+                                this.note_echo(&ik2, &text);
                                 let inputs = this.module_inputs(&m);
-                                Shell::fire(&k, &m, &inputs, a, &key2, None, json!(_st.read(cx).value().to_string()), cx);
+                                Shell::fire(&k, &m, &inputs, a, &key2, None, json!(text), cx);
                             }
                             if let (InputEvent::PressEnter { shift: false, .. }, Some(a)) = (ev, submit.as_ref()) {
                                 let inputs = this.module_inputs(&m);
                                 Shell::fire(&k, &m, &inputs, a, &key2, None, Value::Null, cx);
                             }
                         });
-                        InputSlot { input: AnyInput::Area(st), applied: value.clone(), _sub: sub }
+                        InputSlot { input: AnyInput::Area(st), applied: value.clone(), echoes: Vec::new(), _sub: sub }
                     } else {
                         let secret = b("secret");
                         let st = cx.new(|cx| InputState::new(window, cx).placeholder(placeholder).masked(secret).default_value(value.clone().unwrap_or_default()));
                         let sub = cx.subscribe_in(&st, window, move |this: &mut Shell, _st, ev: &InputEvent, _w, cx| {
                             if let (InputEvent::Change, Some(a)) = (ev, change.as_ref()) {
+                                let text = _st.read(cx).value().to_string();
+                                this.note_echo(&ik2, &text);
                                 let inputs = this.module_inputs(&m);
-                                Shell::fire(&k, &m, &inputs, a, &key2, None, json!(_st.read(cx).value().to_string()), cx);
+                                Shell::fire(&k, &m, &inputs, a, &key2, None, json!(text), cx);
                             }
                             if let (InputEvent::PressEnter { .. }, Some(a)) = (ev, submit.as_ref()) {
                                 let inputs = this.module_inputs(&m);
                                 Shell::fire(&k, &m, &inputs, a, &key2, None, Value::Null, cx);
                             }
                         });
-                        InputSlot { input: AnyInput::Line(st), applied: value.clone(), _sub: sub }
+                        InputSlot { input: AnyInput::Line(st), applied: value.clone(), echoes: Vec::new(), _sub: sub }
                     };
                     self.inputs.insert(ik.clone(), slot);
                 }
@@ -534,9 +554,15 @@ impl Shell {
                 let slot = self.inputs.get_mut(&ik).unwrap();
                 if value.is_some() && value != slot.applied {
                     let v = value.clone().unwrap();
-                    match &slot.input {
-                        AnyInput::Line(e) => e.update(cx, |st, cx| st.set_value(v.clone(), window, cx)),
-                        AnyInput::Area(e) => e.update(cx, |st, cx| st.set_value(v.clone(), window, cx)),
+                    if let Some(i) = slot.echoes.iter().position(|e| *e == v) {
+                        // The module is echoing text the user typed; the field already shows it (or newer text).
+                        slot.echoes.drain(..=i);
+                    } else {
+                        slot.echoes.clear();
+                        match &slot.input {
+                            AnyInput::Line(e) => e.update(cx, |st, cx| st.set_value(v.clone(), window, cx)),
+                            AnyInput::Area(e) => e.update(cx, |st, cx| st.set_value(v.clone(), window, cx)),
+                        }
                     }
                     slot.applied = value.clone();
                 }

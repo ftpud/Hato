@@ -39,6 +39,50 @@ test('background panel selects provider, skill, MCP and agent file independently
  assert.equal(mod.snapshot().selected,'a');assert.ok(emitted.some(e=>e.topic==='agents-panel.openChat'&&e.value.id==='a'));assert.ok(!JSON.stringify(mod.render()).includes('transcript'));assert.equal(mod.render().children.find(n=>n.type==='tree').rows[0].key,'a');assert.equal(mod.render().children.find(n=>n.type==='tree').rows[0].detail,'Running the current tests');assert.ok(calls.every(c=>c.module==='persistent-agents'));
  mod.deactivate();assert.ok(!calls.some(c=>c.method==='stop'));
 });
+test('agents panel edits, clears and removes the selected agent without an MCP shortcut',async()=>{
+ const mod=(await load('modules/ui/agents-panel/src/index.ts')).default;
+ const calls=[],emitted=[];let removed=false;
+ const session={id:'a',name:'Worker',profile:{id:'fixture',name:'Fixture'},machineId:'local',status:'ready',agentFile:'AGENTS.md',skills:['.agents/skills/test/SKILL.md'],mcps:[],workspaceMcp:true,revision:1};
+ const ctx={events:{on(){},emit:(topic,value)=>emitted.push({topic,value})},state:{get:k=>k==='workspace.selected'?{id:'ws',name:'WS'}:{agents:true},watch(){}},ui:{invalidate(){}},modules:{async call(module,method,args){
+  calls.push({module,method,args});
+  if(method==='catalog')return{profiles:[{id:'fixture',name:'Fixture'},{id:'other',name:'Other'}],skills:[{path:'.agents/skills/test/SKILL.md',name:'Test'}],agentFiles:[{path:'AGENTS.md'}],mcps:[{id:'internal-remote-mcp',name:'Workspace'}]};
+  if(method==='list')return removed?[]:[session];
+  if(method==='remove'){removed=true;return null;}
+  return session;
+ }}};
+ await mod.activate(ctx);
+ try {
+  const event=(action,value='',inputs={})=>mod.onEvent(ctx,{action,key:action,value,inputs});
+  const nodes=()=>{const walk=n=>[n,...(n.children||[]).flatMap(walk)];return walk(mod.render());};
+  assert.ok(!nodes().some(n=>n.key==='mcps'));
+  assert.ok(!nodes().some(n=>n.key==='agent-actions'));
+  await event('open','a');
+  assert.deepEqual(nodes().find(n=>n.key==='agent-actions').children.map(n=>n.key),['edit','clear','remove']);
+  // Edit pre-fills the form from the agent and saves through `update`.
+  await event('edit','a');
+  assert.ok(nodes().some(n=>n.key==='save')&&!nodes().some(n=>n.key==='create'));
+  assert.equal(nodes().find(n=>n.key==='agent-name').value,'Worker');
+  await event('provider','other');
+  await event('save','',{'agent-name':'Renamed'});
+  assert.deepEqual(calls.find(c=>c.method==='update').args,{workspaceId:'ws',id:'a',name:'Renamed',profileId:'other',agentFile:'AGENTS.md',skills:['.agents/skills/test/SKILL.md'],mcps:['internal-remote-mcp']});
+  assert.ok(!nodes().some(n=>n.key==='save'));
+  // Clear and remove ask first.
+  await event('confirmClear','a');
+  assert.equal(nodes().find(n=>n.type==='modal').title,'Clear session');
+  assert.ok(!calls.some(c=>c.method==='clear'));
+  await event('clear','a');
+  assert.equal(calls.find(c=>c.method==='clear').args.id,'a');
+  assert.ok(emitted.some(e=>e.topic==='agents-panel.agentCleared'&&e.value.id==='a'));
+  await event('confirmRemove','a');await event('dismiss');
+  assert.ok(!nodes().some(n=>n.type==='modal'));
+  await event('confirmRemove','a');await event('remove','a');
+  assert.equal(calls.find(c=>c.method==='remove').args.id,'a');
+  assert.ok(emitted.some(e=>e.topic==='agents-panel.agentRemoved'&&e.value.id==='a'));
+  assert.equal(mod.snapshot().selected,null);
+  assert.ok(!nodes().some(n=>n.key==='agent-actions'));
+ } finally { mod.deactivate(); }
+});
+
 test('existing chatbox binds background session and routes prompts without using regular chat service',async()=>{
  const mod=(await load('modules/ui/ai/src/index.ts')).default;
  const handlers={},calls=[],requests=[],published=[];
@@ -56,10 +100,16 @@ test('existing chatbox binds background session and routes prompts without using
   let nodes=walk(mod.render());
   assert.ok(nodes.some(n=>n.key==='background-session'));
   assert.equal(nodes.find(n=>n.type==='transcript').scrollKey,'worker');
-  assert.ok(!nodes.some(n=>n.key==='auto'||n.key==='attach'));
+  assert.ok(!nodes.some(n=>n.key==='attach'));
+  const auto=nodes.find(n=>n.key==='auto');
+  assert.ok(auto&&!auto.checked&&/even while Hato is closed/.test(auto.tooltip));
   const before=calls.length;
   await mod.onEvent(ctx,{action:'send',inputs:{prompt:'For this worker'}});
   assert.equal(requests.find(r=>r.method==='send').args.id,'worker');
+  await mod.onEvent(ctx,{action:'toggleAuto',value:true,inputs:{}});
+  const toggle=requests.find(r=>r.method==='setAutopilot');
+  assert.equal(toggle.args.id,'worker');
+  assert.equal(toggle.args.enabled,true);
   assert.equal(calls.length,before);
   await mod.onEvent(ctx,{action:'backToChats',inputs:{}});
   assert.ok(!walk(mod.render()).some(n=>n.key==='background-session'));

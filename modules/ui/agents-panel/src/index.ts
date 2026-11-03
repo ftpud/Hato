@@ -5,6 +5,8 @@ import {uiIcons} from "../../../../sdk/ui-icons";
 import {errMsg} from "../../../../sdk/runtime";
 let ws:any=null,catalog:any=null,rows:AgentSession[]=[];
 let selected:string|null=null,creating=false,error:string|null=null,busy=false,visible=false;
+/** Agent being edited in the form (null while creating), and a pending destructive confirmation. */
+let editing:string|null=null,confirming:{action:"clear"|"remove";id:string}|null=null;
 let name="",profile="",agentFile="",filter="";
 let skills=new Set<string>(),mcps=new Set<string>(["internal-remote-mcp"]);
 let timer:ReturnType<typeof setInterval>|null=null,epoch=0,refreshing:null|number=null;
@@ -58,7 +60,7 @@ const mod:AppModule={id:"agents-panel",moduleApiVersion:1,
     {type:"textInput",key:"agent-filter",prefixSvg:uiIcons.search,placeholder:"Filter agents",value:filter,changeAction:"filter",grow:true},
     {type:"button",key:"new",text:"",iconSvg:uiIcons.plus,action:"new",small:true,variant:"ghost",tooltip:"Create agent"},
     {type:"button",key:"refresh",text:"",iconSvg:uiIcons.refresh,action:"refresh",small:true,variant:"ghost",tooltip:"Refresh agents"},
-  ]},{type:"row",key:"summary",children:[{type:"label",key:"count",text:`${rows.length} agents`,size:"xs",color:"muted",grow:true},button("mcps","MCP servers","mcps")]}];
+  ]},{type:"row",key:"summary",children:[{type:"label",key:"count",text:`${rows.length} agents`,size:"xs",color:"muted",grow:true}]}];
   if(!ws)children.push(label("none","Select a workspace to create or open its agents."));
   if(error)children.push({type:"status",key:"error",level:"error",text:error});
   if(busy)children.push({type:"progress",key:"busy",indeterminate:true});
@@ -66,14 +68,14 @@ const mod:AppModule={id:"agents-panel",moduleApiVersion:1,
     children.push({type:"column",key:"create-form",gap:8,scroll:true,children:[
       {type:"textInput",key:"agent-name",placeholder:"Agent name",value:name,changeAction:"name"},
       {type:"select",key:"provider",label:"Provider",value:profile,options:catalog.profiles.map((p:any)=>({value:p.id,label:p.name})),action:"provider"},
-      label("model-note","Connect to choose from the provider’s models before sending the first prompt."),
+      label("model-note",editing?"Changing the provider starts a new provider session; choose its model in the chat. Changes other than the name restart a connected agent.":"Connect to choose from the provider’s models before sending the first prompt."),
       {type:"select",key:"agent-file",label:"Agent instructions",value:agentFile,options:[{value:"",label:"No agent file"},...catalog.agentFiles.map((f:any)=>({value:f.path,label:f.path}))],action:"agentFile"},
       label("mcp-heading","Allowed MCP servers"),...checks(catalog.mcps,mcps,"mcp"),
       label("skills-heading","Allowed skills"),...checks(catalog.skills,skills,"skill"),
       ...(!catalog.skills.length?[label("no-skills","No workspace skills found in .agents/skills.")]:[]),
       label("scope-note","Selections control supplied instructions, skills and MCP connections. Provider-native tools keep the provider’s permission controls."),
       label("lifetime","Runs on the workspace machine’s daemon, including local workspaces. Closing this panel or Hato does not stop a running turn."),
-      {type:"button",key:"create",text:"Connect and choose model",action:"create",disabled:busy||!profile},button("cancel-create","Cancel","back"),
+      editing?{type:"button",key:"save",text:"Save changes",action:"save",variant:"primary",disabled:busy||!profile}:{type:"button",key:"create",text:"Connect and choose model",action:"create",disabled:busy||!profile},button("cancel-create","Cancel","back"),
     ]});
   } else if(ws) {
     const query=filter.trim().toLowerCase();
@@ -85,6 +87,27 @@ const mod:AppModule={id:"agents-panel",moduleApiVersion:1,
       iconSvg:working(s)?spinnerSvg():s.status==="waiting"?uiIcons.warning:uiIcons["message-square"],iconColor:working(s)?"primary":s.status==="error"?"danger":s.status==="waiting"?"warning":"muted",
     }))});
     if(!agents.length)children.push(label("empty",query?"No matching agents.":"No background agents in this workspace. Create one to begin."));
+    const current=rows.find(s=>s.id===selected);
+    if(current) {
+      const running=["starting","busy","waiting"].includes(current.status);
+      children.push({type:"row",key:"agent-actions",gap:4,children:[
+        {type:"button",key:"edit",text:"Edit",iconSvg:uiIcons.pencil,action:"edit",value:current.id,small:true,variant:"ghost",disabled:busy,tooltip:`Edit ${current.name}`},
+        {type:"button",key:"clear",text:"Clear session",iconSvg:uiIcons.eraser,action:"confirmClear",value:current.id,small:true,variant:"ghost",disabled:busy||running,tooltip:running?"Cancel the running turn first":"Delete this agent’s history and start a fresh provider session"},
+        {type:"button",key:"remove",text:"Remove",iconSvg:uiIcons.trash,action:"confirmRemove",value:current.id,small:true,variant:"ghost",disabled:busy,tooltip:`Stop and delete ${current.name}`},
+      ]});
+    }
+    if(confirming) {
+      const target=rows.find(s=>s.id===confirming!.id);
+      if(target)children.push({type:"modal",key:"confirm",title:confirming.action==="remove"?"Remove agent":"Clear session",closeAction:"dismiss",children:[
+        label("confirm-text",confirming.action==="remove"
+          ?`Remove “${target.name}”? It is stopped and its conversation history is deleted. Files it changed are kept.`
+          :`Clear “${target.name}”? Its conversation history is deleted and the next prompt starts a fresh provider session with the same settings.`),
+        {type:"row",key:"confirm-buttons",gap:4,children:[
+          {type:"button",key:"confirm-yes",text:confirming.action==="remove"?"Remove":"Clear session",action:confirming.action,value:target.id,variant:"danger",small:true,disabled:busy},
+          button("confirm-no","Cancel","dismiss"),
+        ]},
+      ]});
+    }
   }
   return {type:"column",key:"agents-root",padding:8,gap:8,grow:true,children};
  },
@@ -103,9 +126,22 @@ const mod:AppModule={id:"agents-panel",moduleApiVersion:1,
   };
   busy=true;error=null;ctx.ui.invalidate();
   try {
-    if(ev.action==="new") {catalog=await actionCall("catalog");creating=true;name="";agentFile="";skills=new Set();mcps=new Set(["internal-remote-mcp"]);}
-    else if(ev.action==="back"){creating=false;}
-    else if(ev.action==="mcps")ctx.events.emit("agents-panel.openMcps",{});
+    if(ev.action==="new") {catalog=await actionCall("catalog");creating=true;editing=null;name="";agentFile="";skills=new Set();mcps=new Set(["internal-remote-mcp"]);}
+    else if(ev.action==="edit") {
+      const s=rows.find(r=>r.id===value);if(!s)throw new Error("Agent is no longer available");
+      catalog=await actionCall("catalog");if(mine!==epoch)return;
+      editing=s.id;creating=true;name=s.name;profile=s.profile.id;agentFile=s.agentFile||"";skills=new Set(s.skills);
+      mcps=new Set([...(s.workspaceMcp?["internal-remote-mcp"]:[]),...s.mcps.map(m=>m.id)]);
+    }
+    else if(ev.action==="save"&&editing) {
+      await actionCall("update",{id:editing,name:ev.inputs["agent-name"]||name,profileId:profile,agentFile,skills:[...skills],mcps:[...mcps]});
+      if(mine!==epoch)return;creating=false;editing=null;
+    }
+    else if(ev.action==="back"){creating=false;editing=null;}
+    else if(ev.action==="confirmClear"||ev.action==="confirmRemove"){confirming={action:ev.action==="confirmClear"?"clear":"remove",id:value};}
+    else if(ev.action==="dismiss"){confirming=null;}
+    else if(ev.action==="clear"){confirming=null;await actionCall("clear",{id:value});ctx.events.emit("agents-panel.agentCleared",{workspaceId,id:value});}
+    else if(ev.action==="remove"){confirming=null;await actionCall("remove",{id:value});if(selected===value)selected=null;ctx.events.emit("agents-panel.agentRemoved",{workspaceId,id:value});}
     else if(ev.action==="create") {const s=await actionCall("create",{name:ev.inputs["agent-name"]||name||"Agent",profileId:profile,agentFile,skills:[...skills],mcps:[...mcps]});if(mine!==epoch)return;selected=s.id;creating=false;ctx.events.emit("agents-panel.openChat",{workspaceId,id:s.id});}
     else if(ev.action==="open"){selected=ev.rowKey||value;creating=false;ctx.events.emit("agents-panel.openChat",{workspaceId,id:selected});}
     if(mine===epoch)await refresh(ctx,true);

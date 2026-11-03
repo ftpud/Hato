@@ -7,8 +7,8 @@ remote daemon and keep working when the desktop disconnects.
 
 ## Run from source
 
-The desktop is currently tested on macOS. Install Xcode with the Metal toolchain, Rust stable,
-Node.js 20 or newer, Git and OpenSSH, then run:
+The desktop is currently tested on macOS (Apple silicon and Intel). Install Xcode with the Metal
+toolchain, Rust stable, Node.js 20 or newer, Git and OpenSSH, then run:
 
 ```sh
 git clone https://github.com/ftpud/Hato.git
@@ -28,6 +28,11 @@ adapter on the machine where the agent will run.
 - [Background agents and MCP servers](docs/PERSISTENT_AGENTS.md)
 - [Compatibility and prerequisites](docs/COMPATIBILITY.md)
 - [Testing](docs/TESTING.md)
+
+## Panels at a glance
+
+- **Git changes** lists modified files; click one to open its diff in the viewer.
+- **Latest changes** shows every uncommitted change as one live diff, without tabs.
 
 ## License
 

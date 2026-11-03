@@ -8,9 +8,7 @@ struct ModulePalette(Value);
 impl Global for ModulePalette {}
 
 fn palette_color(palette: &Value, name: &str) -> Option<Hsla> {
-    let text = palette.get(name)?.as_str()?.strip_prefix("#")?;
-    if text.len() != 6 { return None; }
-    u32::from_str_radix(text, 16).ok().map(|hex| rgb(hex).into())
+    hex_color(palette.get(name)?.as_str()?)
 }
 
 /// `#rrggbb` or `#rrggbbaa`.
@@ -223,6 +221,7 @@ mod tests {
     #[test]
     fn module_colors_accept_hex_and_reject_invalid_values() {
         assert_eq!(palette_color(&json!({ "primary": "#5865f2" }), "primary"), Some(rgb(0x5865f2).into()));
+        assert_eq!(palette_color(&json!({ "panel": "#191c3899" }), "panel"), Some(gpui_kit::rgba(0x191c3899).into()));
         for value in [json!(null), json!(42), json!("red"), json!("#fff"), json!("#zzzzzz"), json!("#1234567")] {
             assert!(palette_color(&json!({ "primary": value }), "primary").is_none());
         }

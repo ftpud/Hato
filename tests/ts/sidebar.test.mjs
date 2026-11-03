@@ -50,7 +50,7 @@ test('sidebar drawings are module data and a new module build picks up edited SV
   const sidebar = await load('sidebar'), left = await load('left-sidebar');
   const ctx = { host: { plugins: pluginsHost() }, state: { get() {}, watch() {} }, events: { on() { return () => {}; } }, ui: { invalidate() {} }, log: { warn() {} } };
   await sidebar.activate(ctx); await left.activate(ctx);
-  assert.deepEqual(sidebar.render().children.map(n => n.key), ['projects', 'files', 'agents', 'mcps', 'git', 'remote']);
+  assert.deepEqual(sidebar.render().children.map(n => n.key), ['projects', 'files', 'agents', 'mcps', 'git', 'git-changes', 'remote']);
   for (const node of [...sidebar.render().children, ...left.render().children]) {
     assert.equal(node.icon, undefined);
     assert.match(node.iconSvg, /<svg /);

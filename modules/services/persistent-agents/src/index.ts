@@ -26,6 +26,8 @@ async function target(ctx:ModuleContext,workspaceId:string):Promise<DaemonTarget
       return t;
     })();
     prepared.set(d.machineId,pending);
+    // Task requests and agent activity live on daemons this desktop has connected to; poll once there is one.
+    if(!daemonPoll){daemonPoll=setInterval(()=>{void pollDaemons(ctx);},2000);(daemonPoll as any).unref?.();}
     void pending.catch(()=>{prepared.delete(d.machineId);});
   }
   return pending;
@@ -76,11 +78,129 @@ async function catalog(ctx:ModuleContext,workspaceId:string) {
     ...(d.location==="local"?[{id:"internal-remote-mcp-local",name:"Workspace tools · local desktop terminals (online only)"}]:[]),
     {id:"internal-local-mcp",name:"Desktop tools (requires desktop online)"},...(await mcps(ctx)).filter(m=>m.enabled!==false)]};
 }
+/** MCP selection ids of an existing agent, as offered by `catalog`. */
+const agentMcpIds=(s:AgentSpec)=>[...(s.workspaceMcp?["internal-remote-mcp"]:[]),...s.mcps.map(m=>m.id)];
+/** Validate a provider/instructions/skills/MCP selection against the workspace catalog and resolve it. */
+async function agentConfig(ctx:ModuleContext,c:Awaited<ReturnType<typeof catalog>>,a:any,sessionId:string) {
+  const profile=c.profiles.find((p:any)=>p.id===a.profileId);if(!profile)throw new Error("Select an enabled provider for this machine");
+  const skills=(Array.isArray(a.skills)?a.skills:[]).map(relativeAgentPath);
+  if(skills.some((p:string)=>!c.skills.some(s=>s.path===p)))throw new Error("Selected skill is no longer available");
+  const agentFile=a.agentFile?relativeAgentPath(a.agentFile):null;
+  if(agentFile&&!c.agentFiles.some(f=>f.path===agentFile))throw new Error("Selected agent file is no longer available");
+  const ids:string[]=Array.isArray(a.mcps)?a.mcps:[];
+  if(ids.some(id=>!c.mcps.some(m=>m.id===id)))throw new Error("Unknown MCP server");
+  await target(ctx,c.workspace.id);
+  const servers:any[]=(await mcps(ctx)).filter(m=>m.enabled!==false&&ids.includes(m.id)).map(({enabled,...server})=>server);
+  if(ids.includes("internal-remote-mcp-local")) {
+    const endpoint=await ctx.modules.call("internal-remote-mcp","endpoint",{workspaceId:c.workspace.id,sessionId,skills});
+    servers.push({...endpoint,id:"internal-remote-mcp-local",name:"internal-remote-mcp-local"});
+  }
+  if(ids.includes("internal-local-mcp")) {
+    const endpoint=await ctx.modules.call("internal-local-mcp","endpoint",{conversationId:sessionId,workspaceId:c.workspace.id});
+    servers.push({id:"internal-local-mcp",...endpoint.server});
+  }
+  return {profile,model:String(a.model||""),agentFile,skills,mcps:servers,workspaceMcp:ids.includes("internal-remote-mcp")};
+}
+// Git task requests from background agents' workspace MCP. The project always comes from the
+// agent's own workspace. Creating a task or starting an agent in one needs the user's native
+// approval unless the requesting agent runs on autopilot.
+const clip=(v:any,n:number)=>typeof v==="string"?v.trim().slice(0,n):"";
+function agentRequest(a:any) {
+  if(a==null)return null;
+  const prompt=clip(a.prompt,128*1024);
+  if(!prompt)throw new Error("A background agent needs a prompt");
+  return {name:clip(a.name,120)||"Task agent",prompt,model:clip(a.model,200)};
+}
+async function approve(ctx:ModuleContext,session:any,title:string,detail:string,allowLabel:string,operation:string) {
+  if(session.autopilot)return;
+  const decision=await ctx.host.approvals.request({title:`${session.name}: ${title}`,detail,operation,timeoutMs:9*60*1000,
+    options:[{id:"allow",label:allowLabel,kind:"allow"},{id:"deny",label:"Deny",kind:"deny"}]});
+  if(decision.optionId!=="allow")throw new Error(decision.expired?"The request was not approved in time":`The user denied: ${title}`);
+}
+const agentLines=(agent:{name:string;prompt:string;model:string}|null)=>agent?[`Background agent: ${agent.name}${agent.model?` (${agent.model})`:""}`,`Prompt: ${agent.prompt.length>1500?agent.prompt.slice(0,1500)+"…":agent.prompt}`]:[];
+/** Start a background agent in a task workspace, configured like its parent (provider, model,
+ *  instructions, skills and MCP servers that exist there), and send it the prompt. */
+async function startTaskAgent(ctx:ModuleContext,parent:any,taskWorkspaceId:string,agent:{name:string;prompt:string;model:string}) {
+  const c=await catalog(ctx,taskWorkspaceId);
+  const mcpIds=[...(parent.workspaceMcp?["internal-remote-mcp"]:[]),...(parent.mcps||[]).map((m:any)=>m.id)].filter((id:string)=>c.mcps.some(m=>m.id===id));
+  const created=await mod.methods!.create(ctx,{workspaceId:taskWorkspaceId,name:agent.name,profileId:parent.profile.id,model:agent.model||parent.model,
+    agentFile:c.agentFiles.some(f=>f.path===parent.agentFile)?parent.agentFile:null,skills:(parent.skills||[]).filter((p:string)=>c.skills.some(s=>s.path===p)),mcps:mcpIds},{caller:"persistent-agents"});
+  if(parent.autopilot)await invoke(ctx,taskWorkspaceId,"setAutopilot",{id:created.id,enabled:true});
+  await invoke(ctx,taskWorkspaceId,"send",{id:created.id,text:agent.prompt});
+  ctx.events.emit("persistent-agents.changed",{workspaceId:taskWorkspaceId});
+  return {id:created.id,name:created.name,workspaceId:taskWorkspaceId,autopilot:!!parent.autopilot};
+}
+async function performTask(ctx:ModuleContext,r:{sessionId:string;workspaceId:string;op:string;args:any}) {
+  const v=await owned(ctx,{workspaceId:String(r.workspaceId),id:String(r.sessionId)});
+  const d:WorkspaceDescriptor=await ctx.modules.call("workspace","resolve",{workspaceId:r.workspaceId});
+  const tasks=async()=>ctx.modules.call("git-tasks","list",{projectId:d.projectId});
+  if(r.op==="list")return (await tasks()).map((t:any)=>({id:t.id,workspaceId:`task:${t.id}`,name:t.name,branch:t.branch,worktreePath:t.worktreePath,status:t.status,current:t.id===d.taskId}));
+  if(r.op==="reconcile")return ctx.modules.call("git-tasks","reconcile",{projectId:d.projectId},{timeoutMs:120000});
+  const project=`${d.name.split(" / ")[0]} (${d.machineId})`;
+  if(r.op==="startAgent") {
+    const agent=agentRequest(r.args?.agent)!;
+    const task=(await tasks()).find((t:any)=>t.id===r.args?.taskId);
+    if(!task)throw new Error("Task is not part of this project");
+    if(task.status!=="ready")throw new Error(`Task worktree is ${task.status}; reconcile it first`);
+    await approve(ctx,v.session,`start agent in task ${task.name}`,[`Agent: ${v.session.name}`,`Project: ${project}`,`Task: ${task.name} (${task.branch})`,...agentLines(agent)].join("\n"),"Start agent","persistent-agents.create");
+    return startTaskAgent(ctx,v.session,`task:${task.id}`,agent);
+  }
+  if(r.op!=="create")throw new Error("Unknown task operation");
+  const name=clip(r.args?.name,100),branch=clip(r.args?.branch,200),agent=agentRequest(r.args?.agent);
+  if(!name&&!branch)throw new Error("Provide a task name or a branch");
+  await approve(ctx,v.session,agent?"create Git task and start an agent":"create Git task",[`Agent: ${v.session.name}`,`Project: ${project}`,`Task name: ${name||branch}`,
+    `Branch: ${branch||"generated task/<name>-<id>"}`,"Creates a linked Git worktree outside the project checkout. Existing branches are checked out, otherwise a new branch starts from HEAD.",...agentLines(agent)].join("\n"),
+    agent?"Create and start":"Create task","git-tasks.create");
+  const task=await ctx.modules.call("git-tasks","create",{projectId:d.projectId,name:name||branch,branch,select:false},{timeoutMs:300000});
+  if(!agent)return task;
+  try {return {...task,agent:await startTaskAgent(ctx,v.session,`task:${task.id}`,agent)};}
+  catch(e) {return {...task,agentError:`The task was created but the agent did not start: ${e instanceof Error?e.message:String(e)}`};}
+}
+// Poll the daemons this desktop already talks to: claim queued task requests and publish which
+// workspaces have a working background agent (`persistent-agents.busy`, like `ai-sessions.busy`).
+let daemonPoll:ReturnType<typeof setInterval>|null=null,polling=false,busySignature="";
+const WORKING=new Set(["starting","busy","waiting"]);
+async function pollDaemons(ctx:ModuleContext) {
+  if(polling)return;polling=true;
+  try {
+    const busy:Record<string,number>={};
+    for(const [machineId,pending] of [...prepared]) {
+      let t:DaemonTarget;try{t=await pending;}catch{continue;}
+      try {
+        const sessions:any[]=await ctx.host.daemon.request(t,"modules.call",{target:"agent-runner",method:"list",args:{},timeoutMs:10000});
+        for(const s of sessions||[])if(s.machineId===machineId&&WORKING.has(s.status))busy[s.workspaceId]=(busy[s.workspaceId]||0)+1;
+      }catch{ /* daemon unreachable: report nothing for it */ }
+      let requests:any[];
+      try{requests=await ctx.host.daemon.request(t,"modules.call",{target:"internal-remote-mcp",method:"claimTaskRequests",args:{},timeoutMs:10000});}catch{continue;}
+      for(const r of requests||[]) void (async()=>{
+        let outcome:{value?:any;error?:string};
+        try {
+          const d:WorkspaceDescriptor=await ctx.modules.call("workspace","resolve",{workspaceId:String(r.workspaceId)});
+          if(d.machineId!==machineId)throw new Error("Workspace does not belong to this machine");
+          outcome={value:await performTask(ctx,r)};
+        }catch(e){outcome={error:e instanceof Error?e.message:String(e)};}
+        await ctx.host.daemon.request(t,"modules.call",{target:"internal-remote-mcp",method:"resolveTaskRequest",args:{id:r.id,...outcome},timeoutMs:10000}).catch(e=>ctx.log.warn("task request reply",String(e)));
+      })();
+    }
+    const sig=JSON.stringify(Object.entries(busy).sort());
+    if(sig!==busySignature){busySignature=sig;ctx.state.set("persistent-agents.busy",busy);}
+  } finally {polling=false;}
+}
 const mod:AppModule={id:"persistent-agents",moduleApiVersion:1,
+  deactivate() {if(daemonPoll)clearInterval(daemonPoll);daemonPoll=null;},
   activate(ctx) {
+    // If the local daemon is already running, connect to it so background activity and task
+    // requests are seen without opening the Agents panel first. Never starts a daemon.
+    setTimeout(async()=>{
+      try {
+        if(!await ctx.host.daemon.status({kind:"local"}))return;
+        const local=(await ctx.modules.call("persistence","projects.list")).find((p:any)=>p.kind==="local");
+        if(local)await target(ctx,`project:${local.id}:root`);
+      }catch(e){ctx.log?.warn("local daemon warm-up",e instanceof Error?e.message:String(e));}
+    },1500);
     // The AI module owns this request namespace; native event enforcement prevents spoofing it.
     // Keep this UI adapter allowlist narrow instead of exposing arbitrary module calls.
-    const allowed=new Set(["view","send","cancel","stop","reconnect","setModel","reviewPermission"]);
+    const allowed=new Set(["view","send","cancel","stop","reconnect","setModel","setAutopilot","reviewPermission","clear"]);
     ctx.events.on("mcp-panel.request",async(request:any)=>{
       if(typeof request?.requestId!=="string"||!["listMcps","saveMcp","removeMcp"].includes(request.method))return;
       try{const value=await mod.methods![request.method](ctx,request.args||{},{caller:"mcp-panel"});ctx.events.emit("persistent-agents.mcpResponse",{requestId:request.requestId,value});}
@@ -95,6 +215,10 @@ const mod:AppModule={id:"persistent-agents",moduleApiVersion:1,
     });
   },
   methods:{
+  async taskRequest(ctx,a,meta) {
+    if(meta.caller!=="internal-remote-mcp")throw new Error("Task requests come from the workspace MCP server");
+    return performTask(ctx,{sessionId:String(a.sessionId),workspaceId:String(a.workspaceId),op:String(a.op),args:a.args||{}});
+  },
   workspaceEndpoint:async(ctx,a)=>ctx.modules.call("internal-remote-mcp","endpoint",{workspaceId:String(a.workspaceId),sessionId:String(a.sessionId||crypto.randomUUID()),skills:Array.isArray(a.skills)?a.skills:[]}),
   catalog:(ctx,a)=>catalog(ctx,String(a.workspaceId)),
   async listMcps(ctx) {return [...builtInMcps,...await mcps(ctx)];},
@@ -108,29 +232,36 @@ const mod:AppModule={id:"persistent-agents",moduleApiVersion:1,
   },
   async create(ctx,a) {
     const c=await catalog(ctx,String(a.workspaceId));
-    const profile=c.profiles.find((p:any)=>p.id===a.profileId);if(!profile)throw new Error("Select an enabled provider for this machine");
-    const selectedSkills=(Array.isArray(a.skills)?a.skills:[]).map(relativeAgentPath);
-    if(selectedSkills.some((p:string)=>!c.skills.some(s=>s.path===p)))throw new Error("Selected skill is no longer available");
-    const agentFile=a.agentFile?relativeAgentPath(a.agentFile):null;
-    if(agentFile&&!c.agentFiles.some(f=>f.path===agentFile))throw new Error("Selected agent file is no longer available");
-    const ids:string[]=Array.isArray(a.mcps)?a.mcps:[];
-    if(ids.some(id=>!c.mcps.some(m=>m.id===id)))throw new Error("Unknown MCP server");
+    const id=crypto.randomUUID();
+    const config=await agentConfig(ctx,c,a,id);
     const subscription=await ctx.modules.call("persistence","settings.get",{key:"acp.claude.useSubscription"});
-    const spec:AgentSpec={id:crypto.randomUUID(),name:String(a.name||"Agent").trim().slice(0,120),workspaceId:c.workspace.id,workspaceName:c.workspace.name,root:c.workspace.rootAbsolutePath,machineId:c.workspace.machineId,
-      profile,model:String(a.model||""),agentFile,skills:selectedSkills,mcps:[],claudeSubscription:subscription!==false};
-    await target(ctx,c.workspace.id);
-    spec.daemon=daemonInfo.get(c.workspace.machineId);
-    spec.workspaceMcp=ids.includes("internal-remote-mcp");
-    spec.mcps=(await mcps(ctx)).filter(m=>m.enabled!==false&&ids.includes(m.id)).map(({enabled,...server})=>server);
-    if(ids.includes("internal-remote-mcp-local")) {
-      const endpoint=await ctx.modules.call("internal-remote-mcp","endpoint",{workspaceId:spec.workspaceId,sessionId:spec.id,skills:spec.skills});
-      spec.mcps.push({...endpoint,id:"internal-remote-mcp-local",name:"internal-remote-mcp-local"});
-    }
-    if(ids.includes("internal-local-mcp")) {
-      const endpoint=await ctx.modules.call("internal-local-mcp","endpoint",{conversationId:spec.id,workspaceId:spec.workspaceId});
-      spec.mcps.push({id:"internal-local-mcp",...endpoint.server});
-    }
+    const spec:AgentSpec={id,name:String(a.name||"Agent").trim().slice(0,120),workspaceId:c.workspace.id,workspaceName:c.workspace.name,root:c.workspace.rootAbsolutePath,machineId:c.workspace.machineId,
+      ...config,claudeSubscription:subscription!==false,daemon:daemonInfo.get(c.workspace.machineId)};
     return invoke(ctx,c.workspace.id,"create",{spec});
+  },
+  /** Edit name, provider, instructions, skills and MCP servers. Only a rename leaves a connected agent running. */
+  async update(ctx,a) {
+    const v=await owned(ctx,a),s=v.session;
+    const name=String(a.name||"").trim().slice(0,120);if(!name)throw new Error("Agent name is required");
+    const ids=[...new Set<string>(Array.isArray(a.mcps)?a.mcps:[])].sort();
+    const skills=[...(Array.isArray(a.skills)?a.skills:[])].map(relativeAgentPath).sort();
+    const agentFile=a.agentFile?relativeAgentPath(a.agentFile):null;
+    const same=s.profile.id===a.profileId&&(s.agentFile||null)===agentFile&&JSON.stringify([...s.skills].sort())===JSON.stringify(skills)&&JSON.stringify(agentMcpIds(s).sort())===JSON.stringify(ids);
+    if(same)return invoke(ctx,a.workspaceId,"update",{id:s.id,patch:{name}});
+    const c=await catalog(ctx,String(a.workspaceId));
+    // Desktop-hosted endpoints are re-issued for the new selection.
+    await ctx.modules.call("internal-local-mcp","revoke",{conversationId:s.id}).catch(()=>{});
+    await ctx.modules.call("internal-remote-mcp","revoke",{sessionId:s.id}).catch(()=>{});
+    const config=await agentConfig(ctx,c,{...a,mcps:ids,skills,agentFile,model:s.profile.id===a.profileId?s.model:""},s.id);
+    return invoke(ctx,a.workspaceId,"update",{id:s.id,patch:{name,...config}});
+  },
+  async clear(ctx,a) {await owned(ctx,a);return invoke(ctx,a.workspaceId,"clear",{id:a.id});},
+  async remove(ctx,a) {
+    await owned(ctx,a);const result=await invoke(ctx,a.workspaceId,"remove",{id:a.id});
+    await ctx.modules.call("internal-local-mcp","revoke",{conversationId:a.id}).catch(()=>{});
+    await ctx.modules.call("internal-remote-mcp","revoke",{sessionId:a.id}).catch(()=>{});
+    activityCache.delete(a.id);
+    return result;
   },
   async list(ctx,a) {
     const rows=await invoke(ctx,String(a.workspaceId),"list");
@@ -164,6 +295,7 @@ const mod:AppModule={id:"persistent-agents",moduleApiVersion:1,
     await ctx.modules.call("internal-local-mcp","revoke",{conversationId:a.id}).catch(()=>{});
     await ctx.modules.call("internal-remote-mcp","revoke",{sessionId:a.id}).catch(()=>{});
     return result;},
+  async setAutopilot(ctx,a) {await owned(ctx,a);return invoke(ctx,a.workspaceId,"setAutopilot",{id:a.id,enabled:a.enabled===true});},
   async reconnect(ctx,a) {await owned(ctx,a);return invoke(ctx,a.workspaceId,"reconnect",{id:a.id});},
   async setModel(ctx,a) {await owned(ctx,a);return invoke(ctx,a.workspaceId,"setModel",{id:a.id,model:a.model});},
   async reviewPermission(ctx,a) {

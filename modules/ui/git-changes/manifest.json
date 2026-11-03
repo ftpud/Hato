@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 2,
+  "id": "git-changes",
+  "name": "Latest changes",
+  "kind": "ui",
+  "entry": "src/index.ts",
+  "moduleApiVersion": 1,
+  "dependencies": [
+    "git",
+    "persistence"
+  ],
+  "capabilities": [],
+  "stateVersion": 1,
+  "description": "One auto-updating diff of every working-tree change against HEAD, without tabs.",
+  "contributes": {
+    "panels": [
+      {
+        "id": "git-changes",
+        "title": "Latest changes",
+        "defaultHidden": true,
+        "dock": {
+          "column": 2,
+          "size": 0.38
+        },
+        "activity": {
+          "side": "right",
+          "order": 31,
+          "icon": "git"
+        }
+      }
+    ]
+  }
+}

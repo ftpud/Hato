@@ -109,7 +109,7 @@ test("projects-panel renders keyed tree rows with separate select/expand actions
   assert.equal(tr.rows[0].detail, "/a");
 });
 
-test("projects-panel animates rows whose workspace has an active AI turn", async () => {
+test("projects-panel animates rows whose workspace has an active AI chat or background agent", async () => {
   const m = (await load("modules/ui/projects-panel/src/index.ts")).default;
   const watchers = new Map();
   let expanded = true;
@@ -120,12 +120,23 @@ test("projects-panel animates rows whose workspace has an active AI turn", async
     modules: { call: async () => [{ id: "p1", name: "Alpha", kind: "local", rootPath: "/a", expanded, tasks: [{ id: "t1", name: "T", branch: "task/t-1", status: "ready" }] }] },
   };
   await m.activate(ctx);
-  let rows = m.render(ctx).children.find((c) => c.type === "tree").rows;
-  assert.equal(rows[0].busy, false);
-  assert.equal(rows[1].busy, true);
-  assert.equal(rows[1].detail, "AI working in 2 chats · task/t-1");
-  watchers.get("ai-sessions.busy")({ "project:p1:root": 1 });
-  rows = m.render(ctx).children.find((c) => c.type === "tree").rows;
-  assert.deepEqual(rows.map((r) => r.busy), [true, false]);
-  assert.equal(rows[0].detail, "AI working · /a");
+  try {
+    const spinning = (r) => r.iconColor === "primary" && /rotate\(/.test(r.iconSvg);
+    let rows = m.render(ctx).children.find((c) => c.type === "tree").rows;
+    assert.deepEqual(rows.map(spinning), [false, true]);
+    assert.equal(rows[1].detail, "AI working (2) · task/t-1");
+    watchers.get("ai-sessions.busy")({ "project:p1:root": 1 });
+    rows = m.render(ctx).children.find((c) => c.type === "tree").rows;
+    assert.deepEqual(rows.map(spinning), [true, false]);
+    assert.equal(rows[0].detail, "AI working · /a");
+    // Background agents count too, and add to chats in the same workspace.
+    watchers.get("persistent-agents.busy")({ "task:t1": 1, "project:p1:root": 1 });
+    rows = m.render(ctx).children.find((c) => c.type === "tree").rows;
+    assert.deepEqual(rows.map(spinning), [true, true]);
+    assert.equal(rows[0].detail, "AI working (2) · /a");
+    watchers.get("ai-sessions.busy")({});
+    watchers.get("persistent-agents.busy")({});
+    rows = m.render(ctx).children.find((c) => c.type === "tree").rows;
+    assert.deepEqual(rows.map(spinning), [false, false]);
+  } finally { m.deactivate(); }
 });

@@ -76,7 +76,8 @@ export function transcriptItems(messages: ChatMessage[], opts: TranscriptOptions
       text: opts.loadingOlder ? "Loading older messages…" : opts.historyError ? "Retry loading older messages" : "Load older messages",
       action: opts.loadOlderAction || "", disabled: !!opts.loadingOlder || !opts.loadOlderAction, tooltip: opts.historyError || "Load the previous message batch" });
   }
-  for (const m of messages) items.push(messageNode(m, opts));
+  // Permission decisions are logged, not shown; this also hides ones saved before that change.
+  for (const m of messages) if (!(m.role === "system" && /^Permission for "/.test(m.text || ""))) items.push(messageNode(m, opts));
   return items;
 }
 

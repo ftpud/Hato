@@ -3,7 +3,7 @@
   "_comment": "Install-time capability upper bounds for first-party modules. Compiled into the kernel binary (include_str!), so modules cannot widen it at runtime. 'calls' lists the modules each module may RPC.",
   "modules": {
     "agent-runner": {"kind": "service", "capabilities": ["db:agent-runner", "process.scope", "fs.scope"], "calls": ["internal-remote-mcp"]},
-    "persistent-agents": {"kind": "service", "capabilities": ["remote.daemon", "ssh.connect", "fs.scope", "approvals.request"], "calls": ["workspace", "persistence", "agent-runner", "internal-local-mcp", "internal-remote-mcp"]},
+    "persistent-agents": {"kind": "service", "capabilities": ["remote.daemon", "ssh.connect", "fs.scope", "approvals.request"], "calls": ["workspace", "persistence", "agent-runner", "internal-local-mcp", "internal-remote-mcp", "git-tasks"]},
     "internal-local-mcp": {"kind": "service", "capabilities": [], "calls": ["internal-mcp"]},
     "internal-remote-mcp": {"kind": "service", "capabilities": ["net.loopback", "db:internal-remote-mcp", "process.scope", "fs.scope"], "calls": ["agent-runner", "terminals", "workspace", "persistent-agents"]},
     "agents-panel": { "kind": "ui", "capabilities": [], "calls": ["persistent-agents"] },
@@ -27,6 +27,7 @@
     "settings":         { "kind": "ui", "capabilities": ["modules.read", "plugins.manage", "ui.dialog"], "calls": [] },
     "viewer":           { "kind": "ui", "capabilities": [], "calls": ["files", "workspace", "persistence", "git"] },
     "git-panel":        { "kind": "ui", "capabilities": [], "calls": ["git", "workspace", "persistence"] },
+    "git-changes":      { "kind": "ui", "capabilities": [], "calls": ["git", "persistence"] },
     "remote-panel":     { "kind": "ui", "capabilities": [], "calls": ["remote-runtime", "workspace"] },
     "terminal-panel":   { "kind": "ui", "capabilities": [], "calls": ["terminals", "workspace"] },
     "ai":               { "kind": "ui", "capabilities": [], "calls": ["ai-sessions", "acp", "workspace"] }

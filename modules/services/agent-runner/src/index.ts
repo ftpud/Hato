@@ -8,6 +8,8 @@ interface Live {
   session: AgentSession; peer: JsonRpcPeer; process: Handle; subscriptions: StreamSubscription[];
   permissions: Map<string, { value: AgentPermission; resolve:(v:any)=>void }>;
   queued: string[]; cancelSent: boolean; stopping: boolean; context: string; firstPrompt: boolean;
+  /** Agent supports `_session/steering`: follow-ups join the running turn instead of cancelling it. */
+  steering: boolean;
   turn: number; stderr: string;
 }
 let db: Handle;
@@ -118,7 +120,7 @@ async function start(ctx:ModuleContext,s:AgentSession) {
       spawned=await ctx.host.process.spawn(grant.grant,{target:{kind:"local"},executable:ctx.host.env.info().platform==="macos"?"/bin/zsh":"/bin/sh",
         args:["-lc",envRemove.length?'exec /usr/bin/env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN "$@"':'exec "$@"',"hato-agent",s.profile.executable,...s.profile.args],cwd:s.root,env,envRemove});
     } finally { await ctx.host.capabilities.release(grant.grant); }
-    c={session:s,process:spawned.handle,peer:null as any,subscriptions:[],permissions:new Map(),queued:[],cancelSent:false,stopping:false,context,firstPrompt:!s.contextSent,turn:Date.now(),stderr:""};
+    c={session:s,process:spawned.handle,peer:null as any,subscriptions:[],permissions:new Map(),queued:[],cancelSent:false,stopping:false,context,firstPrompt:!s.contextSent,turn:Date.now(),stderr:"",steering:false};
     const connection=c;
     c.peer=new JsonRpcPeer(line=>ctx.host.process.write(connection.process,line+"\n"));
     live.set(s.id,c);
@@ -126,6 +128,12 @@ async function start(ctx:ModuleContext,s:AgentSession) {
     c.peer.onRequest=async(method,params)=>{
       if(method!=="session/request_permission")throw rpcError(-32601,"Unsupported agent request");
       if(params.sessionId!==s.sessionId)throw rpcError(-32602,"Wrong session");
+      const tool=params.toolCall||{},options:any[]=params.options||[];
+      const allowOnce=options.find(o=>o.kind==="allow_once")||options.find(o=>String(o.kind).startsWith("allow"));
+      if(s.autopilot&&allowOnce) {
+        ctx.log.info(`autopilot approved "${tool.title||tool.kind||"tool"}" for ${s.name}`);
+        return {outcome:{outcome:"selected",optionId:allowOnce.optionId}};
+      }
       const id=crypto.randomUUID();
       const value={id,request:params,createdAt:now()};
       await ctx.host.db.exec(db,"INSERT INTO permissions(id,session_id,data) VALUES(?,?,?)",[id,s.id,JSON.stringify(value)]);
@@ -142,6 +150,7 @@ async function start(ctx:ModuleContext,s:AgentSession) {
     c.subscriptions.push(await ctx.host.streams.listen(c.process,{channel:"stderr"},chunk=>{connection.stderr=(connection.stderr+chunk).slice(-4000);}));
     const init=await request(c,"initialize",{protocolVersion:1,clientCapabilities:{fs:{readTextFile:false,writeTextFile:false},terminal:false},clientInfo:{name:"hato-agents",version:"0.1.0"}});
     if(init.protocolVersion!==1)throw new Error("Unsupported ACP version");
+    c.steering=init._meta?.steering?.supported===true;
     let mcpServers=s.mcps.map(({id,...server})=>server);
     if(s.workspaceMcp) {
       await ctx.modules.call("internal-remote-mcp","revoke",{sessionId:s.id});
@@ -246,9 +255,24 @@ const mod:AppModule={
       const c=await start(ctx,s);
       if(s.status==="busy"||s.status==="waiting") {
         if(a.steer!==true)throw new Error("Agent is busy; use Steer");
+        // Without steering support (or if it fails) a follow-up interrupts the turn, as before.
+        let interrupt=!c.steering;
+        if(c.steering&&!c.queued.length) {
+          // Inject into the running turn; only a turn that already ended needs a new prompt.
+          let outcome="unsupported";
+          try{const r=await request(c,"_session/steering",{sessionId:s.sessionId,prompt:[{type:"text",text}],_meta:{steering:{idleBehavior:"promptRequired"}}},30000);outcome=r?.outcome==="promptRequired"?"promptRequired":"steered";}
+          catch(e){ctx.log.warn("steering failed; falling back to interrupt",errMsg(e));interrupt=true;}
+          if(outcome==="steered"){await message(ctx,s,"user",text);await persist(ctx,s);return {steered:true};}
+          if(outcome==="promptRequired") {
+            if((s.status as string)==="ready")return prompt(ctx,c,text);  // the turn may end while steering
+            c.queued.push(text);
+            await ctx.host.db.exec(db,"UPDATE sessions SET queue_json=? WHERE id=?",[JSON.stringify(c.queued),s.id]);
+            return {queued:true};
+          }
+        }
         c.queued.push(text);
         await ctx.host.db.exec(db,"UPDATE sessions SET queue_json=? WHERE id=?",[JSON.stringify(c.queued),s.id]);
-        if(!c.cancelSent) {
+        if(interrupt&&!c.cancelSent) {
           c.cancelSent=true;
           for(const p of c.permissions.values())p.resolve({outcome:{outcome:"cancelled"}});
           c.permissions.clear();
@@ -265,6 +289,74 @@ const mod:AppModule={
       await ctx.host.db.exec(db,"UPDATE permissions SET resolved=1 WHERE session_id=?",[c.session.id]);
       await c.peer.notify("session/cancel",{sessionId:c.session.sessionId});}return null;},
     setModel:(ctx,a)=>serialize(String(a.id),async()=>{const c=live.get(String(a.id));if(!c)throw new Error("Reconnect agent first");const choice=modelChoices(c.session).find(m=>m.id===a.model);if(!choice)throw new Error("Unknown model");await config(ctx,c,choice.configId,choice.id);return c.session;}),
+    async setAutopilot(ctx,a,meta) {
+      if(meta.caller!=="daemon-client")throw new Error("Only the desktop gateway changes autopilot");
+      const s=session(a.id),enabled=a.enabled===true;
+      if(!!s.autopilot!==enabled) {
+        s.autopilot=enabled;await persist(ctx,s);
+        await message(ctx,s,"system",enabled?"Autopilot enabled: tool permissions are approved automatically, including Git task creation (which still needs the desktop open).":"Autopilot disabled: permission requests wait for review.");
+        // Requests already waiting are approved too, so enabling autopilot unblocks the agent.
+        const c=live.get(s.id);
+        if(enabled&&c)for(const p of [...c.permissions.values()]) {
+          const options:any[]=p.value.request.options||[];
+          const allowOnce=options.find(o=>o.kind==="allow_once")||options.find(o=>String(o.kind).startsWith("allow"));
+          if(!allowOnce)continue;
+          await ctx.host.db.exec(db,"UPDATE permissions SET resolved=1 WHERE id=?",[p.value.id]);
+          c.permissions.delete(p.value.id);p.resolve({outcome:{outcome:"selected",optionId:allowOnce.optionId}});
+        }
+        if(c&&c.session.status==="waiting"&&!c.permissions.size){c.session.status="busy";await persist(ctx,c.session);}
+      }
+      return publicSession(s);
+    },
+    /** Change an agent's configuration. Anything besides the name restarts a connected agent; a new
+     *  provider also starts a new provider session. Instructions are re-sent on the next prompt. */
+    update:(ctx,a,meta)=>serialize(String(a.id),async()=>{
+      if(meta.caller!=="daemon-client")throw new Error("Only the desktop gateway edits agents");
+      const s=session(a.id),p=a.patch||{};
+      const name=String(p.name||"").trim().slice(0,120);if(!name)throw new Error("Agent name is required");
+      // A patch without `profile` renames only.
+      if(p.profile!==undefined&&(!p.profile?.executable||!Array.isArray(p.profile.args)||!Array.isArray(p.skills)||!Array.isArray(p.mcps)))throw new Error("Invalid agent configuration");
+      const configChanged=p.profile!==undefined&&JSON.stringify([s.profile,s.model,s.agentFile,s.skills,s.mcps,!!s.workspaceMcp])!==JSON.stringify([p.profile,String(p.model||""),p.agentFile||null,p.skills,p.mcps,!!p.workspaceMcp]);
+      if(configChanged&&["busy","waiting","starting"].includes(s.status))throw new Error("Wait for the agent to finish its turn, or cancel it, before changing its configuration");
+      const wasLive=live.has(s.id);
+      if(configChanged&&wasLive)await stop(ctx,s.id);
+      const newProvider=configChanged&&s.profile.id!==p.profile.id;
+      s.name=name;
+      if(configChanged) {
+        Object.assign(s,{profile:p.profile,model:String(p.model||""),agentFile:p.agentFile||null,skills:p.skills,mcps:p.mcps,workspaceMcp:!!p.workspaceMcp,contextSent:false});
+        if(newProvider){s.sessionId=null;s.configOptions=[];s.models=null;}
+      }
+      await persist(ctx,s);
+      if(configChanged&&wasLive)await start(ctx,s);
+      return publicSession(s);
+    }),
+    /** Drop the conversation: history, pending permissions and queued steering, then a fresh provider session. */
+    clear:(ctx,a,meta)=>serialize(String(a.id),async()=>{
+      if(meta.caller!=="daemon-client")throw new Error("Only the desktop gateway clears agents");
+      const s=session(a.id);
+      if(["busy","waiting","starting"].includes(s.status))throw new Error("Cancel the running turn before clearing the session");
+      const wasLive=live.has(s.id);
+      if(wasLive)await stop(ctx,s.id);
+      await writes;
+      await ctx.host.db.exec(db,"DELETE FROM messages WHERE session_id=?",[s.id]);
+      await ctx.host.db.exec(db,"DELETE FROM permissions WHERE session_id=?",[s.id]);
+      Object.assign(s,{sessionId:null,contextSent:false,error:null,configOptions:[],models:null});
+      await persist(ctx,s);
+      if(wasLive)await start(ctx,s);
+      return publicSession(s);
+    }),
+    /** Stop the agent and delete it with its history. */
+    remove:(ctx,a,meta)=>serialize(String(a.id),async()=>{
+      if(meta.caller!=="daemon-client")throw new Error("Only the desktop gateway removes agents");
+      const s=session(a.id);
+      await stop(ctx,s.id);
+      await writes;
+      sessions.delete(s.id);
+      await ctx.host.db.exec(db,"DELETE FROM messages WHERE session_id=?",[s.id]);
+      await ctx.host.db.exec(db,"DELETE FROM permissions WHERE session_id=?",[s.id]);
+      await ctx.host.db.exec(db,"DELETE FROM sessions WHERE id=?",[s.id]);
+      return null;
+    }),
     async permission(ctx,a) {
       const c=live.get(String(a.id)),p=c?.permissions.get(String(a.permissionId));if(!c||!p)throw new Error("Permission request is no longer active");
       const option=p.value.request.options?.find((o:any)=>o.optionId===a.optionId);

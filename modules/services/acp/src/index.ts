@@ -31,6 +31,8 @@ interface Conn {
   sessionId: string | null;
   agentInfo: any;
   agentCapabilities: any;
+  /** Agent advertised the `_session/steering` extension (inject into the running turn). */
+  steering: boolean;
   authMethods: any[];
   configOptions: any[] | null;
   modes: any | null;
@@ -138,7 +140,7 @@ async function start(ctx: ModuleContext, a: any) {
   });
   const c: Conn = {
     conversationId: a.conversationId, workspaceId: desc.id, machineId: desc.machineId, cwd: desc.rootAbsolutePath, profileId: profile.id,
-    proc: spawned.handle, pid: spawned.pid, peer: null as any, sessionId: null, agentInfo: null, agentCapabilities: null, authMethods: [],
+    proc: spawned.handle, pid: spawned.pid, peer: null as any, sessionId: null, agentInfo: null, agentCapabilities: null, steering: false, authMethods: [],
     configOptions: null, modes: null, models: null, commands: [], usage: null, status: "starting", error: null, stderrTail: "",
     mcp: { enabled: !!a.mcp, status: a.mcp ? "pending" : "disabled" }, executablePath: det.path, startedAt: Date.now(),
   };
@@ -153,6 +155,7 @@ async function start(ctx: ModuleContext, a: any) {
     }), 60000, "initialize");
     c.agentInfo = init.agentInfo || null;
     c.agentCapabilities = init.agentCapabilities || {};
+    c.steering = init._meta?.steering?.supported === true;
     c.authMethods = init.authMethods || [];
     if (init.protocolVersion !== PROTOCOL_VERSION) throw new Error(`agent negotiated unsupported ACP protocol version ${init.protocolVersion}`);
     let mcpServers: any[] = [];
@@ -296,6 +299,19 @@ const mod: AppModule = {
         (e) => { if (c.status === "busy") c.status = "ready"; c.error = errMsg(e); emitStatus(ctx, c); ctx.events.emit("acp.turnEnded", { conversationId: c.conversationId, error: errMsg(e) }); },
       );
       return { accepted: true };
+    },
+    /** Inject a message into the running turn without interrupting it.
+     *  Returns `steered`, `promptRequired` (the turn already ended) or `unsupported`. */
+    async steer(ctx, a) {
+      const c = conns.get(a.conversationId);
+      if (!c || !c.sessionId || !c.steering) return { outcome: "unsupported" };
+      const images = imageAttachments(a.images);
+      if (images.length && !c.agentCapabilities?.promptCapabilities?.image) throw new Error("This agent does not support image prompts. Choose an agent with image support.");
+      const blocks: any[] = a.text ? [{ type: "text", text: String(a.text) }] : [];
+      blocks.push(...images.map((image) => ({ type: "image", mimeType: image.mimeType, data: image.data })));
+      if (!blocks.length) throw new Error("empty prompt");
+      const r: any = await withTimeout(c.peer.request("_session/steering", { sessionId: c.sessionId, prompt: blocks, _meta: { steering: { idleBehavior: "promptRequired" } } }), 30000, "steering");
+      return { outcome: r?.outcome === "promptRequired" ? "promptRequired" : "steered" };
     },
     async cancel(ctx, a) {
       const c = conns.get(a.conversationId);
