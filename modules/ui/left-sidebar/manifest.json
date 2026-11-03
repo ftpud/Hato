@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "id": "left-sidebar",
+  "kind": "ui",
+  "entry": "src/index.ts",
+  "moduleApiVersion": 1,
+  "dependencies": [],
+  "capabilities": [],
+  "stateVersion": 1,
+  "description": "Left activity sidebar for toggling AI Chat and Terminal panels."
+}

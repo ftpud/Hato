@@ -10,7 +10,7 @@ export default {
       const hdr0 = find(await T("test.render", { module: "workspace-layout" }), (n) => n.key === "mods");
       check("header shows plain Modules button", hdr0 && hdr0.text === "Modules", hdr0 && hdr0.text);
       // Edit explorer source -> detected automatically by the background poll
-      await T("test.exec", { argv: ["sh", "-c", 'sed -i "" "s/text: \\"FILES\\"/text: \\"FILES v2\\"/" "$0"', ROOT + "/modules/ui/explorer/src/index.ts"], cwd: "/" });
+      await T("test.exec", { argv: ["python3", "-c", "from pathlib import Path; import sys; p=Path(sys.argv[1]); p.write_text(p.read_text().replace('placeholder: \"Filter files\"', 'placeholder: \"Filter files v2\"'))", ROOT + "/modules/ui/explorer/src/index.ts"], cwd: "/" });
       const det = await until(async () => { const u = await call("module-dev", "updates"); return u.available.includes("explorer") ? u : null; }, 15000, 300);
       check("source edit detected automatically (no click)", det && det.available.length === 1, det && det.available);
       const hdr1 = await until(async () => { const h = find(await T("test.render", { module: "workspace-layout" }), (n) => n.key === "mods"); return h && /1 update/.test(h.text) ? h : null; }, 5000);
@@ -29,8 +29,8 @@ export default {
       // Activate all -> applied, then up to date
       await T("test.approvals", { policy: "allow" });
       await ev("workspace-layout", "activateAll");
-      const ex = texts(await T("test.render", { module: "explorer" }));
-      check("Activate all updates applied the change live", ex.includes("FILES v2"), ex.slice(0, 4));
+      const ex = find(await T("test.render", { module: "explorer" }), (n) => n.key === "file-filter");
+      check("Activate all updates applied the change live", ex && ex.placeholder === "Filter files v2", ex);
       const after = await call("module-dev", "updates");
       check("explorer now up to date; viewer still flagged as error, not activated", !after.available.includes("explorer") && after.errors.includes("viewer"), after);
     } catch (e) { check("uncaught", false, e.message + "\n" + e.stack); }

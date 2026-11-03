@@ -101,5 +101,8 @@ test("projects-panel renders keyed tree rows with separate select/expand actions
   assert.equal(tr.selectAction, "selectWorkspace");
   assert.equal(tr.expandAction, "toggleExpanded");
   assert.deepEqual(tr.rows.map((r) => r.key), ["project:p1:root", "task:t1"]);
-  assert.equal(tr.rows[0].badge, "Local / Git");
+  assert.equal(tr.rows[0].badge, "1 task");
+  assert.equal(tr.rows[1].connector, "last");
+  assert.equal(tr.appearance, "projects");
+  assert.equal(tr.rows[0].detail, "/a");
 });

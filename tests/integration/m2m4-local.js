@@ -38,19 +38,19 @@ async function run(ctx) {
   check("New Git Task offered for git project", !!find(panel, (n) => n.key === "new-task"));
 
   // ---- M3: explorer/viewer
-  await until(async () => (await T("test.render", { module: "explorer" })) && find(await T("test.render", { module: "explorer" }), (n) => n.type === "fileList"));
+  await until(async () => find(await T("test.render", { module: "explorer" }), (n) => n.type === "tree" && n.rows.some((row) => row.key === "src")));
   let ex = await T("test.render", { module: "explorer" });
-  let fl = find(ex, (n) => n.type === "fileList");
-  check("explorer lists root (src/ dir present, .git hidden)", fl && fl.entries.some((e) => e.key === "src" && e.kind === "dir") && !fl.entries.some((e) => e.key === ".git"), fl && fl.entries);
+  let fl = find(ex, (n) => n.type === "tree");
+  check("explorer tree lists root folders, including .git", fl && fl.rows.some((e) => e.key === "src" && e.expandable) && fl.rows.some((e) => e.key === ".git"), fl && fl.rows);
   await ev("explorer", "open", { rowKey: "src" });
-  ex = await until(async () => { const r = await T("test.render", { module: "explorer" }); const f = find(r, (n) => n.type === "fileList"); return f && f.entries.some((e) => e.key === "src/main.rs") ? r : null; });
+  ex = await until(async () => { const r = await T("test.render", { module: "explorer" }); const f = find(r, (n) => n.type === "tree"); return f && f.rows.some((e) => e.key === "src/main.rs") ? r : null; });
   check("navigate into src/", !!ex);
   await ev("explorer", "open", { rowKey: "src/main.rs" });
   const vw = await until(async () => { const r = await T("test.render", { module: "viewer" }); const c = find(r, (n) => n.type === "codeViewer"); return c && c.document ? r : null; });
   const cv = vw && find(vw, (n) => n.type === "codeViewer");
   const doc = cv && (await T("test.document", { handle: cv.document }));
   check("viewer opens native rust document", doc && doc.language === "rust" && doc.head.includes("fn main"), doc);
-  await ev("explorer", "up");
+  await ev("explorer", "collapseAll");
   await ev("explorer", "open", { rowKey: "logo.bin" });
   const bin = await until(async () => { const r = await T("test.render", { module: "viewer" }); return find(r, (n) => n.key === "bin") ? r : null; });
   check("binary file handled sensibly", !!bin);
@@ -98,12 +98,12 @@ async function run(ctx) {
 
   // ---- Hot swap: projects-panel UI (0002) without restart; PTY survives
   const ppSrc = await T("test.readFile", { path: (await T("test.env", { name: "HATO_T_BUILD" })) + "/projects-panel.mjs" });
-  const v2 = ppSrc.replace('text: "PROJECTS"', 'text: "PROJECTS (v2)"');
+  const v2 = ppSrc.replace('placeholder: "Filter projects"', 'placeholder: "Filter projects (v2)"');
   const st = await T("test.stage", { id: "projects-panel", code: v2 });
   const act = await T("test.activate", { id: "projects-panel", stageId: st.stageId });
   check("projects-panel swapped to new version", act.ok && act.version === st.version, act);
   panel = await T("test.render", { module: "projects-panel" });
-  check("new UI visible", texts(panel).includes("PROJECTS (v2)"), texts(panel).slice(0, 5));
+  check("new UI visible", find(panel, n => n.key === "project-filter")?.placeholder === "Filter projects (v2)", texts(panel).slice(0, 5));
   check("selection survives swap", find(panel, (n) => n.type === "tree").rows.find((r) => r.key === wsA).selected);
   const tsrc = await T("test.readFile", { path: (await T("test.env", { name: "HATO_T_BUILD" })) + "/terminal-panel.mjs" });
   const ts = await T("test.stage", { id: "terminal-panel", code: tsrc.replace('"Restart shell"', '"Restart shell (v2)"') });
@@ -137,10 +137,10 @@ async function run(ctx) {
   try { await T("test.activate", { id: "projects-panel", stageId: st3.stageId }); } catch (e) { actErr = e.message; }
   check("activation failure keeps previous version", actErr && /remains active/.test(actErr), actErr);
   panel = await T("test.render", { module: "projects-panel" });
-  check("previous UI still rendering after failed activation", texts(panel).includes("PROJECTS (v2)"));
+  check("previous UI still rendering after failed activation", find(panel, n => n.key === "project-filter")?.placeholder === "Filter projects (v2)");
   const rb = await T("test.rollback", { id: "projects-panel" });
   panel = await T("test.render", { module: "projects-panel" });
-  check("rollback restores original UI", rb.ok && texts(panel).includes("PROJECTS"), rb);
+  check("rollback restores original UI", rb.ok && find(panel, n => n.key === "project-filter")?.placeholder === "Filter projects", rb);
   const mods = await T("test.modules");
   const ppm = mods.find((m) => m.id === "projects-panel");
   check("old generations retired (no stale listeners)", ppm.generations.filter((g) => g.status === "active").length === 1 && ppm.generations.filter((g) => g.status === "active")[0].subscriptions <= 2, ppm.generations);

@@ -32,6 +32,12 @@ const mod: AppModule = {
   methods: {
     attach: (ctx, a) => attach(ctx, a, false),
     restart: (ctx, a) => attach(ctx, a, true),
+    async close(ctx, a) {
+      const h = await ctx.host.resources.lookup(keyFor(a.workspaceId, a.key));
+      if (h) await ctx.host.pty.close(h);
+      ctx.events.emit("terminals.changed", { workspaceId: a.workspaceId });
+      return null;
+    },
     async lookup(ctx, a) { return ctx.host.resources.lookup(keyFor(a.workspaceId, a.key)); },
     async info(ctx, a) {
       const h = await ctx.host.resources.lookup(keyFor(a.workspaceId, a.key));

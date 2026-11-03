@@ -14,6 +14,7 @@ export const BAR_ITEMS: Record<string, { title: string; grow?: boolean }> = {
   title: { title: "App title" },
   workspace: { title: "Active workspace", grow: true },
   layoutMenu: { title: "Layout menu" },
+  settings: { title: "Settings button" },
   modules: { title: "Modules button" },
   machine: { title: "Execution machine" },
   versions: { title: "Module versions", grow: true },
@@ -24,6 +25,8 @@ export type BarId = "top" | "bottom";
 export interface Column { panels: string[]; size: number; sizes: number[] }
 export interface Layout {
   v: 1;
+  settingsButton?: true;
+  showPanelControls: boolean;
   columns: Column[];
   bottom: { panels: string[]; sizes: number[]; collapsed: boolean };
   mainSizes: [number, number];
@@ -37,6 +40,8 @@ export interface Layout {
 export function defaultLayout(): Layout {
   return {
     v: 1,
+    settingsButton: true,
+    showPanelControls: true,
     columns: [
       { panels: ["projects"], size: 0.17, sizes: [1] },
       { panels: ["files"], size: 0.17, sizes: [1] },
@@ -50,7 +55,7 @@ export function defaultLayout(): Layout {
     detached: {},
     hidden: [],
     bars: {
-      top: { visible: true, items: ["title", "workspace", "layoutMenu", "modules"] },
+      top: { visible: true, items: ["title", "workspace", "layoutMenu", "modules", "settings"] },
       bottom: { visible: true, items: ["machine", "versions", "approvals"] },
     },
   };
@@ -188,6 +193,10 @@ export function repair(raw: any): Layout {
     l.bars[b].items = (Array.isArray(l.bars[b].items) ? l.bars[b].items : []).filter((x: string) => Object.prototype.hasOwnProperty.call(BAR_ITEMS, x) && !s2.has(x) && s2.add(x) && !(b === "bottom" && l.bars.top.items.includes(x)));
     l.bars[b].visible = l.bars[b].visible !== false;
   }
+  // Add Settings once to layouts saved before the Settings module existed.
+  if (!raw.settingsButton && !l.bars.top.items.includes("settings") && !l.bars.bottom.items.includes("settings")) l.bars.top.items.push("settings");
+  l.settingsButton = true;
+  l.showPanelControls = raw.showPanelControls !== false;
   l.collapsed = l.collapsed && typeof l.collapsed === "object" && !Array.isArray(l.collapsed) ? l.collapsed : {};
   for (const [id, g] of Object.entries(l.floating)) {
     const fallback = { x: 120, y: 120, width: 520, height: 380 };

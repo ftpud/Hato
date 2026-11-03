@@ -14,6 +14,7 @@ const L = (ctx) => ctx.modules.call("workspace-layout", "getLayout");
 async function phase1(ctx) {
   let ui = await R();
   check("top bar with draggable items", !!find(ui, (n) => n.key === "bar:top") && !!find(ui, (n) => n.key === "baritem:top:modules"));
+  check("top bar uses native title-bar integration", !!find(ui, (n) => n.type === "titleBar" && n.key === "bar-top"));
   const cols = find(ui, (n) => n.key === "cols");
   check("columns are a resizable split with collapse support", cols && cols.type === "split" && cols.resizeAction === "resize" && cols.collapseAction === "collapse" && cols.children.length === 4, cols && Object.keys(cols));
   check("each panel is a drop zone with a drag handle", ["projects", "files", "viewer", "ai", "terminal"].every((p) => find(ui, (n) => n.key === "panel:" + p && n.type === "dropZone")) && !!find(ui, (n) => n.type === "dragHandle" && n.payload && n.payload.id === "ai"));
@@ -35,7 +36,7 @@ async function phase1(ctx) {
   await ev("workspace-layout", "collapse", { key: "col:0", value: { index: 1 } });
   ui = await R();
   const col0b = find(ui, (n) => n.key === "col:0");
-  check("collapsed panel gets a fixed header-only row", col0b.fixed[1] === 30 && !find(find(ui, (n) => n.key === "panel:files"), (n) => n.type === "slot"));
+  check("collapsed panel reserves no row and has a readable restore button", !!find(ui, (n) => n.key === "restore-files" && n.text === "Files") && col0b.fixed[1] === 0 && !find(find(ui, (n) => n.key === "panel:files"), (n) => n.type === "slot"));
   await ev("workspace-layout", "toggleCollapse", { value: "files" });
   check("expand restores the panel", !(await L(ctx)).collapsed.files);
   // float the AI panel, move it natively, detach the viewer into a window
@@ -51,13 +52,14 @@ async function phase1(ctx) {
   await ev("workspace-layout", "dropBar", { key: "baritem:top:workspace", value: { payload: { kind: "item", id: "versions" }, region: "left", zone: "baritem:top:workspace" } });
   await ev("workspace-layout", "toggleBar", { value: "bottom" });
   l = await L(ctx);
-  check("bar item moved between bars by drag", l.bars.top.items.join(",") === "title,versions,workspace,layoutMenu,modules" && !l.bars.bottom.items.includes("versions"), l.bars);
+  check("bar item moved between bars by drag", l.bars.top.items.join(",") === "title,versions,workspace,layoutMenu,modules,settings" && !l.bars.bottom.items.includes("versions"), l.bars);
   ui = await R();
   check("hidden bottom bar not rendered", !find(ui, (n) => n.key === "bar:bottom"));
   // Native checkbox events carry checked state, with the bar identified by its key.
   await ev("workspace-layout", "toggleBar", { key: "tb", value: false });
   ui = await R();
   check("both bars can be hidden and Layout remains accessible", !find(ui, (n) => n.key === "bar:top") && !!find(ui, (n) => n.key === "layout-access"));
+  check("hidden top bar retains window dragging and controls", !!find(ui, (n) => n.type === "titleBar" && n.key === "window-titlebar"));
   await ev("workspace-layout", "toggleBar", { key: "tb", value: true });
   await ev("workspace-layout", "removeItem", { value: "layoutMenu" });
   ui = await R();

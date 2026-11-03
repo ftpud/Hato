@@ -182,9 +182,11 @@ export interface UiEvent {
   inputs: Record<string, string>;
 }
 
-interface Base { key: string; grow?: boolean; width?: number; height?: number; /** Cap height (px); the node may shrink below it and should scroll. */ maxHeight?: number; minWidth?: number; padding?: number; gap?: number; bg?: "panel" | "muted" | "accent" | "none"; border?: boolean; tooltip?: string }
+interface Base { surface?: "sidebar" | "sidebar-button" | "chat" | "chat-toolbar" | "chat-composer" | "chat-settings" | "chat-picker" | "chat-control" | "chat-primary" | "chat-result"; key: string; grow?: boolean; width?: number; height?: number; /** Cap height (px); the node may shrink below it and should scroll. */ maxHeight?: number; minWidth?: number; padding?: number; gap?: number; bg?: "panel" | "muted" | "accent" | "none"; border?: boolean; borderSide?: "left" | "right"; tooltip?: string }
 export type UiNode =
-  | (Base & { type: "row" | "column"; children: UiNode[]; align?: "start" | "center" | "end"; scroll?: boolean })
+  | (Base & { type: "theme"; palette: { light: Record<string, string>; dark: Record<string, string> } })
+  | (Base & { type: "titleBar"; children: UiNode[] })
+  | (Base & { type: "row" | "column"; children: UiNode[]; align?: "start" | "center" | "end" | "stretch"; wrap?: boolean; scroll?: boolean })
   | (Base & { type: "split"; direction: "horizontal" | "vertical"; sizes?: number[]; children: UiNode[];
       /** Fixed size in px per child (null = flexible). */ fixed?: (number | null)[]; minSize?: number; resizable?: boolean;
       /** Fired once when a divider drag ends: value {sizes}. */ resizeAction?: string;
@@ -201,21 +203,37 @@ export type UiNode =
   | (Base & { type: "tabs"; tabs: { key: string; label: string }[]; active: string; action: string; children: UiNode[] })
   | (Base & { type: "slot"; module: string })
   | (Base & { type: "label"; text: string; size?: "xs" | "sm" | "md" | "lg"; weight?: "normal" | "bold"; color?: "default" | "muted" | "accent" | "danger" | "success" | "warning"; mono?: boolean; wrap?: boolean })
-  | (Base & { type: "button"; text: string; action: string; variant?: "primary" | "ghost" | "danger" | "default"; disabled?: boolean; value?: Json; small?: boolean })
-  | (Base & { type: "textInput"; placeholder?: string; value?: string; submitAction?: string; secret?: boolean; multiline?: boolean; rows?: number; disabled?: boolean })
+  | (Base & { type: "button"; text: string; /** Inline SVG drawing, bundled and hot reloaded with the module. Takes precedence over icon. */ iconSvg?: string; iconSize?: number; icon?: "terminal" | "git-branch" | "files" | "paperclip" | "send" | "sliders-horizontal" | "message-square" | "graduation-cap" | "plus" | "x" | "refresh" | "collapse" | "locate" | "folder"; action: string; variant?: "primary" | "ghost" | "danger" | "default"; disabled?: boolean; value?: Json; small?: boolean })
+  | (Base & { type: "textInput"; placeholder?: string; value?: string; submitAction?: string; changeAction?: string; search?: boolean; pasteImageAction?: string; secret?: boolean; multiline?: boolean; rows?: number; disabled?: boolean })
   | (Base & { type: "select"; options: { value: string; label: string; disabled?: boolean }[]; value: string | null; action: string; disabled?: boolean; placeholder?: string; label?: string; disabledReason?: string })
+  | (Base & { type: "usageMeter"; value: number | null })
+  | (Base & { type: "choice"; text: string; description?: string; selected?: boolean; action: string; value: string })
+  | (Base & { type: "switch"; label: string; checked: boolean; action: string; disabled?: boolean })
+  | (Base & { type: "popover"; children: UiNode[]; closeAction: string })
   | (Base & { type: "toggle"; label: string; checked: boolean; action: string; disabled?: boolean })
-  | (Base & { type: "tree"; rows: TreeRow[]; selectAction: string; expandAction: string })
+  | (Base & { type: "tree"; appearance?: "files" | "projects"; rows: TreeRow[]; selectAction: string; expandAction: string })
   | (Base & { type: "fileList"; entries: { key: string; name: string; kind: string; size?: number; selected?: boolean }[]; action: string })
   | (Base & { type: "status"; text: string; level?: "info" | "warn" | "error" | "success" })
   | (Base & { type: "progress"; value?: number; indeterminate?: boolean; label?: string })
+  | (Base & { type: "markdown"; document: Handle; })
   | (Base & { type: "codeViewer"; document: Handle | null; placeholder?: string })
   | (Base & { type: "terminal"; pty: Handle | null; placeholder?: string })
-  | (Base & { type: "chatTranscript"; messages: ChatMessage[] })
+  | (Base & { type: "imagePicker"; action: string; disabled?: boolean })
+  | (Base & { type: "image"; image: ImageAttachment })
+  | (Base & { type: "chatTranscript"; messages: ChatMessage[]; conversationId?: string; hasOlder?: boolean; loadingOlder?: boolean; historyError?: string | null; loadOlderAction?: string; agentLabel?: string })
+  | (Base & { type: "appearanceControl" })
   | (Base & { type: "approvalPanel" })
   | (Base & { type: "divider" })
   | (Base & { type: "spacer" })
   | (Base & { type: "modal"; title: string; children: UiNode[]; closeAction?: string });
 
-export interface TreeRow { key: string; label: string; depth: number; expandable: boolean; expanded: boolean; selected: boolean; badge?: string; detail?: string; icon?: "folder" | "git" | "remote" | "task" | "file" | "warning" }
-export interface ChatMessage { key: string; role: "user" | "assistant" | "thought" | "tool" | "system" | "error" | "plan"; text: string; title?: string; status?: string }
+export interface TreeRow { connector?: "branch" | "last"; key: string; label: string; depth: number; expandable: boolean; expanded: boolean; selected: boolean; badge?: string; detail?: string; icon?: "folder" | "git" | "remote" | "task" | "file" | "warning" | "code" | "config" | "text" | "image" | "archive" | "link" }
+export interface ImageAttachment { name: string; mimeType: string; data: string }
+export interface ChatMessage { images?: ImageAttachment[]; key: string; role: "user" | "assistant" | "thought" | "tool" | "system" | "error" | "plan"; text: string; title?: string; status?: string }
+
+/** Published at <moduleId>.settings; only the owning module can write it. */
+export type SettingField =
+  | { key: string; label: string; description?: string; type: "toggle"; value: boolean }
+  | { key: string; label: string; description?: string; type: "select"; value: string; options: { value: string; label: string }[] };
+export interface SettingsSection { key: string; title: string; fields: SettingField[] }
+export interface SettingsExport { sections: SettingsSection[]; error: string | null }

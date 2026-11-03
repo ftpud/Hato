@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "id": "settings",
+  "kind": "ui",
+  "entry": "src/index.ts",
+  "moduleApiVersion": 1,
+  "dependencies": [],
+  "capabilities": [
+    "modules.read"
+  ],
+  "stateVersion": 1,
+  "description": "Settings menu and module-contributed preferences."
+}

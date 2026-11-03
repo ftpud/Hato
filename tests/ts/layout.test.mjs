@@ -45,7 +45,7 @@ test("float / detach / hide / back to bottom keep a single location", () => {
 
 test("bar items move between bars and reorder", () => {
   let l = M.moveBarItem(M.defaultLayout(), "versions", "top", "workspace");
-  assert.deepEqual(l.bars.top.items, ["title", "versions", "workspace", "layoutMenu", "modules"]);
+  assert.deepEqual(l.bars.top.items, ["title", "versions", "workspace", "layoutMenu", "modules", "settings"]);
   assert.ok(!l.bars.bottom.items.includes("versions"));
   l = M.moveBarItem(l, "title", "bottom", "approvals", true);
   assert.deepEqual(l.bars.bottom.items, ["machine", "approvals", "title"]);
@@ -58,7 +58,7 @@ test("repair drops unknown/duplicate ids and re-docks missing panels", () => {
   const l = M.repair(bad);
   assert.deepEqual(all(l), Object.keys(M.PANELS).sort());
   assert.ok(Math.abs(sum(l.columns.map((c) => c.size)) - 1) < 1e-6);
-  assert.deepEqual(l.bars.top.items, ["title"]);
+  assert.deepEqual(l.bars.top.items, ["title", "settings"]);
   assert.deepEqual(M.repair(null), M.defaultLayout());
 });
 
@@ -69,4 +69,42 @@ test("repair tolerates malformed persisted containers and geometry", () => {
   assert.equal(l.detached.viewer.width, 760);
   assert.deepEqual(l.bars.bottom.items, ["modules"]);
   assert.deepEqual(M.moveBarItem(l, "modules", "invalid", null), l);
+});
+
+test("Settings migrates old layouts once and respects later placement", () => {
+  const old = M.defaultLayout();
+  delete old.settingsButton;
+  old.bars.top.items = old.bars.top.items.filter((id) => id !== "settings");
+  const migrated = M.repair(old);
+  assert.ok(migrated.bars.top.items.includes("settings"));
+  const moved = M.moveBarItem(migrated, "settings", "bottom", null);
+  assert.ok(M.repair(moved).bars.bottom.items.includes("settings"));
+  assert.ok(!M.repair(M.removeBarItem(migrated, "settings")).bars.top.items.includes("settings"));
+});
+
+test("collapsed panes use full-name restore buttons without reserving columns or rows", async () => {
+  const built = await esbuild.build({ entryPoints: [path.join(root, 'modules/ui/workspace-layout/src/index.ts')], bundle: true, format: 'esm', write: false });
+  const mod = (await import('data:text/javascript;base64,' + Buffer.from(built.outputFiles[0].text).toString('base64'))).default;
+  const layout = M.defaultLayout();
+  layout.collapsed = { projects: true, files: true, viewer: true };
+  const originalSizes = layout.columns.map(c => c.size);
+  const ctx = { modules: { async call(_, method) { if (method === 'list') return []; if (method === 'updates') return { modules: [], available: [], errors: [] }; } }, state: { get() { return null; }, set() {}, watch() {} }, events: { on() {} }, ui: { invalidate() {} }, log: { warn() {} } };
+  const walk = node => [node, ...(node.children || []).flatMap(walk)];
+  await mod.activate(ctx, { layout });
+  let nodes = walk(mod.render());
+  const cols = nodes.find(node => node.key === 'cols');
+  assert.deepEqual(cols.fixed, [0, 0, 0, null]);
+  const restore = nodes.find(node => node.key === 'restore-buttons');
+  assert.equal(restore.wrap, true);
+  assert.deepEqual(restore.children.filter(node => node.type === 'button').map(node => node.text), ['Projects', 'Files', 'Source viewer']);
+  for (const id of ['projects', 'files', 'viewer']) assert.ok(!nodes.some(node => node.type === 'slot' && node.module === M.PANELS[id].slot));
+  await mod.onEvent(ctx, { action: 'toggleCollapse', value: 'files', inputs: {} });
+  assert.deepEqual(mod.methods.getLayout().columns.map(c => c.size), originalSizes);
+  nodes = walk(mod.render());
+  assert.ok(nodes.some(node => node.type === 'slot' && node.module === 'explorer'));
+  assert.ok(!nodes.some(node => node.key === 'restore-files'));
+  await mod.methods.setLayout(ctx, { layout: { ...layout, collapsed: Object.fromEntries(Object.keys(M.PANELS).map(id => [id, true])) } });
+  nodes = walk(mod.render());
+  assert.ok(nodes.some(node => node.key === 'empty'));
+  assert.equal(nodes.find(node => node.key === 'restore-buttons').children.filter(node => node.type === 'button').length, 5);
 });

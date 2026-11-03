@@ -45,7 +45,7 @@ async function run(ctx) {
   check("SSH workspace descriptor bound to remote machine", sel && sel.machineId.startsWith("ssh:") && sel.location === "ssh", sel);
 
   // SFTP explorer + remote viewer
-  const ex = await until(async () => { const r = await T("test.render", { module: "explorer" }); const f = find(r, (n) => n.type === "fileList"); return f && f.entries.some((e) => e.key === "src") ? f : null; }, 20000);
+  const ex = await until(async () => { const r = await T("test.render", { module: "explorer" }); const f = find(r, (n) => n.type === "tree"); return f && f.rows.some((e) => e.key === "src") ? f : null; }, 20000);
   check("remote explorer lists via SFTP", !!ex, ex);
   const op = await call("files", "open", { workspaceId: wsR, relativePath: "src/main.rs" });
   const doc = await T("test.document", { handle: op.document });

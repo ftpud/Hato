@@ -9,6 +9,8 @@ let error: string | null = null;
 let notice: string | null = null;
 let busy: string | null = null;
 let sshForm = false;
+let addForm = false;
+let filter = "";
 let taskFormFor: string | null = null;
 
 async function reload(ctx: ModuleContext) {
@@ -19,18 +21,23 @@ async function reload(ctx: ModuleContext) {
 
 function rows(): TreeRow[] {
   const out: TreeRow[] = [];
+  const query = filter.trim().toLowerCase();
   for (const p of tree) {
     const key = `project:${p.id}:root`;
-    const kind = p.kind === "ssh" ? "SSH" : "Local";
-    const git = p.isGit === null ? "…" : p.isGit ? "Git" : "non-Git";
+    const projectMatches = !query || [p.name, p.rootPath, p.host].some(value => String(value || "").toLowerCase().includes(query));
+    const tasks = projectMatches ? p.tasks : p.tasks.filter((task: any) => [task.name, task.branch].some(value => String(value || "").toLowerCase().includes(query)));
+    if (!projectMatches && !tasks.length) continue;
+    const location = p.kind === "ssh" ? `SSH · ${p.host || p.rootPath}` : p.rootPath;
     out.push({
-      key, label: p.name, depth: 0, expandable: p.tasks.length > 0, expanded: p.expanded, selected: selected === key,
-      badge: `${kind} / ${git}`, detail: p.offline ? `offline: ${p.offline}` : (p.host || p.rootPath), icon: p.offline ? "warning" : p.kind === "ssh" ? "remote" : p.isGit ? "git" : "folder",
+      key, label: p.name, depth: 0, expandable: tasks.length > 0, expanded: !!query || p.expanded, selected: selected === key,
+      badge: p.offline ? "Offline" : tasks.length ? `${tasks.length} ${tasks.length === 1 ? "task" : "tasks"}` : undefined,
+      detail: p.offline ? `Offline · ${p.offline}` : location,
+      icon: p.offline ? "warning" : p.kind === "ssh" ? "remote" : "folder",
     });
-    if (p.expanded) for (const t of p.tasks) {
+    if (query || p.expanded) for (const [index, t] of tasks.entries()) {
       const tk = `task:${t.id}`;
-      out.push({ key: tk, label: t.name, depth: 1, expandable: false, expanded: false, selected: selected === tk,
-        badge: t.status !== "ready" ? t.status : p.kind === "ssh" ? "remote worktree" : "worktree", detail: t.branch, icon: t.status === "ready" ? "task" : "warning" });
+      out.push({ key: tk, label: t.name, connector: index === tasks.length - 1 ? "last" : "branch", depth: 1, expandable: false, expanded: false, selected: selected === tk,
+        badge: t.status !== "ready" ? t.status : undefined, detail: t.branch, icon: t.status === "ready" ? "task" : "warning" });
     }
   }
   return out;
@@ -49,7 +56,7 @@ const mod: AppModule = {
   id: "projects-panel",
   moduleApiVersion: 1,
   async activate(ctx, prev) {
-    if (prev) { sshForm = !!prev.sshForm; taskFormFor = prev.taskFormFor || null; }
+    if (prev) { sshForm = !!prev.sshForm; taskFormFor = prev.taskFormFor || null; addForm = !!prev.addForm; filter = prev.filter || ""; }
     const sel: any = ctx.state.get("workspace.selected");
     selected = sel ? sel.id : null;
     ctx.state.watch("workspace.selected", (v: any) => { selected = v ? v.id : null; ctx.ui.invalidate(); });
@@ -57,43 +64,55 @@ const mod: AppModule = {
     ctx.events.on("git-tasks.changed", () => reload(ctx));
     await reload(ctx);
   },
-  snapshot: () => ({ sshForm, taskFormFor }),
+  snapshot: () => ({ sshForm, taskFormFor, addForm, filter }),
   render(): UiNode {
     const proj = selectedProject();
+    const visibleRows = rows();
     const children: UiNode[] = [
-      { type: "row", key: "hdr", gap: 4, align: "center", children: [
-        { type: "label", key: "title", text: "PROJECTS", size: "sm", weight: "bold", color: "muted" },
-        { type: "spacer", key: "sp" },
-        { type: "button", key: "add-local", text: "+ Local", action: "addLocal", small: true },
-        { type: "button", key: "add-ssh", text: "+ SSH", action: "showSsh", small: true },
+      { type: "row", key: "hdr", gap: 3, children: [
+        { type: "textInput", key: "project-filter", search: true, placeholder: "Filter projects", value: filter, changeAction: "filter", grow: true },
+        { type: "button", key: "add-project", text: "", icon: "plus", action: "showAdd", small: true, variant: "ghost", tooltip: "Add project", disabled: !!busy },
+        { type: "button", key: "refresh", text: "", icon: "refresh", action: "refresh", small: true, variant: "ghost", tooltip: "Refresh projects", disabled: !!busy },
+      ] },
+      { type: "row", key: "summary", gap: 4, children: [
+        { type: "label", key: "count", text: `${tree.length} ${tree.length === 1 ? "project" : "projects"}`, size: "xs", color: "muted", grow: true },
+        ...(proj?.isGit && proj.hasCommits !== false ? [{ type: "button", key: "new-task", text: "New task", icon: "git-branch", action: "newTask", small: true, variant: "ghost", tooltip: `Create a worktree in ${proj.name}`, disabled: !!busy } as UiNode] : []),
       ] },
     ];
     if (error) children.push({ type: "status", key: "err", text: error, level: "error" });
     if (notice) children.push({ type: "status", key: "notice", text: notice, level: "warn" });
     if (busy) children.push({ type: "progress", key: "busy", indeterminate: true, label: busy });
-    children.push({ type: "tree", key: "tree", rows: rows(), selectAction: "selectWorkspace", expandAction: "toggleExpanded", grow: true });
+    if (!visibleRows.length) children.push({ type: "label", key: "empty", text: filter.trim() ? "No matching projects or tasks." : "Add a project to get started.", size: "sm", color: "muted", padding: 8 });
+    children.push({ type: "tree", key: "tree", appearance: "projects", rows: visibleRows, selectAction: "selectWorkspace", expandAction: "toggleExpanded", grow: true });
     if (proj && proj.isGit && proj.hasCommits !== false) {
       if (taskFormFor === proj.id) {
-        children.push({ type: "column", key: "task-form", gap: 4, border: true, padding: 6, children: [
+        children.push({ type: "modal", key: "task-form", title: "New Git task", closeAction: "cancelTask", children: [
           { type: "label", key: "tf-l", text: `New Git task in ${proj.name}`, size: "sm", weight: "bold" },
+          ...(error ? [{ type: "status", key: "task-error", text: error, level: "error" } as UiNode] : []),
           { type: "textInput", key: "task-name", placeholder: "Task name (e.g. Fix login bug)", submitAction: "createTask" },
           { type: "row", key: "tf-b", gap: 4, children: [
             { type: "button", key: "tf-create", text: "Create worktree", action: "createTask", variant: "primary", small: true, disabled: !!busy },
             { type: "button", key: "tf-cancel", text: "Cancel", action: "cancelTask", small: true },
           ] },
-          { type: "label", key: "tf-hint", text: "Creates branch task/<slug>-<id> and a linked worktree from HEAD on the project's machine. Uncommitted changes are not copied.", size: "xs", color: "muted", wrap: true },
+          { type: "label", key: "tf-hint", text: "Creates a separate branch and worktree from HEAD. Uncommitted changes stay in the original project.", size: "xs", color: "muted", wrap: true },
         ] });
-      } else {
-        children.push({ type: "button", key: "new-task", text: "+ New Git Task", action: "newTask", small: true });
       }
     }
-    children.push({ type: "row", key: "manual", gap: 4, children: [
-      { type: "textInput", key: "local-path", placeholder: "/absolute/path", submitAction: "addLocalPath", grow: true },
-      { type: "button", key: "add-path", text: "Add", action: "addLocalPath", small: true },
+    if (addForm) children.push({ type: "modal", key: "add-modal", title: "Add project", closeAction: "hideAdd", children: [
+      { type: "button", key: "add-local", text: "Choose local folder…", icon: "folder", action: "addLocal", disabled: !!busy },
+      { type: "label", key: "path-label", text: "Or enter a local folder path", size: "sm", color: "muted" },
+      { type: "row", key: "manual", gap: 4, children: [
+        { type: "textInput", key: "local-path", placeholder: "/path/to/project", submitAction: "addLocalPath", grow: true },
+        { type: "button", key: "add-path", text: "Add", action: "addLocalPath", disabled: !!busy },
+      ] },
+      { type: "divider", key: "separator" },
+      { type: "button", key: "add-ssh", text: "Connect over SSH…", icon: "terminal", action: "showSsh", disabled: !!busy },
+      ...(error ? [{ type: "status", key: "add-error", text: error, level: "error" } as UiNode] : []),
     ] });
     if (sshForm) {
       children.push({ type: "modal", key: "ssh-modal", title: "Add SSH project", closeAction: "hideSsh", children: [
         { type: "label", key: "ssh-l1", text: "The remote project is browsed, executed and served by agents ON that host. Authentication uses your SSH agent or a key file path (never stored key contents). Host keys are verified against known_hosts.", size: "xs", color: "muted", wrap: true },
+        ...(error ? [{ type: "status", key: "ssh-error", text: error, level: "error" } as UiNode] : []),
         { type: "textInput", key: "ssh-host", placeholder: "hostname" },
         { type: "textInput", key: "ssh-user", placeholder: "user" },
         { type: "textInput", key: "ssh-port", placeholder: "port (22)" },
@@ -106,14 +125,19 @@ const mod: AppModule = {
         ] },
       ] });
     }
-    return { type: "column", key: "projects-root", gap: 6, padding: 8, grow: true, children };
+    return { type: "column", key: "projects-root", gap: 4, padding: 6, grow: true, children };
   },
   async onEvent(ctx, ev) {
     const run = async (label: string, fn: () => Promise<any>) => {
       busy = label; error = null; ctx.ui.invalidate();
       try { return await fn(); } catch (e) { error = errMsg(e); return null; } finally { busy = null; await reload(ctx); }
     };
+    if (busy) return;
     switch (ev.action) {
+      case "filter": filter = String(ev.value || ""); break;
+      case "refresh": await reload(ctx); break;
+      case "showAdd": addForm = true; error = null; break;
+      case "hideAdd": addForm = false; break;
       case "selectWorkspace":
         error = null;
         selected = ev.rowKey || null; ctx.ui.invalidate();
@@ -125,13 +149,13 @@ const mod: AppModule = {
         if (p) await ctx.modules.call("projects", "setExpanded", { projectId: p.id, expanded: !p.expanded });
         break;
       }
-      case "addLocal": await run("Adding project…", () => ctx.modules.call("projects", "pickAndAddLocal", {})); break;
+      case "addLocal": { const result = await run("Adding project…", () => ctx.modules.call("projects", "pickAndAddLocal", {})); if (result) addForm = false; break; }
       case "addLocalPath": {
         const path = (ev.inputs["local-path"] || "").trim();
-        if (path) await run("Adding project…", () => ctx.modules.call("projects", "addLocal", { path }));
+        if (path) { const result = await run("Adding project…", () => ctx.modules.call("projects", "addLocal", { path })); if (result) addForm = false; }
         break;
       }
-      case "showSsh": sshForm = true; error = null; break;
+      case "showSsh": addForm = false; sshForm = true; error = null; break;
       case "hideSsh": sshForm = false; break;
       case "addSsh": {
         const i = ev.inputs;

@@ -2,6 +2,8 @@
 // process stdio streams. The agent process runs ON the workspace's machine with cwd = the exact
 // project root / worktree: local child process for local workspaces, SSH exec for remote ones.
 // No local fallback, no implicit clone, no auto-install.
+import { reportedUsage, type ReportedUsage } from "../../../../sdk/context-usage";
+import { imageAttachments } from "../../../../sdk/images";
 import type { AppModule, Handle, ModuleContext } from "../../../../sdk/types";
 import { errMsg, JsonRpcPeer, rpcError, targetFor, workspaceGrant, type WorkspaceDescriptor } from "../../../../sdk/runtime";
 
@@ -34,6 +36,7 @@ interface Conn {
   modes: any | null;
   models: any | null;
   commands: any[];
+  usage: ReportedUsage | null;
   status: "starting" | "ready" | "busy" | "exited" | "error";
   error: string | null;
   stderrTail: string;
@@ -49,7 +52,7 @@ function publicState(c: Conn | undefined) {
   return {
     conversationId: c.conversationId, workspaceId: c.workspaceId, machineId: c.machineId, cwd: c.cwd, profileId: c.profileId,
     pid: c.pid, sessionId: c.sessionId, agentInfo: c.agentInfo, agentCapabilities: c.agentCapabilities, authMethods: c.authMethods,
-    configOptions: c.configOptions, modes: c.modes, models: c.models, commands: c.commands, status: c.status, error: c.error,
+    configOptions: c.configOptions, modes: c.modes, models: c.models, commands: c.commands, usage: c.usage || null, status: c.status, error: c.error,
     stderrTail: c.stderrTail.slice(-2000), mcp: c.mcp, executablePath: c.executablePath, startedAt: c.startedAt,
   };
 }
@@ -136,7 +139,7 @@ async function start(ctx: ModuleContext, a: any) {
   const c: Conn = {
     conversationId: a.conversationId, workspaceId: desc.id, machineId: desc.machineId, cwd: desc.rootAbsolutePath, profileId: profile.id,
     proc: spawned.handle, pid: spawned.pid, peer: null as any, sessionId: null, agentInfo: null, agentCapabilities: null, authMethods: [],
-    configOptions: null, modes: null, models: null, commands: [], status: "starting", error: null, stderrTail: "",
+    configOptions: null, modes: null, models: null, commands: [], usage: null, status: "starting", error: null, stderrTail: "",
     mcp: { enabled: !!a.mcp, status: a.mcp ? "pending" : "disabled" }, executablePath: det.path, startedAt: Date.now(),
   };
   conns.set(c.conversationId, c);
@@ -209,6 +212,7 @@ async function wire(ctx: ModuleContext, c: Conn, nextId: number, partial = "") {
       const u = params.update;
       if (u.sessionUpdate === "config_option_update" && Array.isArray(u.configOptions)) { c.configOptions = u.configOptions; emitStatus(ctx, c); }
       else if (u.sessionUpdate === "current_mode_update" && c.modes) { c.modes = { ...c.modes, currentModeId: u.currentModeId }; emitStatus(ctx, c); }
+      else if (u.sessionUpdate === "usage_update") { c.usage = reportedUsage(u); emitStatus(ctx, c); }
       else if (u.sessionUpdate === "available_commands_update") { c.commands = u.availableCommands || []; }
       ctx.events.emit("acp.update", { conversationId: c.conversationId, update: u });
     }
@@ -280,9 +284,13 @@ const mod: AppModule = {
     async prompt(ctx, a) {
       const c = conns.get(a.conversationId);
       if (!c || c.status !== "ready") throw new Error(`agent session is ${c ? c.status : "not started"}`);
+      const images = imageAttachments(a.images);
+      if (images.length && !c.agentCapabilities?.promptCapabilities?.image) throw new Error("This agent does not support image prompts. Choose an agent with image support.");
+      const blocks: any[] = a.text ? [{ type: "text", text: String(a.text) }] : [];
+      blocks.push(...images.map((image) => ({ type: "image", mimeType: image.mimeType, data: image.data })));
+      if (!blocks.length) throw new Error("empty prompt");
       c.status = "busy";
       emitStatus(ctx, c);
-      const blocks: any[] = [{ type: "text", text: String(a.text) }];
       c.peer.request("session/prompt", { sessionId: c.sessionId, prompt: blocks }).then(
         (r: any) => { if (c.status === "busy") c.status = "ready"; emitStatus(ctx, c); ctx.events.emit("acp.turnEnded", { conversationId: c.conversationId, stopReason: r && r.stopReason }); },
         (e) => { if (c.status === "busy") c.status = "ready"; c.error = errMsg(e); emitStatus(ctx, c); ctx.events.emit("acp.turnEnded", { conversationId: c.conversationId, error: errMsg(e) }); },
@@ -299,6 +307,7 @@ const mod: AppModule = {
     async setConfig(ctx, a) {
       const c = conns.get(a.conversationId);
       if (!c || !c.sessionId) throw new Error("agent session not started");
+      const changesModel = a.configId === "__model" || c.configOptions?.some((o: any) => o.id === a.configId && o.category === "model");
       if (c.configOptions && c.configOptions.some((o: any) => o.id === a.configId)) {
         const r: any = await c.peer.request("session/set_config_option", { sessionId: c.sessionId, configId: a.configId, value: a.value });
         if (r && Array.isArray(r.configOptions)) c.configOptions = r.configOptions;
@@ -311,6 +320,7 @@ const mod: AppModule = {
       } else {
         throw new Error(`agent does not advertise setting '${a.configId}'`);
       }
+      if (changesModel) c.usage = null;
       emitStatus(ctx, c);
       return publicState(c);
     },

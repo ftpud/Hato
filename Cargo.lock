@@ -2818,6 +2818,7 @@ dependencies = [
  "gpui-component",
  "gpui-kit",
  "hex",
+ "image",
  "libc",
  "log",
  "parking_lot",

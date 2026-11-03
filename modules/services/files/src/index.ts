@@ -1,5 +1,7 @@
 // files: workspace-scoped listing and reading through scoped FS grants (local fs or SFTP on the
 // workspace's machine). Returns native document handles for the viewer.
+import { searchFiles, invalidateSearch } from "./search";
+import { workspaceSkills } from "./skills";
 import type { AppModule, ModuleContext } from "../../../../sdk/types";
 import { errMsg, langFromPath, withWorkspace, workspaceGrant, type WorkspaceDescriptor } from "../../../../sdk/runtime";
 
@@ -22,10 +24,36 @@ function cleanRel(rel: any): string {
   return parts.length ? parts.join("/") : ".";
 }
 
+let skillsVersion = 0;
+async function publishSkills(ctx: ModuleContext) {
+  const version = ++skillsVersion;
+  const workspace = ctx.state.get("workspace.selected") as any;
+  const workspaceId = workspace?.id || null;
+  ctx.state.set("files.skills", { workspaceId, skills: [], loading: !!workspaceId, error: null });
+  if (!workspaceId) return;
+  try {
+    const skills = await workspaceSkills(ctx, await desc(ctx, workspaceId));
+    if (version === skillsVersion) ctx.state.set("files.skills", { workspaceId, skills, loading: false, error: null });
+  } catch (e) {
+    if (version === skillsVersion) ctx.state.set("files.skills", { workspaceId, skills: [], loading: false, error: errMsg(e) });
+  }
+}
+
 const mod: AppModule = {
   id: "files",
   moduleApiVersion: 1,
+  async activate(ctx) {
+    ctx.state.watch("workspace.selected", () => { void publishSkills(ctx); });
+    ctx.events.on("ai.skillsRequested", () => { void publishSkills(ctx); });
+    await publishSkills(ctx);
+  },
   methods: {
+    async search(ctx, a) {
+      const query = String(a.query || "").slice(0, 300).trim();
+      if (!query && a.refresh) invalidateSearch(await desc(ctx, a.workspaceId));
+      if (!query) return { entries: [], matchCount: 0, indexedCount: 0, partial: false, skipped: 0 };
+      return searchFiles(ctx, await desc(ctx, a.workspaceId), query, !!a.refresh);
+    },
     async list(ctx, a) {
       const d = await desc(ctx, a.workspaceId);
       const rel = cleanRel(a.relativeDir);

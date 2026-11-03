@@ -1,34 +1,55 @@
 // ai-sessions: conversations per workspace, transcript projection of ACP updates, persistence of
 // cached history, and the requested approval policy. Policy here only decides *agent* permission
 // requests; module patch/build/activate approvals are enforced by the kernel regardless.
-import type { AppModule, ChatMessage, ModuleContext } from "../../../../sdk/types";
+import { reasoningMarkdown } from "../../../../sdk/reasoning";
+import { imageAttachments, transcriptContent } from "../../../../sdk/images";
+import type { AppModule, ChatMessage, ModuleContext, ImageAttachment } from "../../../../sdk/types";
 import { debounce, errMsg } from "../../../../sdk/runtime";
 
 type Policy = "ask" | "auto-low" | "autopilot";
-interface Msg { id: string; kind: string; payload: any }
+interface Msg { sequence?: number; id: string; kind: string; payload: any }
 interface Conv {
   row: any;
   messages: Msg[];
   loaded: boolean;
+  hasOlder: boolean;
+  oldestSequence: number | null;
+  historyLoading: boolean;
+  historyError: string | null;
   current: { assistant: string | null; thought: string | null };
   tools: Map<string, string>;
   dirty: Set<string>;
   live: any;
   busy: boolean;
+  steering: { text: string; images: ImageAttachment[] }[];
+  submitting: boolean;
 }
 
 const convs = new Map<string, Conv>();
+const loading = new Map<string, Promise<Conv>>();
+const HISTORY_PAGE = 80;
 const LOW_RISK_KINDS = new Set(["read", "search", "think", "fetch"]);
 let notify: () => void = () => {};
 let flushSoon: () => void = () => {};
 
 async function load(ctx: ModuleContext, id: string): Promise<Conv> {
+  const known = convs.get(id);
+  if (known?.loaded) return known;
+  const pending = loading.get(id);
+  if (pending) return pending;
+  const task = loadConversation(ctx, id);
+  loading.set(id, task);
+  try { return await task; } finally { loading.delete(id); }
+}
+
+async function loadConversation(ctx: ModuleContext, id: string): Promise<Conv> {
   let c = convs.get(id);
   if (c && c.loaded) return c;
   const row = await ctx.modules.call("persistence", "conversations.get", { id });
   if (!row) throw new Error(`unknown conversation ${id}`);
-  const msgs = await ctx.modules.call("persistence", "messages.list", { conversationId: id, limit: 1000 });
-  c = { row, messages: msgs.map((m: any) => ({ id: m.id, kind: m.kind, payload: m.payload })), loaded: true, current: { assistant: null, thought: null }, tools: new Map(), dirty: new Set(), live: null, busy: false };
+  const msgs = await ctx.modules.call("persistence", "messages.list", { conversationId: id, limit: HISTORY_PAGE + 1 });
+  const page = msgs.slice(-HISTORY_PAGE);
+  c = { row, messages: page.map((m: any) => ({ id: m.id, sequence: m.sequence, kind: m.kind, payload: m.payload })), loaded: true, hasOlder: msgs.length > HISTORY_PAGE, oldestSequence: page[0]?.sequence ?? null, historyLoading: false, historyError: null, current: { assistant: null, thought: null }, tools: new Map(), dirty: new Set(), live: null, busy: false, steering: [], submitting: false };
   for (const m of c.messages) if (m.kind === "tool" && m.payload.toolCallId) c.tools.set(m.payload.toolCallId, m.id);
   try { c.live = await ctx.modules.call("acp", "state", { conversationId: id }); } catch { c.live = null; }
   if (c.live) c.busy = c.live.status === "busy";
@@ -85,7 +106,15 @@ function project(c: Conv, u: any) {
       break;
     }
     case "user_message_chunk": {
-      add(c, "user", { text: textOf(u.content), replayed: true });
+      const blocks = Array.isArray(u.content) ? u.content : [u.content];
+      const images: ImageAttachment[] = [];
+      for (const block of blocks) {
+        if (block?.type === "image") {
+          try { images.push(...imageAttachments([{ name: "Picture", mimeType: block.mimeType, data: block.data }])); }
+          catch { /* Unsupported image blocks must never become display text. */ }
+        }
+      }
+      add(c, "user", { text: textOf(u.content), images, replayed: true });
       break;
     }
     case "tool_call": {
@@ -117,14 +146,15 @@ function project(c: Conv, u: any) {
 
 function toChat(m: Msg): ChatMessage {
   const p = m.payload || {};
+  const display = transcriptContent(String(p.text || ""), p.images || []);
   switch (m.kind) {
-    case "user": return { key: m.id, role: "user", text: p.text || "" };
-    case "assistant": return { key: m.id, role: "assistant", text: p.text || "" };
-    case "thought": return { key: m.id, role: "thought", text: (p.text || "").slice(-1500) };
-    case "tool": return { key: m.id, role: "tool", title: p.title, status: p.status, text: (p.text || "").slice(0, 1500) };
-    case "plan": return { key: m.id, role: "plan", text: p.text || "" };
-    case "error": return { key: m.id, role: "error", text: p.text || "" };
-    default: return { key: m.id, role: "system", text: p.text || "" };
+    case "user": return { key: m.id, role: "user", text: display.text, images: display.images };
+    case "assistant": return { key: m.id, role: "assistant", text: display.text, images: display.images };
+    case "thought": return { key: m.id, role: "thought", text: reasoningMarkdown(display.text) };
+    case "tool": return { key: m.id, role: "tool", title: p.title, status: p.status, text: display.text.slice(0, 1500) };
+    case "plan": return { key: m.id, role: "plan", text: display.text };
+    case "error": return { key: m.id, role: "error", text: display.text };
+    default: return { key: m.id, role: "system", text: display.text };
   }
 }
 
@@ -178,21 +208,36 @@ const mod: AppModule = {
     ctx.events.on("acp.turnEnded", async (p: any) => {
       const c = convs.get(p.conversationId);
       if (!c) return;
-      c.busy = false;
+      c.busy = c.steering.length > 0;
+      c.submitting = c.busy;
       c.current = { assistant: null, thought: null };
       if (p.error) add(c, "error", { text: `Turn failed: ${p.error}` });
       else if (p.stopReason && p.stopReason !== "end_turn") add(c, "system", { text: `Turn ended: ${p.stopReason}` });
       await flush(ctx);
+      if (c.steering.length) {
+        const pending = c.steering.splice(0);
+        const text = pending.map((p) => p.text).filter(Boolean).join("\n\n");
+        const images = pending.flatMap((p) => p.images);
+        c.busy = true;
+        c.submitting = true;
+        try { await ctx.modules.call("acp", "prompt", { conversationId: c.row.id, text, images }); }
+        catch (e) { c.busy = false; add(c, "error", { text: `Steering failed: ${errMsg(e)}` }); flushSoon(); }
+        finally { c.submitting = false; }
+      }
       notify();
     });
     ctx.events.on("acp.status", (s: any) => {
       const c = convs.get(s.conversationId);
       if (!c) return;
       c.live = s;
-      c.busy = s.status === "busy";
+      c.busy = s.status === "busy" || c.steering.length > 0 || c.submitting;
       if (s.status === "exited" || s.status === "error") update(ctx, s.conversationId, { status: s.status === "exited" ? "offline" : "error" }).catch(() => {});
       notify();
     });
+  },
+  canSwap() {
+    return Array.from(convs.values()).some((c) => c.busy || c.submitting || c.steering.length || c.historyLoading)
+      ? { ok: false, reason: "Wait for active chat turns and steering to finish" } : { ok: true };
   },
   async deactivate(ctx) { await flush(ctx); },
   methods: {
@@ -201,12 +246,15 @@ const mod: AppModule = {
     async create(ctx, a) {
       const desc = await ctx.modules.call("workspace", "resolve", { workspaceId: a.workspaceId });
       const profiles = await ctx.modules.call("acp", "profiles", { machineId: desc.machineId });
-      const profileId = a.profileId || (profiles[0] && profiles[0].id);
+      const existing = await ctx.modules.call("persistence", "conversations.list", { workspaceId: desc.id });
+      const preferences = await ctx.modules.call("workspace", "view.get", { workspaceId: desc.id });
+      const previous = existing.find((c: any) => c.id === preferences.activeConversationId) || existing[0];
+      const preferred = a.profileId || preferences.ui?.lastAcpProfileId || previous?.acpProfileId;
+      const profileId = profiles.find((p: any) => p.id === preferred)?.id || profiles[0]?.id;
       if (!profileId) throw new Error(`no agent profile configured for ${desc.machineId}`);
       const id = crypto.randomUUID();
-      const existing = await ctx.modules.call("persistence", "conversations.list", { workspaceId: desc.id });
       await ctx.modules.call("persistence", "conversations.insert", { conversation: { id, workspaceId: desc.id, acpProfileId: profileId, title: a.title || `Chat ${existing.length + 1}`, approvalPolicy: "ask", mcpSelection: ["internal"] } });
-      await ctx.modules.call("workspace", "view.patch", { workspaceId: desc.id, patch: { activeConversationId: id } });
+      await ctx.modules.call("workspace", "view.patch", { workspaceId: desc.id, patch: { activeConversationId: id, ui: { lastAcpProfileId: profileId } } });
       notify();
       return ctx.modules.call("persistence", "conversations.get", { id });
     },
@@ -227,10 +275,28 @@ const mod: AppModule = {
       let active: any = null;
       if (activeId) {
         const c = await load(ctx, activeId);
-        active = { conversation: c.row, messages: c.messages.slice(-400).map(toChat), live: c.live, busy: c.busy };
+        active = { conversation: c.row, messages: c.messages.map(toChat), hasOlder: c.hasOlder, historyLoading: c.historyLoading, historyError: c.historyError, live: c.live, busy: c.busy, steering: c.steering.length };
       }
       const auth = await ctx.modules.call("acp", "authSettings", {});
-      return { auth, workspace: { id: desc.id, name: desc.name, machineId: desc.machineId, root: desc.rootAbsolutePath, location: desc.location }, conversations: list.map((x: any) => ({ id: x.id, title: x.title, status: x.status })), activeId, active, profiles };
+      return { mcpServers: [{ id: "internal", name: "Hato", description: "Inspect, build and reload application modules" }], auth, workspace: { id: desc.id, name: desc.name, machineId: desc.machineId, root: desc.rootAbsolutePath, location: desc.location }, conversations: list.map((x: any) => ({ id: x.id, title: x.title, status: x.status })), activeId, active, profiles };
+    },
+
+    async loadOlder(ctx, a) {
+      const c = await load(ctx, a.conversationId);
+      if (c.historyLoading || !c.hasOlder || !c.oldestSequence) return { loaded: 0, hasOlder: c.hasOlder };
+      c.historyLoading = true; c.historyError = null; notify();
+      try {
+        const rows = await ctx.modules.call("persistence", "messages.list", { conversationId: c.row.id, beforeSequence: c.oldestSequence, limit: HISTORY_PAGE + 1 });
+        const page = rows.slice(-HISTORY_PAGE);
+        const known = new Set(c.messages.map((m) => m.id));
+        const older: Msg[] = page.filter((m: any) => !known.has(m.id)).map((m: any) => ({ id: m.id, sequence: m.sequence, kind: m.kind, payload: m.payload }));
+        c.messages = [...older, ...c.messages];
+        c.oldestSequence = page[0]?.sequence ?? c.oldestSequence;
+        c.hasOlder = rows.length > HISTORY_PAGE;
+        for (const m of older) if (m.kind === "tool" && m.payload.toolCallId && !c.tools.has(m.payload.toolCallId)) c.tools.set(m.payload.toolCallId, m.id);
+        return { loaded: older.length, hasOlder: c.hasOlder };
+      } catch (e) { c.historyError = errMsg(e); throw e; }
+      finally { c.historyLoading = false; notify(); }
     },
 
     connect: (ctx, a) => connect(ctx, a.conversationId),
@@ -239,30 +305,56 @@ const mod: AppModule = {
       await ctx.modules.call("acp", "stop", { conversationId: a.conversationId });
       await update(ctx, a.conversationId, { status: "offline" });
       const c = convs.get(a.conversationId);
-      if (c) { c.live = null; c.busy = false; }
+      if (c) { c.live = null; c.busy = false; c.steering = []; }
       notify();
       return null;
     },
 
     async send(ctx, a) {
       const text = String(a.text || "").trim();
-      if (!text) throw new Error("empty prompt");
+      const images = imageAttachments(a.images);
+      if (!text && !images.length) throw new Error("empty prompt");
       const c = await load(ctx, a.conversationId);
-      if (c.busy) throw new Error("the agent is still working on the previous prompt (cancel it first)");
-      add(c, "user", { text });
-      c.current = { assistant: null, thought: null };
-      if (c.row.title.startsWith("Chat ") && c.messages.filter((m) => m.kind === "user").length === 1) await update(ctx, c.row.id, { title: text.slice(0, 60) });
-      await flush(ctx);
-      notify();
-      if (!c.live || !["ready", "busy"].includes(c.live.status)) await connect(ctx, c.row.id);
-      c.busy = true;
-      notify();
-      try { await ctx.modules.call("acp", "prompt", { conversationId: c.row.id, text }); }
-      catch (e) { c.busy = false; add(c, "error", { text: errMsg(e) }); flushSoon(); notify(); throw e; }
-      return { accepted: true };
+      if (images.length && c.live && !c.live.agentCapabilities?.promptCapabilities?.image) throw new Error("This agent does not support image prompts.");
+      if (c.submitting) throw new Error("The previous message is still being submitted. Try again in a moment.");
+      if (c.busy) {
+        const first = c.steering.length === 0;
+        imageAttachments([...c.steering.flatMap((p) => p.images), ...images]);
+        c.steering.push({ text, images });
+        add(c, "user", { text, images });
+        notify();
+        if (first) {
+          try { await ctx.modules.call("acp", "cancel", { conversationId: c.row.id }); }
+          catch (e) {
+            c.steering = [];
+            add(c, "error", { text: `Could not interrupt the agent: ${errMsg(e)}. Send your follow-up again.` });
+            flushSoon(); notify(); throw e;
+          }
+        }
+        await flush(ctx);
+        return { accepted: true, steering: true };
+      }
+      c.submitting = true;
+      try {
+        if (images.length) {
+          if (!c.live || !["ready", "busy"].includes(c.live.status)) await connect(ctx, c.row.id);
+          if (!c.live?.agentCapabilities?.promptCapabilities?.image) throw new Error("This agent does not support image prompts.");
+        }
+        add(c, "user", { text, images });
+        c.current = { assistant: null, thought: null };
+        if (c.row.title.startsWith("Chat ") && c.messages.filter((m) => m.kind === "user").length === 1) await update(ctx, c.row.id, { title: text.slice(0, 60) || images[0]?.name || "Picture" });
+        await flush(ctx);
+        notify();
+        if (!c.live || !["ready", "busy"].includes(c.live.status)) await connect(ctx, c.row.id);
+        c.busy = true;
+        notify();
+        try { await ctx.modules.call("acp", "prompt", { conversationId: c.row.id, text, images }); }
+        catch (e) { c.busy = false; add(c, "error", { text: errMsg(e) }); flushSoon(); notify(); throw e; }
+        return { accepted: true };
+      } finally { c.submitting = false; }
     },
 
-    async cancel(ctx, a) { await ctx.modules.call("acp", "cancel", { conversationId: a.conversationId }); return null; },
+    async cancel(ctx, a) { const c = await load(ctx, a.conversationId); c.steering = []; await ctx.modules.call("acp", "cancel", { conversationId: a.conversationId }); return null; },
 
     async setConfig(ctx, a) {
       const c = await load(ctx, a.conversationId);
@@ -290,8 +382,13 @@ const mod: AppModule = {
 
     async setProfile(ctx, a) {
       const c = await load(ctx, a.conversationId);
+      const desc = await ctx.modules.call("workspace", "resolve", { workspaceId: c.row.workspaceId });
+      const profiles = await ctx.modules.call("acp", "profiles", { machineId: desc.machineId });
+      if (!profiles.some((p: any) => p.id === a.profileId)) throw new Error("provider is unavailable for this workspace");
       if (c.live && ["ready", "busy"].includes(c.live.status)) await ctx.modules.call("acp", "stop", { conversationId: a.conversationId });
       c.live = null;
+      c.busy = false;
+      await ctx.modules.call("workspace", "view.patch", { workspaceId: c.row.workspaceId, patch: { ui: { lastAcpProfileId: a.profileId } } });
       await update(ctx, a.conversationId, { acpProfileId: a.profileId, providerSessionId: null, status: "offline", config: {} });
       notify();
       return null;

@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "id": "sidebar",
+  "kind": "ui",
+  "entry": "src/index.ts",
+  "moduleApiVersion": 1,
+  "dependencies": [],
+  "capabilities": [],
+  "stateVersion": 1,
+  "description": "Right activity sidebar for toggling Files and Projects panels."
+}

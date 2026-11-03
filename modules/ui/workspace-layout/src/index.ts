@@ -7,6 +7,7 @@
 // The kernel only provides the primitives (split, dragHandle, dropZone, floating, window); all
 // policy lives here and is persisted through the persistence service ("layout.v1").
 import type { AppModule, ModuleContext, UiNode } from "../../../../sdk/types";
+import { colorScheme } from "../../../../sdk/color-scheme";
 import { debounce, errMsg } from "../../../../sdk/runtime";
 import { BAR_ITEMS, PANELS, defaultLayout, dropPanel, locate, moveBarItem, moveTo, removeBarItem, repair, type BarId, type Layout } from "./model";
 
@@ -22,8 +23,8 @@ let scanningUpd = false;
 let layout: Layout = defaultLayout();
 let save: () => void = () => {};
 
-const COLLAPSED_ROW = 30;
-const COLLAPSED_COL = 36;
+const COLLAPSED_ROW = 0;
+const COLLAPSED_COL = 0;
 
 async function loadUpdates(ctx: ModuleContext, scan: boolean, full = false) {
   try {
@@ -68,13 +69,13 @@ function panelHeader(id: string, mode: "dock" | "float" | "window"): UiNode {
     if (mode === "float") kids.push(btn("detach", "⇗", "detach", id, "Open in its own window"));
     else kids.push(btn("float", "⧉", "float", id, "Float inside the main window"));
   }
-  return { type: "row", key: "ph", gap: 2, padding: 2, bg: "muted", align: "center", children: kids };
+  return { type: "row", key: "ph", gap: 2, padding: 2, bg: "muted", align: "center", children: layout.showPanelControls ? kids : kids.filter(node => node.type !== "button") };
 }
 
 function panelBody(id: string, mode: "dock" | "float" | "window"): UiNode {
   const collapsed = mode === "dock" && !!layout.collapsed[id];
-  return { type: "column", key: "panel-" + id, grow: true, children: [
-    panelHeader(id, mode),
+  return { type: "column", key: "panel-" + id, grow: true, bg: "panel", children: [
+    ...(mode === "dock" || layout.showPanelControls ? [panelHeader(id, mode)] : []),
     ...(collapsed ? [] : [{ type: "slot", key: "slot", module: PANELS[id].slot, grow: true } as UiNode]),
   ] };
 }
@@ -83,12 +84,23 @@ function dockedPanel(id: string): UiNode {
   return { type: "dropZone", key: "panel:" + id, action: "dropPanel", grow: true, children: [panelBody(id, "dock")] };
 }
 
-/** Narrow strip for a collapsed panel inside a horizontal stack. */
-function strip(ids: string[], key: string): UiNode {
-  return { type: "column", key, gap: 4, padding: 3, bg: "muted", grow: true, children: ids.map((id) => ({
-    type: "dropZone", key: "panel:" + id, action: "dropPanel", grow: false, children: [
-      { type: "button", key: "x-" + id, text: PANELS[id].title.slice(0, 2), action: "toggleCollapse", value: id, small: true, tooltip: `Expand ${PANELS[id].title}` },
-    ] } as UiNode)) };
+/** Collapsed panes keep their model index but reserve no width or height. */
+function strip(_ids: string[], key: string): UiNode {
+  return { type: "column", key, children: [] };
+}
+
+function collapsedPanels(): UiNode | null {
+  const ids = [
+    ...layout.columns.flatMap((col) => col.panels.filter((id) => layout.collapsed[id])),
+    ...layout.bottom.panels.filter((id) => layout.bottom.collapsed || layout.collapsed[id]),
+  ];
+  if (!ids.length) return null;
+  return { type: "column", key: "collapsed-panels", maxHeight: 108, scroll: true, bg: "panel", children: [
+    { type: "row", key: "restore-buttons", wrap: true, gap: 6, padding: 4, children: [
+      { type: "label", key: "caption", text: "Collapsed", size: "xs", color: "muted" },
+      ...ids.map((id): UiNode => ({ type: "button", key: "restore-" + id, text: PANELS[id].title, icon: "plus", action: layout.bottom.collapsed && layout.bottom.panels.includes(id) ? "expandBottom" : "toggleCollapse", value: id, small: true, tooltip: `Restore ${PANELS[id].title}` })),
+    ] },
+  ] };
 }
 
 function columnNode(ci: number): UiNode {
@@ -103,11 +115,7 @@ function columnNode(ci: number): UiNode {
 function bottomNode(): UiNode | null {
   const b = layout.bottom;
   if (!b.panels.length) return null;
-  if (b.collapsed || b.panels.every((p) => layout.collapsed[p])) {
-    return { type: "row", key: "bottom-collapsed", gap: 6, padding: 3, bg: "muted", align: "center", grow: true, children: [
-      ...b.panels.map((id) => ({ type: "button", key: "exp-" + id, text: `▴ ${PANELS[id].title}`, action: "expandBottom", value: id, small: true, variant: "ghost" } as UiNode)),
-    ] };
-  }
+  if (b.collapsed || b.panels.every((p) => layout.collapsed[p])) return null;
   if (b.panels.length === 1) return dockedPanel(b.panels[0]);
   return { type: "split", key: "bottom", direction: "horizontal", sizes: b.sizes, minSize: 120,
     fixed: b.panels.map((p) => (layout.collapsed[p] ? COLLAPSED_COL : null)), collapsible: b.panels.map(() => true),
@@ -118,8 +126,8 @@ function bottomNode(): UiNode | null {
 function dockArea(): UiNode {
   const cols = layout.columns;
   let top: UiNode;
-  if (!cols.length) {
-    top = { type: "column", key: "empty", padding: 16, grow: true, children: [{ type: "label", key: "l", text: "No docked panels. Open Layout to dock panels back.", color: "muted" }] };
+  if (!cols.length || cols.every((col) => col.panels.every((id) => layout.collapsed[id]))) {
+    top = { type: "column", key: "empty", padding: 16, grow: true, children: [{ type: "label", key: "l", text: "Restore a collapsed panel below, or open Layout to dock panels.", color: "muted" }] };
   } else if (cols.length === 1) {
     top = columnNode(0);
   } else {
@@ -131,7 +139,7 @@ function dockArea(): UiNode {
   if (!bottom) return { type: "column", key: "dock", grow: true, children: [top] };
   const bottomCollapsed = layout.bottom.collapsed || layout.bottom.panels.every((p) => layout.collapsed[p]);
   return { type: "split", key: "main", direction: "vertical", sizes: layout.mainSizes, minSize: 90, grow: true,
-    fixed: [null, bottomCollapsed ? COLLAPSED_ROW + 4 : null], collapsible: [false, true],
+    fixed: [null, bottomCollapsed ? 0 : null], collapsible: [false, true],
     resizeAction: "resize", collapseAction: "collapse", children: [top, bottom] } as UiNode;
 }
 
@@ -142,6 +150,7 @@ function itemContent(it: string): UiNode {
   switch (it) {
     case "title": return { type: "label", key: "c", text: "Hato", weight: "bold" };
     case "workspace": return { type: "label", key: "c", text: where, size: "sm", color: "muted", grow: true };
+    case "settings": return { type: "button", key: "c", text: "Settings", action: "openSettings", small: true, tooltip: "Appearance and module preferences" };
     case "layoutMenu": return { type: "button", key: "c", text: showLayout ? "Hide layout" : "Layout", action: "toggleLayoutMenu", small: true };
     case "modules": {
       const n = updSummary.available.length;
@@ -156,7 +165,7 @@ function itemContent(it: string): UiNode {
 
 function barNode(b: BarId): UiNode | null {
   const bar = layout.bars[b];
-  if (!bar.visible) return null;
+  if (!bar.visible) return b === "top" ? { type: "titleBar", key: "window-titlebar", children: [] } : null;
   const items: UiNode[] = bar.items.map((it) => ({
     type: "dropZone", key: `baritem:${b}:${it}`, action: "dropBar", regions: ["left", "right"], grow: !!BAR_ITEMS[it].grow, children: [
       { type: "row", key: "r", gap: 3, align: "center", grow: !!BAR_ITEMS[it].grow, children: [
@@ -166,7 +175,9 @@ function barNode(b: BarId): UiNode | null {
     ] } as UiNode));
   if (!items.length) items.push({ type: "label", key: "empty", text: `${b} bar is empty — drag items here or add them from Layout`, size: "xs", color: "muted", grow: true });
   return { type: "dropZone", key: `bar:${b}`, action: "dropBar", regions: ["center"], grow: false, children: [
-    { type: "row", key: "bar-" + b, gap: 8, padding: 4, bg: "panel", border: true, align: "center", children: items },
+    b === "top"
+      ? { type: "titleBar", key: "bar-" + b, children: items }
+      : { type: "row", key: "bar-" + b, gap: 8, padding: 4, bg: "panel", border: true, align: "center", children: items },
   ] };
 }
 
@@ -214,6 +225,7 @@ function layoutMenu(): UiNode {
     ...itemRows,
     { type: "divider", key: "d1" },
     { type: "label", key: "h2", text: "Panels", weight: "bold", size: "sm" },
+    { type: "toggle", key: "panel-controls", label: "Show panel control buttons", checked: layout.showPanelControls, action: "togglePanelControls", tooltip: "Show collapse, float, detach, hide and dock buttons in panel headers. Panels remain accessible from Layout and the sidebar." },
     ...panelRows,
     { type: "divider", key: "d2" },
     { type: "row", key: "foot", gap: 6, children: [
@@ -254,8 +266,26 @@ function modulesModal(): UiNode {
 
 // ---- module ---------------------------------------------------------------------------------------
 
+function panelVisible(id: string): boolean {
+  const place = locate(layout, id);
+  return !!place && place.kind !== "hidden" && !layout.collapsed[id] && !(place.kind === "bottom" && layout.bottom.collapsed);
+}
+function publishPanels(ctx: ModuleContext) {
+  ctx.state.set("workspace-layout.panels", { files: panelVisible("files"), projects: panelVisible("projects"), ai: panelVisible("ai"), terminal: panelVisible("terminal") });
+}
+function toggleSidebarPanel(ctx: ModuleContext, id: string) {
+  if (!["files", "projects", "ai", "terminal"].includes(id)) return;
+  const place = locate(layout, id);
+  if (!place || place.kind === "hidden") { set(ctx, moveTo(layout, id, id === "terminal" ? "bottom" : "column")); return; }
+  if (place.kind === "floating" || place.kind === "detached") { set(ctx, moveTo(layout, id, "hidden")); return; }
+  const next = { ...layout, collapsed: { ...layout.collapsed, [id]: panelVisible(id) } };
+  if (!next.collapsed[id] && place.kind === "bottom") next.bottom = { ...layout.bottom, collapsed: false };
+  set(ctx, next);
+}
+
 function set(ctx: ModuleContext, next: Layout) {
   layout = next;
+  publishPanels(ctx);
   save();
   ctx.ui.invalidate();
 }
@@ -273,6 +303,9 @@ const mod: AppModule = {
     ctx.state.watch("workspace.selected", (v: any) => { ws = v; ctx.ui.invalidate(); });
     ctx.events.on("kernel.modules.changed", () => loadModules(ctx));
     ctx.events.on("module-dev.updatesChanged", () => loadUpdates(ctx, false));
+    ctx.events.on("sidebar.togglePanel", (event: any) => toggleSidebarPanel(ctx, event?.id));
+    ctx.events.on("left-sidebar.togglePanel", (event: any) => toggleSidebarPanel(ctx, event?.id));
+    publishPanels(ctx);
     await loadModules(ctx);
     loadUpdates(ctx, false);
   },
@@ -283,13 +316,25 @@ const mod: AppModule = {
     resetLayout: (ctx) => { set(ctx, defaultLayout()); return layout; },
   },
   render(): UiNode {
-    const kids: UiNode[] = [];
+    const kids: UiNode[] = [{ type: "theme", key: "color-scheme", palette: colorScheme }];
     const top = barNode("top");
     if (top) kids.push(top);
     if (!["top", "bottom"].some((b) => layout.bars[b as BarId].visible && layout.bars[b as BarId].items.includes("layoutMenu"))) {
       kids.push({ type: "row", key: "layout-access", children: [btn("open-layout", "Layout", "toggleLayoutMenu", null, "Configure panels and bars")] });
     }
-    kids.push(dockArea());
+    if (!["top", "bottom"].some((b) => layout.bars[b as BarId].visible && layout.bars[b as BarId].items.includes("settings"))) {
+      kids.push({ type: "row", key: "settings-access", children: [btn("settings", "Settings", "openSettings", null, "Appearance and module preferences")] });
+    }
+    // Settings renders an overlay; its slot must not reserve dock space.
+    kids.push({ type: "column", key: "settings-overlay", height: 0, children: [
+      { type: "slot", key: "settings-slot", module: "settings" },
+    ] });
+    const collapsed = collapsedPanels();
+    kids.push({ type: "row", key: "workspace-content", grow: true, align: "stretch", children: [
+      { type: "slot", key: "left-sidebar", module: "left-sidebar", width: 44 },
+      { type: "column", key: "workspace-panels", grow: true, children: [dockArea(), ...(collapsed ? [collapsed] : [])] },
+      { type: "slot", key: "right-sidebar", module: "sidebar", width: 44 },
+    ] });
     const bottom = barNode("bottom");
     if (bottom) kids.push(bottom);
     for (const [id, g] of Object.entries(layout.floating)) {
@@ -300,12 +345,14 @@ const mod: AppModule = {
     }
     if (showLayout) kids.push(layoutMenu());
     if (showModules) kids.push(modulesModal());
-    return { type: "column", key: "layout-root", grow: true, children: kids };
+    return { type: "column", key: "layout-root", grow: true, bg: "accent", children: kids };
   },
   async onEvent(ctx, ev) {
     const v: any = ev.value;
     const dockBack = (id: string) => moveTo(layout, id, id === "terminal" ? "bottom" : "column");
     switch (ev.action) {
+      case "togglePanelControls": set(ctx, { ...layout, showPanelControls: typeof v === "boolean" ? v : !layout.showPanelControls }); break;
+      case "openSettings": await ctx.modules.call("settings", "open"); break;
       // -- docking / panels
       case "dropPanel": {
         if (v && v.payload && v.payload.kind === "panel" && typeof v.zone === "string" && v.zone.startsWith("panel:")) {

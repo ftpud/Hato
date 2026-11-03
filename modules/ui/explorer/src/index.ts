@@ -1,71 +1,121 @@
-// explorer: navigate the active workspace's directories and open files in the viewer.
+// Workspace file tree: lazy directory loading, scoped search, and viewer selection.
 import type { AppModule, ModuleContext, UiNode } from "../../../../sdk/types";
-import { errMsg } from "../../../../sdk/runtime";
-
+import { debounce, errMsg } from "../../../../sdk/runtime";
+import { directories, treeRows, type Entry } from "./model";
 let ws: any = null;
-let listing: any = null;
+let dirs = new Map<string, Entry[]>();
+let expanded = new Set<string>();
+let filterCollapsed = new Set<string>();
+let pending = new Set<string>();
+let query = "";
+let results: any = null;
+let searching = false;
 let error: string | null = null;
-let loading = false;
-let seq = 0;
+let epoch = 0;
+let searchVersion = 0;
+let searchSoon: () => void = () => {};
 
-async function load(ctx: ModuleContext) {
-  if (!ws) { listing = null; ctx.ui.invalidate(); return; }
-  const mine = ++seq;
-  loading = true; ctx.ui.invalidate();
+async function loadDir(ctx: ModuleContext, path: string, version = epoch) {
+  if (!ws || pending.has(path) || dirs.has(path)) return;
+  const workspaceId = ws.id;
+  pending.add(path); ctx.ui.invalidate();
   try {
-    const r = await ctx.modules.call("files", "list", { workspaceId: ws.id, relativeDir: ws.view?.explorerDir || "." });
-    if (mine === seq) { listing = r; error = null; }
-  } catch (e) {
-    if (mine === seq) { error = errMsg(e); listing = null; }
-    // A vanished directory falls back to the root.
-    if (ws.view?.explorerDir && ws.view.explorerDir !== ".") await ctx.modules.call("workspace", "view.patch", { workspaceId: ws.id, patch: { explorerDir: "." } }).catch(() => {});
-  } finally { if (mine === seq) loading = false; ctx.ui.invalidate(); }
+    const listing = await ctx.modules.call("files", "list", { workspaceId, relativeDir: path, showHidden: true });
+    if (version === epoch) { dirs.set(path, listing.entries.filter((entry: Entry) => entry.name !== ".DS_Store")); error = null; }
+  } catch (e) { if (version === epoch) error = errMsg(e); }
+  finally { if (version === epoch) pending.delete(path); ctx.ui.invalidate(); }
 }
-
+async function search(ctx: ModuleContext, refresh = false) {
+  const version = ++searchVersion;
+  const workspaceId = ws?.id;
+  const text = query.trim();
+  if (!workspaceId || !text) { results = null; searching = false; ctx.ui.invalidate(); return; }
+  searching = true; ctx.ui.invalidate();
+  try {
+    const next = await ctx.modules.call("files", "search", { workspaceId, query: text, refresh }, { timeoutMs: 120000 });
+    if (version === searchVersion && ws?.id === workspaceId) { results = next; error = null; }
+  } catch (e) { if (version === searchVersion && ws?.id === workspaceId) { error = errMsg(e); results = null; } }
+  finally { if (version === searchVersion) searching = false; ctx.ui.invalidate(); }
+}
+async function reveal(ctx: ModuleContext) {
+  const path = ws?.view?.previewPath;
+  if (!path) return;
+  const version = epoch;
+  query = ""; results = null; searchVersion++; searching = false;
+  const parts = path.split("/"); parts.pop();
+  let parent = "";
+  for (const part of parts) { parent = parent ? parent + "/" + part : part; expanded.add(parent); await loadDir(ctx, parent, version); if (version !== epoch) return; }
+  ctx.ui.invalidate();
+}
+async function reset(ctx: ModuleContext, saved?: any) {
+  const version = ++epoch; searchVersion++; ctx.ui.invalidate(); dirs = new Map(); pending = new Set(); filterCollapsed = new Set(); results = null; searching = false; error = null;
+  expanded = new Set(saved?.expanded || ws?.view?.ui?.explorerTree?.expanded || []);
+  query = saved?.query || "";
+  await loadDir(ctx, ".");
+  if (version !== epoch) return;
+  for (const path of [...expanded].sort()) { await loadDir(ctx, path, version); if (version !== epoch) return; }
+  if (query) await search(ctx);
+}
 const mod: AppModule = {
-  id: "explorer",
-  moduleApiVersion: 1,
-  async activate(ctx) {
+  id: "explorer", moduleApiVersion: 1,
+  async activate(ctx, prev) {
+    searchSoon = debounce(() => { void search(ctx); }, 160);
     ws = ctx.state.get("workspace.selected") || null;
-    ctx.state.watch("workspace.selected", (v: any) => {
-      const changed = !ws || !v || ws.id !== v.id || ws.view?.explorerDir !== v.view?.explorerDir;
-      ws = v;
-      if (changed) load(ctx); else ctx.ui.invalidate();
-    });
-    await load(ctx);
+    ctx.state.watch("workspace.selected", (next: any) => { const changed = ws?.id !== next?.id; ws = next; if (changed) void reset(ctx); else ctx.ui.invalidate(); });
+    await reset(ctx, prev?.workspaceId === ws?.id ? prev : null);
   },
+  snapshot: () => ({ workspaceId: ws?.id || null, expanded: [...expanded], query }),
   render(): UiNode {
-    const dir = listing ? listing.relativeDir : ".";
-    const kids: UiNode[] = [
-      { type: "row", key: "hdr", gap: 4, align: "center", children: [
-        { type: "label", key: "t", text: "FILES", size: "sm", weight: "bold", color: "muted" },
-        { type: "label", key: "dir", text: dir === "." ? "/" : "/" + dir, size: "sm", mono: true, grow: true },
-        { type: "button", key: "up", text: "↑", action: "up", small: true, disabled: dir === ".", tooltip: "Parent directory" },
-        { type: "button", key: "refresh", text: "⟳", action: "refresh", small: true, tooltip: "Refresh" },
+    const filtering = !!query.trim();
+    const rows = treeRows(filtering ? directories(results?.entries || []) : dirs, expanded, ws?.view?.previewPath || null, filtering, filterCollapsed);
+    const loaded = [...dirs.values()].reduce((count, entries) => count + entries.length, 0);
+    const count = filtering ? searching ? "Searching workspace…" : `${results?.matchCount || 0} ${(results?.matchCount || 0) === 1 ? "match" : "matches"}${results?.partial ? " · partial results" : ""}` : `${loaded} items loaded`;
+    const children: UiNode[] = [
+      { type: "row", key: "filter-bar", gap: 4, children: [
+        { type: "textInput", key: "file-filter", search: true, placeholder: "Filter files", value: query, changeAction: "filter", grow: true, disabled: !ws },
+        ...(query ? [{ type: "button", key: "clear", text: "", icon: "x", action: "clearFilter", small: true, variant: "ghost", tooltip: "Clear filter" } as UiNode] : []),
       ] },
     ];
-    if (!ws) kids.push({ type: "label", key: "none", text: "Select a project or task.", color: "muted" });
-    if (ws && ws.location === "ssh") kids.push({ type: "label", key: "loc", text: `remote: ${ws.ssh?.host}:${ws.rootAbsolutePath}`, size: "xs", color: "muted" });
-    if (error) kids.push({ type: "status", key: "err", text: error, level: "error" });
-    if (loading && !listing) kids.push({ type: "progress", key: "ld", indeterminate: true });
-    if (listing) kids.push({ type: "fileList", key: "files", action: "open", grow: true,
-      entries: listing.entries.map((e: any) => ({ key: e.relativePath, name: e.name + (e.kind === "dir" ? "/" : ""), kind: e.kind, size: e.size, selected: ws?.view?.previewPath === e.relativePath })) });
-    return { type: "column", key: "explorer-root", gap: 6, padding: 8, grow: true, children: kids };
+    if (!ws) children.push({ type: "label", key: "none", text: "Select a project or task.", color: "muted", padding: 8 });
+    else {
+      children.push({ type: "row", key: "tools", gap: 4, children: [
+        { type: "label", key: "count", text: count, size: "xs", color: "muted", grow: true, tooltip: filtering ? "Search covers workspace paths, excluding .git object storage. Very large workspaces show partial results." : "Folders load as you expand them; filtering searches the workspace." },
+        { type: "button", key: "reveal", text: "", icon: "locate", action: "reveal", small: true, variant: "ghost", disabled: !ws.view?.previewPath, tooltip: "Reveal selected file" },
+        { type: "button", key: "collapse", text: "", icon: "collapse", action: "collapseAll", small: true, variant: "ghost", tooltip: "Collapse all folders" },
+        { type: "button", key: "refresh", text: "", icon: "refresh", action: "refresh", small: true, variant: "ghost", tooltip: "Refresh files" },
+      ] });
+      if (error) children.push({ type: "status", key: "err", text: error, level: "error" });
+      if (pending.size && !dirs.has(".")) children.push({ type: "progress", key: "loading", indeterminate: true });
+      if (filtering && !searching && !rows.length && !error) children.push({ type: "label", key: "empty", text: "No matching files.", color: "muted", padding: 12 });
+      if (!filtering && !pending.size && !loaded) children.push({ type: "label", key: "empty", text: "This folder is empty.", color: "muted", padding: 12 });
+      children.push({ type: "tree", key: "files", appearance: "files", rows: rows.map((row) => pending.has(row.key) ? { ...row, badge: "…" } : row), selectAction: "open", expandAction: "expand", grow: true });
+    }
+    return { type: "column", key: "explorer-root", gap: 4, padding: 8, grow: true, children };
   },
   async onEvent(ctx, ev) {
     if (!ws) return;
-    const patch = (p: any) => ctx.modules.call("workspace", "view.patch", { workspaceId: ws.id, patch: p });
-    if (ev.action === "open" && ev.rowKey) {
-      const e = listing?.entries.find((x: any) => x.relativePath === ev.rowKey);
-      if (e && e.kind === "dir") await patch({ explorerDir: e.relativePath });
-      else await patch({ previewPath: ev.rowKey });
-    } else if (ev.action === "up") {
-      const cur = listing ? listing.relativeDir : ".";
-      const parent = cur.includes("/") ? cur.slice(0, cur.lastIndexOf("/")) : ".";
-      await patch({ explorerDir: parent });
-    } else if (ev.action === "refresh") {
-      await load(ctx);
-    }
+    const workspaceId = ws.id;
+    const version = epoch;
+    try {
+      if (ev.action === "filter") { query = String(ev.value || ""); filterCollapsed.clear(); results = null; searchVersion++; searching = !!query.trim(); if (query.trim()) searchSoon(); else searching = false; ctx.ui.invalidate(); return; }
+      if (ev.action === "clearFilter") { query = ""; results = null; searching = false; searchVersion++; ctx.ui.invalidate(); return; }
+      if (ev.action === "collapseAll") { expanded.clear(); query = ""; results = null; searchVersion++; searching = false; }
+      else if (ev.action === "reveal") { await reveal(ctx); }
+      else if (ev.action === "refresh") { const saved = await mod.snapshot!(ctx); await ctx.modules.call("files", "search", { workspaceId, query: "", refresh: true }); if (version !== epoch) return; await reset(ctx, saved); }
+      else if (["open", "expand"].includes(ev.action) && ev.rowKey) {
+        const entry = (query.trim() ? results?.entries : [...dirs.values()].flat())?.find((item: Entry) => item.relativePath === ev.rowKey);
+        if (!entry) return;
+        if (entry.kind === "dir") {
+          if (query.trim()) { if (filterCollapsed.has(entry.relativePath)) filterCollapsed.delete(entry.relativePath); else filterCollapsed.add(entry.relativePath); }
+          else if (expanded.has(entry.relativePath)) expanded.delete(entry.relativePath);
+          else { expanded.add(entry.relativePath); await loadDir(ctx, entry.relativePath); }
+        } else if (ev.action === "open") await ctx.modules.call("workspace", "view.patch", { workspaceId: ws.id, patch: { previewPath: entry.relativePath } });
+      }
+      if (version !== epoch) return;
+      await ctx.modules.call("workspace", "view.patch", { workspaceId, patch: { ui: { explorerTree: { expanded: [...expanded] } } } });
+      error = null;
+    } catch (e) { if (version === epoch) error = errMsg(e); }
+    ctx.ui.invalidate();
   },
 };
 export default mod;

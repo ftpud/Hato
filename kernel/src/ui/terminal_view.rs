@@ -6,6 +6,7 @@ use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::TermMode;
 use alacritty_terminal::vte::ansi::{Color as AnsiColor, NamedColor};
 use gpui_kit::*;
+use gpui_component::ActiveTheme;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
@@ -19,15 +20,18 @@ pub struct TerminalView {
 fn rgb(hex: u32) -> Hsla { gpui_kit::rgb(hex).into() }
 
 const PALETTE: [u32; 16] = [
-    0x1d1f21, 0xcc6666, 0xb5bd68, 0xf0c674, 0x81a2be, 0xb294bb, 0x8abeb7, 0xc5c8c6,
-    0x666666, 0xd54e53, 0xb9ca4a, 0xe7c547, 0x7aa6da, 0xc397d8, 0x70c0b1, 0xeaeaea,
+    0x23242f, 0xed8796, 0xa6d6ad, 0xe8cd97, 0x91b7ed, 0xb6a0ff, 0x8bd5ca, 0xd4d4e0,
+    0x686b82, 0xf5a4b0, 0xbce6c1, 0xf0ddb1, 0xaccbfa, 0xc8b8ff, 0xa5e5dc, 0xf1f1f7,
 ];
-const DEFAULT_FG: u32 = 0xd8dadc;
-const DEFAULT_BG: u32 = 0x16181b;
 
-fn indexed(i: u8) -> Hsla {
+const LIGHT_PALETTE: [u32; 16] = [
+    0x28293b, 0xb83650, 0x287340, 0x8b6516, 0x345fa8, 0x6847c7, 0x237779, 0x62657e,
+    0x555870, 0xc13f5b, 0x337d4c, 0x926c1b, 0x416ab4, 0x7958d8, 0x2b8082, 0x767990,
+];
+
+fn indexed(i: u8, palette: &[u32; 16]) -> Hsla {
     match i {
-        0..=15 => rgb(PALETTE[i as usize]),
+        0..=15 => rgb(palette[i as usize]),
         16..=231 => {
             let i = i - 16;
             let c = |v: u8| if v == 0 { 0 } else { 55 + v as u32 * 40 };
@@ -40,14 +44,14 @@ fn indexed(i: u8) -> Hsla {
     }
 }
 
-fn resolve(c: &AnsiColor, colors: &alacritty_terminal::term::color::Colors, fg: bool) -> Hsla {
+fn resolve(c: &AnsiColor, colors: &alacritty_terminal::term::color::Colors, fg: bool, default_fg: Hsla, default_bg: Hsla, palette: &[u32; 16]) -> Hsla {
     match c {
         AnsiColor::Spec(rgbv) => rgb(((rgbv.r as u32) << 16) | ((rgbv.g as u32) << 8) | rgbv.b as u32),
         AnsiColor::Indexed(i) => {
             if let Some(o) = colors[*i as usize] {
                 rgb(((o.r as u32) << 16) | ((o.g as u32) << 8) | o.b as u32)
             } else {
-                indexed(*i)
+                indexed(*i, palette)
             }
         }
         AnsiColor::Named(n) => {
@@ -56,18 +60,18 @@ fn resolve(c: &AnsiColor, colors: &alacritty_terminal::term::color::Colors, fg: 
                 return rgb(((o.r as u32) << 16) | ((o.g as u32) << 8) | o.b as u32);
             }
             match n {
-                NamedColor::Foreground | NamedColor::BrightForeground => rgb(DEFAULT_FG),
-                NamedColor::Background => rgb(DEFAULT_BG),
-                NamedColor::Cursor => rgb(0xc5c8c6),
-                NamedColor::DimForeground => rgb(0x9a9c9e),
-                _ if idx < 16 => rgb(PALETTE[idx]),
+                NamedColor::Foreground | NamedColor::BrightForeground => default_fg,
+                NamedColor::Background => default_bg,
+                NamedColor::Cursor => default_fg,
+                NamedColor::DimForeground => rgb(palette[8]),
+                _ if idx < 16 => rgb(palette[idx]),
                 _ if idx >= NamedColor::DimBlack as usize => {
                     let base = idx - NamedColor::DimBlack as usize;
-                    let mut h = rgb(PALETTE[base.min(7)]);
+                    let mut h = rgb(palette[base.min(7)]);
                     h.l *= 0.7;
                     h
                 }
-                _ => if fg { rgb(DEFAULT_FG) } else { rgb(DEFAULT_BG) },
+                _ => if fg { default_fg } else { default_bg },
             }
         }
     }
@@ -152,11 +156,14 @@ struct Frame {
 
 impl Render for TerminalView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = if cx.theme().mode.is_dark() { &PALETTE } else { &LIGHT_PALETTE };
+        let default_fg = cx.theme().foreground;
+        let default_bg = cx.theme().background;
         self.session.dirty.store(false, Ordering::SeqCst);
         let font = Font { family: "Menlo".into(), features: Default::default(), fallbacks: None, weight: FontWeight::NORMAL, style: FontStyle::Normal };
         let font_size = self.font_size;
         if self.cell.is_none() {
-            let shaped = window.text_system().shape_line("MMMMMMMMMM".into(), font_size, &[TextRun { len: 10, font: font.clone(), color: rgb(DEFAULT_FG), background_color: None, underline: None, strikethrough: None }], None);
+            let shaped = window.text_system().shape_line("MMMMMMMMMM".into(), font_size, &[TextRun { len: 10, font: font.clone(), color: default_fg, background_color: None, underline: None, strikethrough: None }], None);
             let w = shaped.width / 10.0;
             self.cell = Some((w, (font_size * 1.35).round()));
         }
@@ -168,15 +175,15 @@ impl Render for TerminalView {
             let rows = term.screen_lines();
             let cols = term.columns();
             let colors = content.colors;
-            let mut grid: Vec<Vec<(char, Hsla, Hsla, bool)>> = vec![vec![(' ', rgb(DEFAULT_FG), rgb(DEFAULT_BG), false); cols]; rows];
+            let mut grid: Vec<Vec<(char, Hsla, Hsla, bool)>> = vec![vec![(' ', default_fg, default_bg, false); cols]; rows];
             let offset = content.display_offset as i32;
             for cell in content.display_iter {
                 let line = cell.point.line.0 + offset;
                 if line < 0 || line as usize >= rows || cell.point.column.0 >= cols {
                     continue;
                 }
-                let mut fg = resolve(&cell.fg, colors, true);
-                let mut bg = resolve(&cell.bg, colors, false);
+                let mut fg = resolve(&cell.fg, colors, true, default_fg, default_bg, palette);
+                let mut bg = resolve(&cell.bg, colors, false, default_fg, default_bg, palette);
                 if cell.flags.contains(Flags::INVERSE) {
                     std::mem::swap(&mut fg, &mut bg);
                 }
@@ -198,7 +205,7 @@ impl Render for TerminalView {
                         Some((s, f, b)) if *f == fg && *b == bold => s.push(c),
                         _ => runs.push((c.to_string(), fg, bold)),
                     }
-                    if bg != rgb(DEFAULT_BG) {
+                    if bg != default_bg {
                         match bgs.last_mut() {
                             Some((_, end, b)) if *b == bg && *end == x => *end = x + 1,
                             _ => bgs.push((x, x + 1, bg)),
@@ -216,7 +223,7 @@ impl Render for TerminalView {
             .id("terminal")
             .track_focus(&self.focus)
             .size_full()
-            .bg(rgb(DEFAULT_BG))
+            .bg(default_bg)
             .on_mouse_down(MouseButton::Left, cx.listener(|this, _, window, cx| {
                 window.focus(&this.focus, cx);
                 cx.notify();
@@ -278,9 +285,9 @@ impl Render for TerminalView {
                         if let Some((cx_, cy)) = frame.cursor {
                             let r = Bounds::new(point(origin.x + cw * cx_ as f32, origin.y + ch * cy as f32), size(cw, ch));
                             if focused {
-                                window.paint_quad(fill(r, Hsla { a: 0.55, ..rgb(0xc5c8c6) }));
+                                window.paint_quad(fill(r, Hsla { a: 0.55, ..default_fg }));
                             } else {
-                                window.paint_quad(outline(r, rgb(0xc5c8c6), BorderStyle::Solid));
+                                window.paint_quad(outline(r, default_fg, BorderStyle::Solid));
                             }
                         }
                         let _ = frame.exited;

@@ -4,7 +4,12 @@
   "kind": "ui",
   "entry": "src/index.ts",
   "moduleApiVersion": 1,
-  "dependencies": ["workspace","module-dev","persistence"],
+  "dependencies": [
+    "workspace",
+    "module-dev",
+    "persistence",
+    "settings"
+  ],
   "capabilities": [],
   "stateVersion": 1,
   "description": "Main window composition."

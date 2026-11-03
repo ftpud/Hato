@@ -152,8 +152,14 @@ const mod: AppModule = {
       return null;
     },
     "messages.list": async (ctx, a) => {
-      const limit = Math.min(Number(a.limit) || 500, 5000);
-      const rows = await q(ctx, "SELECT * FROM (SELECT * FROM ai_messages WHERE conversation_id = ? ORDER BY sequence DESC LIMIT ?) ORDER BY sequence ASC", [str(a.conversationId, "conversationId"), limit]);
+      const limit = Math.max(1, Math.min(Math.floor(Number(a.limit) || 500), 5000));
+      const before = a.beforeSequence;
+      if (before !== undefined && (!Number.isSafeInteger(before) || before <= 0)) throw new Error("invalid message cursor");
+      const filter = before === undefined ? "" : " AND sequence < ?";
+      const params: Json[] = [str(a.conversationId, "conversationId")];
+      if (before !== undefined) params.push(before);
+      params.push(limit);
+      const rows = await q(ctx, `SELECT * FROM (SELECT * FROM ai_messages WHERE conversation_id = ?${filter} ORDER BY sequence DESC LIMIT ?) ORDER BY sequence ASC`, params);
       return rows.map((r: any) => ({ id: r.id, sequence: r.sequence, kind: r.kind, payload: parse(r.payload_json, {}), createdAt: r.created_at }));
     },
     /** Insert or update a message by id; sequence is assigned on first insert. */

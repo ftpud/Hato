@@ -115,6 +115,17 @@ impl Render for Detached {
     }
 }
 
+// Flex weights below one leave part of the available space unused in CSS flex layout.
+// Normalize only flexible panes; fixed and collapsed panes must not consume their share.
+fn split_grow_weights(sizes: &[f32], fixed: &[Option<f32>]) -> Vec<f32> {
+    let weights: Vec<f32> = sizes.iter().enumerate().map(|(i, size)| {
+        if fixed.get(i).copied().flatten().is_some() { 0.0 }
+        else if size.is_finite() { size.max(0.0001) } else { 0.0001 }
+    }).collect();
+    let total: f32 = weights.iter().sum();
+    weights.into_iter().map(|weight| if total > 0.0 { weight / total * 100.0 } else { 0.0 }).collect()
+}
+
 impl Shell {
     pub(super) fn begin_frame(&mut self) {
         self.lay.zones.clear();
@@ -147,16 +158,20 @@ impl Shell {
         let min = f(n, "minSize").unwrap_or(80.0);
         let resize_action = s(n, "resizeAction");
         let collapse_action = s(n, "collapseAction");
-        let fixed_px: f32 = fixed.iter().flatten().sum::<f32>() + DIVIDER * (count.saturating_sub(1)) as f32;
+        let visible_count = fixed.iter().filter(|size| !matches!(size, Some(value) if *value <= 0.0)).count();
+        let fixed_px: f32 = fixed.iter().flatten().copied().filter(|value| *value > 0.0).sum::<f32>() + DIVIDER * visible_count.saturating_sub(1) as f32;
+        let grow_weights = split_grow_weights(&sizes, &fixed);
         let flexible: Vec<bool> = fixed.iter().map(|x| x.is_none()).collect();
         let border = cx.theme().border;
         let accent = cx.theme().primary;
         let mut d = if horizontal { h_flex() } else { v_flex() };
         d = self.apply_base(d, n, cx).flex_1().size_full().min_w_0().min_h_0().overflow_hidden().relative().items_stretch();
         d = d.child(capture(&self.lay.bounds, id.clone()));
+        let mut previous_visible: Option<usize> = None;
         for (i, k) in kids.into_iter().enumerate() {
-            if i > 0 {
-                let can = resizable && fixed[i - 1].is_none() && fixed[i].is_none();
+            if matches!(fixed[i], Some(size) if size <= 0.0) { continue; }
+            if let Some(previous) = previous_visible {
+                let can = resizable && fixed[previous].is_none() && fixed[i].is_none();
                 let line = if horizontal { div().w(px(1.0)).h_full().bg(border) } else { div().h(px(1.0)).w_full().bg(border) };
                 let mut dv = div().id(sid(module, &format!("{path}/divider{i}"))).flex_none().flex().items_center().justify_center().child(line);
                 dv = if horizontal { dv.w(px(DIVIDER)).h_full() } else { dv.h(px(DIVIDER)).w_full() };
@@ -167,7 +182,7 @@ impl Shell {
                     let (ss, os, fl, ra, ca, co) = (sizes.clone(), node_sizes.clone(), flexible.clone(), resize_action.clone(), collapse_action.clone(), collapsible.clone());
                     dv = dv.on_mouse_down(MouseButton::Left, cx.listener(move |this, ev: &MouseDownEvent, _w, cx| {
                         this.lay.drag = Some(Drag::Split {
-                            id: id2.clone(), module: m2.clone(), key: k2.clone(), horizontal, a: i - 1, b: i, start: ev.position,
+                            id: id2.clone(), module: m2.clone(), key: k2.clone(), horizontal, a: previous, b: i, start: ev.position,
                             start_sizes: ss.clone(), orig_sizes: os.clone(), flexible: fl.clone(), fixed_px, min,
                             resize_action: ra.clone(), collapse_action: ca.clone(), collapsible: co.clone(), collapse_req: None,
                         });
@@ -177,11 +192,12 @@ impl Shell {
                 }
                 d = d.child(dv);
             }
+            previous_visible = Some(i);
             let mut cell = div().overflow_hidden().flex().flex_col().min_w_0().min_h_0();
             cell = match fixed[i] {
                 Some(p) => if horizontal { cell.w(px(p)).h_full().flex_none() } else { cell.h(px(p)).w_full().flex_none() },
                 None => {
-                    let c = cell.flex_grow(sizes[i].max(0.0001)).flex_shrink(1.0).flex_basis(px(0.0));
+                    let c = cell.flex_grow(grow_weights[i]).flex_shrink(1.0).flex_basis(px(0.0));
                     if horizontal { c.h_full() } else { c.w_full() }
                 }
             };
@@ -519,5 +535,19 @@ fn open_detached(shell: Entity<Shell>, _kernel: Arc<Kernel>, id: String, module:
             Ok((handle, _)) => shell.update(cx, |this, _| { this.lay.windows.insert(id, handle); }),
             Err(e) => shell.update(cx, |this, cx| { this.toasts.push(("error".into(), format!("cannot open window: {e}"), Instant::now())); cx.notify(); }),
         }
+    }
+}
+
+#[cfg(test)]
+mod split_tests {
+    use super::split_grow_weights;
+    #[test]
+    fn collapsed_panes_do_not_leave_unused_flex_space() {
+        let weights = split_grow_weights(&[0.4, 0.2, 0.2, 0.2], &[None, Some(0.0), Some(0.0), None]);
+        assert!((weights.iter().sum::<f32>() - 100.0).abs() < 0.001);
+        assert_eq!(weights[1], 0.0);
+        assert_eq!(weights[2], 0.0);
+        assert!((weights[0] / weights[3] - 2.0).abs() < 0.001);
+        assert_eq!(split_grow_weights(&[0.01, 0.99], &[None, Some(36.0)]), vec![100.0, 0.0]);
     }
 }

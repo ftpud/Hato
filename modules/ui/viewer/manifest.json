@@ -4,7 +4,11 @@
   "kind": "ui",
   "entry": "src/index.ts",
   "moduleApiVersion": 1,
-  "dependencies": ["files","workspace"],
+  "dependencies": [
+    "files",
+    "workspace",
+    "persistence"
+  ],
   "capabilities": [],
   "stateVersion": 1,
   "description": "Read-only syntax-highlighted code viewer."
