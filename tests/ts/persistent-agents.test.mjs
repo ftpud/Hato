@@ -61,11 +61,27 @@ test('agents panel edits, clears and removes the selected agent without an MCP s
   // Edit pre-fills the form from the agent and saves through `update`.
   await event('edit','a');
   assert.ok(nodes().some(n=>n.key==='save')&&!nodes().some(n=>n.key==='create'));
+  // The form opens in its own floating window; the agent list stays visible behind it.
+  const editor=nodes().find(n=>n.type==='floating');
+  assert.equal(editor.title,'Edit Worker');
+  assert.ok(JSON.stringify(editor).includes('"agent-name"'));
+  assert.ok(nodes().some(n=>n.type==='tree'));
+  await event('moveEditor',{x:300,y:40,width:500,height:600});
+  assert.deepEqual({x:nodes().find(n=>n.type==='floating').x,width:mod.snapshot().editor.width},{x:300,width:500});
   assert.equal(nodes().find(n=>n.key==='agent-name').value,'Worker');
+  await event('open','a');
+  assert.equal(nodes().find(n=>n.key==='agent-name').value,'Worker','opening chat keeps the editor draft');
   await event('provider','other');
   await event('save','',{'agent-name':'Renamed'});
   assert.deepEqual(calls.find(c=>c.method==='update').args,{workspaceId:'ws',id:'a',name:'Renamed',profileId:'other',agentFile:'AGENTS.md',skills:['.agents/skills/test/SKILL.md'],mcps:['internal-remote-mcp']});
   assert.ok(!nodes().some(n=>n.key==='save'));
+  assert.ok(!nodes().some(n=>n.type==='floating'),'saving closes the editor window');
+  await event('new');
+  assert.equal(nodes().find(n=>n.type==='floating').title,'New background agent');
+  assert.equal(nodes().find(n=>n.key==='provider').value,'fixture','new agents use the default provider');
+  await event('back');
+  assert.ok(!nodes().some(n=>n.type==='floating'),'cancel closes the editor');
+  assert.ok(!calls.some(c=>c.method==='create'),'cancel never creates an agent');
   // Clear and remove ask first.
   await event('confirmClear','a');
   assert.equal(nodes().find(n=>n.type==='modal').title,'Clear session');

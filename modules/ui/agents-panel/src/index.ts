@@ -8,6 +8,9 @@ let selected:string|null=null,creating=false,error:string|null=null,busy=false,v
 /** Agent being edited in the form (null while creating), and a pending destructive confirmation. */
 let editing:string|null=null,confirming:{action:"clear"|"remove";id:string}|null=null;
 let name="",profile="",agentFile="",filter="";
+/** Floating create/edit window geometry. Kept for the session and across module reloads. */
+const DEFAULT_EDITOR={x:180,y:90,width:440,height:560};
+let editor={...DEFAULT_EDITOR};
 let skills=new Set<string>(),mcps=new Set<string>(["internal-remote-mcp"]);
 let timer:ReturnType<typeof setInterval>|null=null,epoch=0,refreshing:null|number=null;
 let animation:ReturnType<typeof setInterval>|null=null,frame=0;
@@ -42,8 +45,40 @@ async function setup(ctx:ModuleContext) {
 function schedule(ctx:ModuleContext){animate(ctx);if(timer)clearInterval(timer);timer=visible?setInterval(()=>{void refresh(ctx);},1500):null;}
 function checks(items:any[],set:Set<string>,action:string):UiNode[]{return items.map(item=>({type:"toggle",key:`${action}:${item.path||item.id}`,label:item.name||item.id,checked:set.has(item.path||item.id),action,value:item.path||item.id} as UiNode));}
 const label=(key:string,text:string):UiNode=>({type:"label",key,text,wrap:true,color:"muted",size:"sm"});
+function editorWindow():UiNode {
+  const target=editing?rows.find(s=>s.id===editing):null;
+  const title=editing?`Edit ${target?.name||name||"agent"}`:"New background agent";
+  return {type:"floating",key:"agent-editor",title,...editor,moveAction:"moveEditor",children:[
+    {type:"column",key:"editor-body",padding:10,gap:8,grow:true,children:[
+      {type:"row",key:"editor-header",gap:4,align:"center",children:[
+        {type:"label",key:"editor-title",text:editing?"Change this agent’s provider, instructions, tools and skills.":"Choose a provider, instructions, tools and skills.",size:"xs",color:"muted",wrap:true,grow:true},
+        {type:"button",key:"editor-close",text:"",iconSvg:uiIcons.x,action:"back",small:true,variant:"ghost",tooltip:"Close without saving"},
+      ]},
+      ...(error?[{type:"status",key:"editor-error",level:"error",text:error} as UiNode]:[]),
+      ...(busy?[{type:"progress",key:"editor-busy",indeterminate:true} as UiNode]:[]),
+      {type:"column",key:"create-form",gap:8,scroll:true,grow:true,children:[
+        {type:"textInput",key:"agent-name",placeholder:"Agent name",value:name,changeAction:"name"},
+        {type:"select",key:"provider",label:"Provider",value:profile,options:catalog.profiles.map((p:any)=>({value:p.id,label:p.name})),action:"provider"},
+        label("model-note",editing?"Changing the provider starts a new provider session; choose its model in the chat. Changes other than the name restart a connected agent.":"Connect to choose from the provider’s models before sending the first prompt."),
+        {type:"select",key:"agent-file",label:"Agent instructions",value:agentFile,options:[{value:"",label:"No agent file"},...catalog.agentFiles.map((f:any)=>({value:f.path,label:f.path}))],action:"agentFile"},
+        label("mcp-heading","Allowed MCP servers"),...checks(catalog.mcps,mcps,"mcp"),
+        label("skills-heading","Allowed skills"),...checks(catalog.skills,skills,"skill"),
+        ...(!catalog.skills.length?[label("no-skills","No workspace skills found in .agents/skills.")]:[]),
+        label("scope-note","Selections control supplied instructions, skills and MCP connections. Provider-native tools keep the provider’s permission controls."),
+        label("lifetime","Runs on the workspace machine’s daemon, including local workspaces. Closing this panel or Hato does not stop a running turn."),
+      ]},
+      {type:"row",key:"editor-footer",gap:4,align:"center",children:[
+        {type:"label",key:"editor-spacer",text:"",grow:true},
+        button("cancel-create","Cancel","back"),
+        editing?{type:"button",key:"save",text:"Save changes",action:"save",variant:"primary",small:true,disabled:busy||!profile}:{type:"button",key:"create",text:"Connect and choose model",action:"create",variant:"primary",small:true,disabled:busy||!profile},
+      ]},
+    ]},
+  ]};
+}
 const mod:AppModule={id:"agents-panel",moduleApiVersion:1,
  async activate(ctx,prev){
+  const saved:any=prev?.editor;
+  if(saved&&["x","y","width","height"].every(k=>Number.isFinite(saved[k])))editor={x:saved.x,y:saved.y,width:Math.max(320,saved.width),height:Math.max(320,saved.height)};
   ws=ctx.state.get("workspace.selected")||null;visible=!!(ctx.state.get("workspace-layout.panels") as any)?.agents;
   ctx.state.watch("workspace.selected",(next:any)=>{const changed=next?.id!==ws?.id;ws=next;if(changed)void setup(ctx);});
   ctx.state.watch("workspace-layout.panels",(panels:any)=>{visible=!!panels?.agents;schedule(ctx);if(visible)void refresh(ctx,true);});
@@ -54,7 +89,7 @@ const mod:AppModule={id:"agents-panel",moduleApiVersion:1,
   schedule(ctx);
  },
  deactivate(){epoch++;if(timer)clearInterval(timer);timer=null;if(animation)clearInterval(animation);animation=null;},
- snapshot:()=>({workspaceId:ws?.id,selected,filter}),
+ snapshot:()=>({workspaceId:ws?.id,selected,filter,editor}),
  render():UiNode {
   const children:UiNode[]=[{type:"row",key:"header",gap:3,children:[
     {type:"textInput",key:"agent-filter",prefixSvg:uiIcons.search,placeholder:"Filter agents",value:filter,changeAction:"filter",grow:true},
@@ -62,22 +97,9 @@ const mod:AppModule={id:"agents-panel",moduleApiVersion:1,
     {type:"button",key:"refresh",text:"",iconSvg:uiIcons.refresh,action:"refresh",small:true,variant:"ghost",tooltip:"Refresh agents"},
   ]},{type:"row",key:"summary",children:[{type:"label",key:"count",text:`${rows.length} agents`,size:"xs",color:"muted",grow:true}]}];
   if(!ws)children.push(label("none","Select a workspace to create or open its agents."));
-  if(error)children.push({type:"status",key:"error",level:"error",text:error});
-  if(busy)children.push({type:"progress",key:"busy",indeterminate:true});
-  if(creating&&catalog) {
-    children.push({type:"column",key:"create-form",gap:8,scroll:true,children:[
-      {type:"textInput",key:"agent-name",placeholder:"Agent name",value:name,changeAction:"name"},
-      {type:"select",key:"provider",label:"Provider",value:profile,options:catalog.profiles.map((p:any)=>({value:p.id,label:p.name})),action:"provider"},
-      label("model-note",editing?"Changing the provider starts a new provider session; choose its model in the chat. Changes other than the name restart a connected agent.":"Connect to choose from the provider’s models before sending the first prompt."),
-      {type:"select",key:"agent-file",label:"Agent instructions",value:agentFile,options:[{value:"",label:"No agent file"},...catalog.agentFiles.map((f:any)=>({value:f.path,label:f.path}))],action:"agentFile"},
-      label("mcp-heading","Allowed MCP servers"),...checks(catalog.mcps,mcps,"mcp"),
-      label("skills-heading","Allowed skills"),...checks(catalog.skills,skills,"skill"),
-      ...(!catalog.skills.length?[label("no-skills","No workspace skills found in .agents/skills.")]:[]),
-      label("scope-note","Selections control supplied instructions, skills and MCP connections. Provider-native tools keep the provider’s permission controls."),
-      label("lifetime","Runs on the workspace machine’s daemon, including local workspaces. Closing this panel or Hato does not stop a running turn."),
-      editing?{type:"button",key:"save",text:"Save changes",action:"save",variant:"primary",disabled:busy||!profile}:{type:"button",key:"create",text:"Connect and choose model",action:"create",disabled:busy||!profile},button("cancel-create","Cancel","back"),
-    ]});
-  } else if(ws) {
+  if(error&&!creating)children.push({type:"status",key:"error",level:"error",text:error});
+  if(busy&&!creating)children.push({type:"progress",key:"busy",indeterminate:true});
+  if(ws) {
     const query=filter.trim().toLowerCase();
     const agents=rows.filter(s=>[s.name,s.profile.name,s.status,s.activity||""].some(v=>v.toLowerCase().includes(query)));
     children.push({type:"tree",key:"agents",rowHeight:42,rowGap:0,iconSize:18,grow:true,selectAction:"open",expandAction:"noop",rows:agents.map(s=>({
@@ -109,6 +131,7 @@ const mod:AppModule={id:"agents-panel",moduleApiVersion:1,
       ]});
     }
   }
+  if(creating&&catalog&&ws)children.push(editorWindow());
   return {type:"column",key:"agents-root",padding:8,gap:8,grow:true,children};
  },
  async onEvent(ctx,ev) {
@@ -117,6 +140,14 @@ const mod:AppModule={id:"agents-panel",moduleApiVersion:1,
   if(ev.action==="name"){name=value;return;}
   if(ev.action==="provider"){profile=value;return;}
   if(ev.action==="agentFile"){agentFile=value;return;}
+  if(ev.action==="moveEditor") {
+    const g:any=ev.value;
+    if(g&&["x","y","width","height"].every(k=>Number.isFinite(g[k]))) {
+      editor={x:g.x,y:g.y,width:g.width,height:g.height};
+      ctx.ui.invalidate();
+    }
+    return;
+  }
   if(ev.action==="skill"||ev.action==="mcp") {const set=ev.action==="skill"?skills:mcps;const id=ev.key.slice(ev.key.indexOf(":")+1);if(set.has(id))set.delete(id);else set.add(id);ctx.ui.invalidate();return;}
   if(busy)return;
   const mine=epoch,workspaceId=ws?.id;
@@ -126,7 +157,7 @@ const mod:AppModule={id:"agents-panel",moduleApiVersion:1,
   };
   busy=true;error=null;ctx.ui.invalidate();
   try {
-    if(ev.action==="new") {catalog=await actionCall("catalog");creating=true;editing=null;name="";agentFile="";skills=new Set();mcps=new Set(["internal-remote-mcp"]);}
+    if(ev.action==="new") {catalog=await actionCall("catalog");creating=true;editing=null;name="";profile=catalog.profiles[0]?.id||"";agentFile="";skills=new Set();mcps=new Set(["internal-remote-mcp"]);}
     else if(ev.action==="edit") {
       const s=rows.find(r=>r.id===value);if(!s)throw new Error("Agent is no longer available");
       catalog=await actionCall("catalog");if(mine!==epoch)return;
@@ -143,7 +174,7 @@ const mod:AppModule={id:"agents-panel",moduleApiVersion:1,
     else if(ev.action==="clear"){confirming=null;await actionCall("clear",{id:value});ctx.events.emit("agents-panel.agentCleared",{workspaceId,id:value});}
     else if(ev.action==="remove"){confirming=null;await actionCall("remove",{id:value});if(selected===value)selected=null;ctx.events.emit("agents-panel.agentRemoved",{workspaceId,id:value});}
     else if(ev.action==="create") {const s=await actionCall("create",{name:ev.inputs["agent-name"]||name||"Agent",profileId:profile,agentFile,skills:[...skills],mcps:[...mcps]});if(mine!==epoch)return;selected=s.id;creating=false;ctx.events.emit("agents-panel.openChat",{workspaceId,id:s.id});}
-    else if(ev.action==="open"){selected=ev.rowKey||value;creating=false;ctx.events.emit("agents-panel.openChat",{workspaceId,id:selected});}
+    else if(ev.action==="open"){selected=ev.rowKey||value;ctx.events.emit("agents-panel.openChat",{workspaceId,id:selected});}
     if(mine===epoch)await refresh(ctx,true);
   }catch(e){if(mine===epoch)error=errMsg(e);}
   finally{if(mine===epoch)busy=false;ctx.ui.invalidate();}
