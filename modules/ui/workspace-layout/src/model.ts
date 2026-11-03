@@ -27,6 +27,8 @@ export interface Layout {
   v: 1;
   settingsButton?: true;
   showPanelControls: boolean;
+  showLeftSidebar: boolean;
+  showRightSidebar: boolean;
   columns: Column[];
   bottom: { panels: string[]; sizes: number[]; collapsed: boolean };
   mainSizes: [number, number];
@@ -42,6 +44,8 @@ export function defaultLayout(): Layout {
     v: 1,
     settingsButton: true,
     showPanelControls: true,
+    showLeftSidebar: true,
+    showRightSidebar: true,
     columns: [
       { panels: ["projects"], size: 0.17, sizes: [1] },
       { panels: ["files"], size: 0.17, sizes: [1] },
@@ -197,6 +201,8 @@ export function repair(raw: any): Layout {
   if (!raw.settingsButton && !l.bars.top.items.includes("settings") && !l.bars.bottom.items.includes("settings")) l.bars.top.items.push("settings");
   l.settingsButton = true;
   l.showPanelControls = raw.showPanelControls !== false;
+  l.showLeftSidebar = raw.showLeftSidebar !== false;
+  l.showRightSidebar = raw.showRightSidebar !== false;
   l.collapsed = l.collapsed && typeof l.collapsed === "object" && !Array.isArray(l.collapsed) ? l.collapsed : {};
   for (const [id, g] of Object.entries(l.floating)) {
     const fallback = { x: 120, y: 120, width: 520, height: 380 };

@@ -5,6 +5,7 @@ async function load(entry) {
   const r = await esbuild.build({ entryPoints: [entry], bundle: true, format: "esm", platform: "neutral", write: false });
   return import("data:text/javascript;base64," + Buffer.from(r.outputFiles[0].text).toString("base64"));
 }
+const walk = node => [node, ...(node.children || []).flatMap(walk)];
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 
 test("module settings validate edits, serialize saves and report failures without changing confirmed values", async () => {
@@ -40,14 +41,45 @@ test("Settings discovers live contributions, routes edits, closes and removes in
   await mod.methods.open(ctx);
   const tree = mod.render(ctx);
   assert.equal(tree.type, "modal");
-  assert.ok(tree.children.some((n) => n.type === "appearanceControl"));
-  const toggle = tree.children.find((n) => n.type === "toggle");
+  assert.ok(walk(tree).some((n) => n.type === "appearanceControl"));
+  assert.ok(walk(tree).some(n => n.type === "choice" && n.text === "Example preferences"));
+  mod.onEvent(ctx, { action: "selectCategory", value: JSON.stringify(["example", "general"]) });
+  const toggle = walk(mod.render(ctx)).find((n) => n.type === "toggle");
+  assert.ok(!walk(mod.render(ctx)).some(n => n.type === "appearanceControl"));
+  assert.equal(mod.snapshot().selectedCategory, JSON.stringify(["example", "general"]));
   mod.onEvent(ctx, { action: "change", key: toggle.key, value: false });
   assert.deepEqual(emitted, [{ topic: "settings.change", payload: { module: "example", section: "general", key: "enabled", value: false } }]);
   active = false; await mod.methods.open(ctx);
-  assert.ok(!mod.render(ctx).children.some((n) => n.type === "toggle"));
+  assert.ok(!walk(mod.render(ctx)).some((n) => n.type === "toggle"));
+  assert.ok(walk(mod.render(ctx)).some(n => n.type === "appearanceControl"));
   assert.deepEqual(stopped, ["example.settings"]);
   mod.onEvent(ctx, { action: "close" });
   assert.equal(mod.render(ctx).key, "settings-closed");
+  mod.deactivate();
+});
+
+test("modules can publish multiple independent categories with identical section keys across providers", async () => {
+  const { default: mod } = await load("modules/ui/settings/src/index.ts");
+  const values = {
+    'one.settings': { sections: [
+      { key: 'general', title: 'One general', description: 'General options', fields: [{ key: 'value', label: 'One value', type: 'toggle', value: true }] },
+      { key: 'advanced', title: 'One advanced', fields: [{ key: 'value', label: 'Advanced value', type: 'toggle', value: false }] },
+    ] },
+    'two.settings': { sections: [{ key: 'general', title: 'Two general', fields: [{ key: 'value', label: 'Two value', type: 'toggle', value: false }] }] },
+  };
+  const emitted = [];
+  const ctx = { moduleId: 'settings', host: { modules: { list: async () => [{ id: 'one', active: {} }, { id: 'two', active: {} }] } },
+    state: { get: key => values[key], watch: () => () => {} }, events: { on() {}, emit: (topic, payload) => emitted.push({ topic, payload }) }, ui: { invalidate() {} } };
+  await mod.activate(ctx);
+  await mod.methods.open(ctx, { module: 'two', section: 'general' });
+  assert.deepEqual(walk(mod.render(ctx)).filter(n => n.type === 'choice').map(n => n.text), ['Appearance', 'One general', 'One advanced', 'Two general']);
+  const toggle = walk(mod.render(ctx)).find(n => n.type === 'toggle');
+  assert.equal(toggle.label, 'Two value');
+  mod.onEvent(ctx, { action: 'change', key: toggle.key, value: true });
+  assert.equal(emitted[0].payload.module, 'two');
+  mod.onEvent(ctx, { action: 'selectCategory', value: JSON.stringify(['one', 'advanced']) });
+  assert.equal(walk(mod.render(ctx)).find(n => n.type === 'toggle').label, 'Advanced value');
+  delete values['one.settings'];
+  assert.ok(walk(mod.render(ctx)).some(n => n.type === 'appearanceControl'));
   mod.deactivate();
 });

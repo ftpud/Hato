@@ -7,10 +7,17 @@
 // The kernel only provides the primitives (split, dragHandle, dropZone, floating, window); all
 // policy lives here and is persisted through the persistence service ("layout.v1").
 import type { AppModule, ModuleContext, UiNode } from "../../../../sdk/types";
+import { exportSettings } from "../../../../sdk/settings";
+import { fontOptions, typography } from "../../../../sdk/typography";
 import { colorScheme } from "../../../../sdk/color-scheme";
 import { debounce, errMsg } from "../../../../sdk/runtime";
 import { BAR_ITEMS, PANELS, defaultLayout, dropPanel, locate, moveBarItem, moveTo, removeBarItem, repair, type BarId, type Layout } from "./model";
 
+let fontFamily = "JetBrains Mono";
+let fontSize = "15";
+let fontWeight = "400";
+const sizeOptions = [{ value: "14", label: "Small" }, { value: "15", label: "Compact" }, { value: "16", label: "Standard" }, { value: "18", label: "Large" }];
+const weightOptions = [{ value: "400", label: "Regular" }, { value: "500", label: "Medium" }];
 let ws: any = null;
 let modules: any[] = [];
 let showModules = false;
@@ -58,7 +65,7 @@ function panelHeader(id: string, mode: "dock" | "float" | "window"): UiNode {
   const collapsed = !!layout.collapsed[id];
   const kids: UiNode[] = [];
   if (mode === "dock") {
-    kids.push({ type: "dragHandle", key: "drag", payload: { kind: "panel", id }, label: `⠿ ${p.title}`, grow: true, tooltip: "Drag onto another panel to re-dock" });
+    kids.push({ type: "dragHandle", key: "drag", payload: { kind: "panel", id }, children: [{ type: "label", key: "title", text: p.title, size: "sm", weight: "semibold", grow: true }], grow: true, tooltip: "Drag onto another panel to re-dock" });
     kids.push(btn("collapse", collapsed ? "+" : "–", "toggleCollapse", id, collapsed ? "Expand" : "Collapse"));
     kids.push(btn("float", "⧉", "float", id, "Float inside the window"));
     kids.push(btn("detach", "⇗", "detach", id, "Open in its own window"));
@@ -69,7 +76,7 @@ function panelHeader(id: string, mode: "dock" | "float" | "window"): UiNode {
     if (mode === "float") kids.push(btn("detach", "⇗", "detach", id, "Open in its own window"));
     else kids.push(btn("float", "⧉", "float", id, "Float inside the main window"));
   }
-  return { type: "row", key: "ph", gap: 2, padding: 2, bg: "muted", align: "center", children: layout.showPanelControls ? kids : kids.filter(node => node.type !== "button") };
+  return { type: "row", key: "ph", gap: 2, padding: 2, bg: "panel", style: { borderBottom: 1, borderColor: "border" }, align: "center", children: layout.showPanelControls ? kids : kids.filter(node => node.type !== "button") };
 }
 
 function panelBody(id: string, mode: "dock" | "float" | "window"): UiNode {
@@ -222,6 +229,10 @@ function layoutMenu(): UiNode {
       { type: "toggle", key: "tb", label: "Show top bar", checked: layout.bars.top.visible, action: "toggleBar", value: "top" } as UiNode,
       { type: "toggle", key: "bb", label: "Show bottom bar", checked: layout.bars.bottom.visible, action: "toggleBar", value: "bottom" } as UiNode,
     ] },
+    { type: "row", key: "sidebars", gap: 12, wrap: true, children: [
+      { type: "toggle", key: "left-sidebar-visible", label: "Show left sidebar", checked: layout.showLeftSidebar, action: "toggleSidebar" },
+      { type: "toggle", key: "right-sidebar-visible", label: "Show right sidebar", checked: layout.showRightSidebar, action: "toggleSidebar" },
+    ] },
     ...itemRows,
     { type: "divider", key: "d1" },
     { type: "label", key: "h2", text: "Panels", weight: "bold", size: "sm" },
@@ -299,6 +310,25 @@ const mod: AppModule = {
     try {
       layout = repair(prev && prev.layout ? prev.layout : await ctx.modules.call("persistence", "settings.get", { key: "layout.v1" }));
     } catch (e) { ctx.log.warn("load layout", errMsg(e)); layout = defaultLayout(); }
+    const savedFont = await ctx.modules.call("persistence", "settings.get", { key: "appearance.fontFamily" });
+    fontFamily = fontOptions.some(option => option.value === savedFont) ? savedFont : "JetBrains Mono";
+    const savedSize = await ctx.modules.call("persistence", "settings.get", { key: "appearance.fontSize" });
+    const savedWeight = await ctx.modules.call("persistence", "settings.get", { key: "appearance.fontWeight" });
+    fontSize = sizeOptions.some(option => option.value === savedSize) ? savedSize : "15";
+    fontWeight = weightOptions.some(option => option.value === savedWeight) ? savedWeight : "400";
+    exportSettings(ctx, () => [{ key: "typography", title: "Typography", fields: [
+      { key: "fontFamily", label: "Interface font", type: "select", value: fontFamily, options: fontOptions,
+        description: "Applies to panels, chat, file previews and terminals. JetBrains Mono is bundled." },
+      { key: "fontSize", label: "Text size", type: "select", value: fontSize, options: sizeOptions },
+      { key: "fontWeight", label: "Text weight", type: "select", value: fontWeight, options: weightOptions },
+    ] }], async (_section, key, value) => {
+      const options = key === "fontFamily" ? fontOptions : key === "fontSize" ? sizeOptions : key === "fontWeight" ? weightOptions : [];
+      if (typeof value !== "string" || !options.some(option => option.value === value)) throw new Error("Invalid typography preference");
+      await ctx.modules.call("persistence", "settings.set", { key: `appearance.${key}`, value });
+      if (key === "fontFamily") fontFamily = value;
+      else if (key === "fontSize") fontSize = value;
+      else fontWeight = value;
+    });
     ws = ctx.state.get("workspace.selected") || null;
     ctx.state.watch("workspace.selected", (v: any) => { ws = v; ctx.ui.invalidate(); });
     ctx.events.on("kernel.modules.changed", () => loadModules(ctx));
@@ -316,7 +346,7 @@ const mod: AppModule = {
     resetLayout: (ctx) => { set(ctx, defaultLayout()); return layout; },
   },
   render(): UiNode {
-    const kids: UiNode[] = [{ type: "theme", key: "color-scheme", palette: colorScheme }];
+    const kids: UiNode[] = [{ type: "theme", key: "color-scheme", palette: colorScheme, typography: typography(fontFamily, fontSize, fontWeight) }];
     const top = barNode("top");
     if (top) kids.push(top);
     if (!["top", "bottom"].some((b) => layout.bars[b as BarId].visible && layout.bars[b as BarId].items.includes("layoutMenu"))) {
@@ -331,9 +361,9 @@ const mod: AppModule = {
     ] });
     const collapsed = collapsedPanels();
     kids.push({ type: "row", key: "workspace-content", grow: true, align: "stretch", children: [
-      { type: "slot", key: "left-sidebar", module: "left-sidebar", width: 44 },
+      ...(layout.showLeftSidebar ? [{ type: "slot", key: "left-sidebar", module: "left-sidebar", width: 44 } as UiNode] : []),
       { type: "column", key: "workspace-panels", grow: true, children: [dockArea(), ...(collapsed ? [collapsed] : [])] },
-      { type: "slot", key: "right-sidebar", module: "sidebar", width: 44 },
+      ...(layout.showRightSidebar ? [{ type: "slot", key: "right-sidebar", module: "sidebar", width: 44 } as UiNode] : []),
     ] });
     const bottom = barNode("bottom");
     if (bottom) kids.push(bottom);
@@ -351,6 +381,14 @@ const mod: AppModule = {
     const v: any = ev.value;
     const dockBack = (id: string) => moveTo(layout, id, id === "terminal" ? "bottom" : "column");
     switch (ev.action) {
+      case "toggleSidebar": {
+        const side = typeof v === "boolean" ? ev.key === "left-sidebar-visible" ? "left" : ev.key === "right-sidebar-visible" ? "right" : null : v;
+        if (side === "left" || side === "right") {
+          const field = side === "left" ? "showLeftSidebar" : "showRightSidebar";
+          set(ctx, { ...layout, [field]: typeof v === "boolean" ? v : !layout[field] });
+        }
+        break;
+      }
       case "togglePanelControls": set(ctx, { ...layout, showPanelControls: typeof v === "boolean" ? v : !layout.showPanelControls }); break;
       case "openSettings": await ctx.modules.call("settings", "open"); break;
       // -- docking / panels

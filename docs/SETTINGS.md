@@ -57,3 +57,47 @@ The reference light palette uses white surfaces, pale blue fields and selections
 slate text, and indigo accents. Changing these tokens requires rebuilding and hot
 activating `workspace-layout`, with no native rebuild after the theme-node support
 has been installed. Colors do not control layout, typography, spacing, or geometry.
+
+Typography is contributed by `workspace-layout` under **Typography → Interface
+font**. The selected family is persisted as `appearance.fontFamily` and supplied
+through the theme node's `typography` data. JetBrains Mono is bundled with its OFL
+license, and is the default; System font, Menlo, and Monaco are also available.
+System font retains JetBrains Mono for code and terminals. Font changes apply
+without restarting after native typography support has been installed.
+
+File and terminal tab colors and weights are defined in `sdk/tab-style.ts`.
+Explorer icons use the Lucide outline subset in `sdk/file-icons.ts`, with the ISC
+license retained in `sdk/icons/LICENSE-lucide.txt`. Tree rows pass SVGs and semantic
+color roles to the renderer, so icon selection and drawings remain module-owned.
+
+## Settings categories
+
+Every section published through `exportSettings` becomes a selectable category in
+Settings' left-hand list. The right-hand pane shows only that category's fields.
+A module can publish multiple sections, each with its own stable `key`, readable
+`title`, optional `description`, and `fields`. Existing contributors work without
+changes. Use descriptive titles such as “Terminal behavior” rather than repeating
+“General” across modules.
+
+```ts
+exportSettings(ctx, () => [
+  { key: "behavior", title: "Terminal behavior", description: "Options for new shells.",
+    fields: [{ key: "restore", label: "Restore terminals", type: "toggle", value: restore }] },
+  { key: "display", title: "Terminal display", fields: [/* display preferences */] },
+], savePreference);
+```
+
+Category identity combines the module ID and section key, so different modules
+can reuse section keys. Switching categories leaves preferences unchanged.
+Contributions update live; disappearing categories fall back to Appearance.
+The selected category survives a hot swap of Settings.
+
+Call `settings.open` with `{ module: "viewer", section: "viewer" }` to open a
+particular category (subject to the caller's existing module RPC grant).
+
+Modules may also contribute internal MCP commands through `exportMcpTools` in
+`sdk/mcp.ts`. The broker supplies separate Settings categories with allow/deny
+controls for those commands. See [Module MCP commands](MODULE_MCP.md). Service
+settings contributors should pass `{ invalidate: false }` as the fourth argument
+to `exportSettings`; publishing state already refreshes the Settings UI, and a
+service has no UI tree to invalidate.

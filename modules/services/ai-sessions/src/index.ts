@@ -3,6 +3,7 @@
 // requests; module patch/build/activate approvals are enforced by the kernel regardless.
 import { reasoningMarkdown } from "../../../../sdk/reasoning";
 import { imageAttachments, transcriptContent } from "../../../../sdk/images";
+import { messageWindow } from "../../../../sdk/chat-window";
 import type { AppModule, ChatMessage, ModuleContext, ImageAttachment } from "../../../../sdk/types";
 import { debounce, errMsg } from "../../../../sdk/runtime";
 
@@ -275,7 +276,11 @@ const mod: AppModule = {
       let active: any = null;
       if (activeId) {
         const c = await load(ctx, activeId);
-        active = { conversation: c.row, messages: c.messages.map(toChat), hasOlder: c.hasOlder, historyLoading: c.historyLoading, historyError: c.historyError, live: c.live, busy: c.busy, steering: c.steering.length };
+        const windowed = Number.isSafeInteger(a.messageLimit) && a.messageLimit > 0;
+        const window = messageWindow(c.messages, windowed ? Math.min(a.messageLimit, 200) : c.messages.length,
+          !a.windowConversationId || a.windowConversationId === activeId ? a.beforeMessageId : undefined);
+        active = { conversation: c.row, messages: window.messages.map(toChat), windowed,
+          hasLoadedOlder: window.hasLoadedOlder, hasNewer: window.hasNewer, hasOlder: c.hasOlder || window.hasLoadedOlder, historyLoading: c.historyLoading, historyError: c.historyError, live: c.live, busy: c.busy, steering: c.steering.length };
       }
       const auth = await ctx.modules.call("acp", "authSettings", {});
       return { mcpServers: [{ id: "internal", name: "Hato", description: "Inspect, build and reload application modules" }], auth, workspace: { id: desc.id, name: desc.name, machineId: desc.machineId, root: desc.rootAbsolutePath, location: desc.location }, conversations: list.map((x: any) => ({ id: x.id, title: x.title, status: x.status })), activeId, active, profiles };

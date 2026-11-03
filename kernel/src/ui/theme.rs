@@ -1,6 +1,6 @@
 //! Generic theme token application; application palettes can be supplied by UI modules.
 use gpui_component::{ActiveTheme, Theme, ThemeMode};
-use gpui_kit::{px, rgb, App, Global, Hsla};
+use gpui_kit::{px, rgb, App, FontWeight, Global, Hsla};
 use serde_json::Value;
 
 #[derive(Default)]
@@ -16,26 +16,44 @@ fn palette_color(palette: &Value, name: &str) -> Option<Hsla> {
 pub fn token(cx: &App, name: &str, fallback: Hsla) -> Hsla {
     if !cx.has_global::<ModulePalette>() { return fallback; }
     let mode = if cx.theme().mode.is_dark() { "dark" } else { "light" };
-    palette_color(&cx.global::<ModulePalette>().0[mode], name).unwrap_or(fallback)
+    palette_color(&cx.global::<ModulePalette>().0["palette"][mode], name).unwrap_or(fallback)
 }
 
-pub fn configure(cx: &mut App, palette: &Value) {
+pub fn configure(cx: &mut App, palette: &Value, typography: &Value) {
     if !palette.is_object() { return; }
-    if cx.has_global::<ModulePalette>() && cx.global::<ModulePalette>().0 == *palette { return; }
+    let config = serde_json::json!({ "palette": palette, "typography": typography });
+    if cx.has_global::<ModulePalette>() && cx.global::<ModulePalette>().0 == config { return; }
     let dark = cx.theme().mode.is_dark();
-    cx.set_global(ModulePalette(palette.clone()));
+    cx.set_global(ModulePalette(config));
     apply(cx, dark);
 }
 
+pub fn font_weight(cx: &App) -> FontWeight {
+    let weight = if cx.has_global::<ModulePalette>() { cx.global::<ModulePalette>().0["typography"]["fontWeight"].as_f64().unwrap_or(400.0) } else { 400.0 };
+    FontWeight(weight.clamp(100.0, 900.0) as f32)
+}
+
 pub fn init(cx: &mut App, data_dir: &std::path::Path) {
+    if let Err(error) = cx.text_system().add_fonts(vec![
+        std::borrow::Cow::Borrowed(include_bytes!("../../../assets/fonts/JetBrainsMono-Regular.ttf")),
+        std::borrow::Cow::Borrowed(include_bytes!("../../../assets/fonts/JetBrainsMono-Medium.ttf")),
+        std::borrow::Cow::Borrowed(include_bytes!("../../../assets/fonts/JetBrainsMono-SemiBold.ttf")),
+        std::borrow::Cow::Borrowed(include_bytes!("../../../assets/fonts/JetBrainsMono-Bold.ttf")),
+        std::borrow::Cow::Borrowed(include_bytes!("../../../assets/fonts/JetBrainsMono-Italic.ttf")),
+    ]) { log::warn!("cannot register bundled fonts: {error}"); }
     let dark = std::fs::read_to_string(data_dir.join("appearance")).map(|s| s.trim() != "light").unwrap_or(true);
     apply(cx, dark);
 }
 
 pub fn apply(cx: &mut App, dark: bool) {
-    let palette = if cx.has_global::<ModulePalette>() { cx.global::<ModulePalette>().0[if dark { "dark" } else { "light" }].clone() } else { Value::Null };
+    let config = if cx.has_global::<ModulePalette>() { cx.global::<ModulePalette>().0.clone() } else { Value::Null };
+    let palette = &config["palette"][if dark { "dark" } else { "light" }];
     Theme::change(if dark { ThemeMode::Dark } else { ThemeMode::Light }, None, cx);
     Theme::update(cx, |theme| {
+        if let Some(family) = config["typography"]["fontFamily"].as_str().filter(|s| !s.is_empty()) { theme.font_family = family.to_owned().into(); }
+        if let Some(family) = config["typography"]["monoFontFamily"].as_str().filter(|s| !s.is_empty()) { theme.mono_font_family = family.to_owned().into(); }
+        if let Some(size) = config["typography"]["fontSize"].as_f64() { theme.font_size = px(size.clamp(12.0, 24.0) as f32); }
+        if let Some(size) = config["typography"]["monoFontSize"].as_f64() { theme.mono_font_size = px(size.clamp(10.0, 22.0) as f32); }
         let color = |hex| -> Hsla { rgb(hex).into() };
         let named = |name: &str, fallback: Hsla| palette_color(&palette, name).unwrap_or(fallback);
         let base = named("background", color(if dark { 0x14151b } else { 0xf7f7fc }));

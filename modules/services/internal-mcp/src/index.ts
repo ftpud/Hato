@@ -4,6 +4,7 @@
 // hosts via SFTP with user consent). Every connection must authenticate with a session-scoped
 // token bound to one conversation/workspace/machine. Tool logic delegates to `module-dev`, whose
 // mutating operations are approved natively by the kernel (Autopilot cannot bypass that).
+import { McpRegistry } from "./registry";
 import type { AppModule, Handle, ModuleContext } from "../../../../sdk/types";
 import { errMsg, JsonRpcPeer, rpcError, sshConnect, type WorkspaceDescriptor } from "../../../../sdk/runtime";
 import skInspect from "../skills/inspect-module.md";
@@ -37,6 +38,7 @@ process.stdin.on("end", () => s.end());
 interface TokenInfo { conversationId: string; workspaceId: string; machineId: string; created: number }
 interface McpConn { handle: Handle; token: string | null; buf: string; peer: JsonRpcPeer | null; inflight: number; client: any }
 
+let registry: McpRegistry;
 let listener: { handle: Handle; port: number } | null = null;
 const tokens = new Map<string, TokenInfo>();
 const connsByHandle = new Map<Handle, McpConn>();
@@ -58,6 +60,8 @@ const TOOLS = [
 
 async function callTool(ctx: ModuleContext, conn: McpConn, name: string, args: any) {
   const info = tokens.get(conn.token!);
+  if (!info) throw new Error("MCP session was revoked");
+  registry.assertAllowed(name);
   ctx.log.info(`tool ${name} from conversation ${info?.conversationId} (${info?.machineId})`);
   stats.toolCalls++;
   const md = (m: string, a: any) => ctx.modules.call("module-dev", m, a, { timeoutMs: 30 * 60 * 1000 });
@@ -79,7 +83,7 @@ async function callTool(ctx: ModuleContext, conn: McpConn, name: string, args: a
       if (!s) throw new Error(`unknown skill ${args.name}`);
       return s;
     }
-    default: throw rpcError(-32602, `unknown tool ${name}`);
+    default: return registry.call(name, args, { conversationId: info.conversationId, workspaceId: info.workspaceId, machineId: info.machineId });
   }
 }
 
@@ -92,13 +96,13 @@ function makePeer(ctx: ModuleContext, conn: McpConn) {
         const v = params && SUPPORTED_PROTOCOLS.includes(params.protocolVersion) ? params.protocolVersion : SUPPORTED_PROTOCOLS[0];
         return {
           protocolVersion: v,
-          capabilities: { tools: { listChanged: false }, prompts: { listChanged: false }, resources: { listChanged: false } },
+          capabilities: { tools: { listChanged: true }, prompts: { listChanged: false }, resources: { listChanged: false } },
           serverInfo: { name: "hato-internal", title: "Hato internal modules", version: SERVER_VERSION },
-          instructions: "Tools to inspect and evolve Hato's hot-swappable TypeScript modules. Read the skills (skills_get or prompts) first. Mutating tools require explicit native approval by the user.",
+          instructions: "Module-contributed commands are workspace-bound and individually controlled in Settings. Module maintenance tools inspect and evolve hot-swappable TypeScript modules: read the skills (skills_get or prompts) first. Module maintenance mutations require native user approval; contributed commands retain their provider module's existing capability checks.",
         };
       }
       case "ping": return {};
-      case "tools/list": return { tools: TOOLS };
+      case "tools/list": return { tools: registry.list() };
       case "tools/call": {
         conn.inflight++;
         try {
@@ -211,6 +215,10 @@ const mod: AppModule = {
   id: "internal-mcp",
   moduleApiVersion: 1,
   async activate(ctx, prev) {
+    registry = new McpRegistry(ctx, TOOLS, () => {
+      for (const conn of connsByHandle.values()) if (conn.peer) conn.peer.notify("notifications/tools/list_changed").catch(() => {});
+    });
+    await registry.start();
     if (prev && prev.listener) {
       listener = prev.listener;
       for (const [k, v] of prev.tokens || []) tokens.set(k, v);
@@ -225,6 +233,7 @@ const mod: AppModule = {
       ctx.log.info(`internal MCP listening on 127.0.0.1:${listener!.port} (token-authenticated)`);
     }
   },
+  deactivate() { registry.stop(); },
   canSwap() {
     for (const c of connsByHandle.values()) if (c.inflight > 0) return { ok: false, reason: "an MCP tool call is in flight" };
     return { ok: true };
@@ -255,7 +264,7 @@ const mod: AppModule = {
       }
       return null;
     },
-    status: () => ({ port: listener ? listener.port : null, tokens: tokens.size, connections: connsByHandle.size, forwards: Array.from(forwards.entries()).map(([m, f]) => ({ machineId: m, remotePort: f.remotePort })), stats, tools: TOOLS.map((t) => t.name), skills: Object.keys(SKILLS) }),
+    status: () => ({ port: listener ? listener.port : null, tokens: tokens.size, connections: connsByHandle.size, forwards: Array.from(forwards.entries()).map(([m, f]) => ({ machineId: m, remotePort: f.remotePort })), stats, tools: registry.list().map((t) => t.name), skills: Object.keys(SKILLS) }),
   },
 };
 export default mod;

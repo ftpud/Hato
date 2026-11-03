@@ -15,6 +15,7 @@ pub struct TerminalView {
     focus: FocusHandle,
     cell: Option<(Pixels, Pixels)>,
     font_size: Pixels,
+    measured_font: Option<(SharedString, FontWeight)>,
 }
 
 fn rgb(hex: u32) -> Hsla { gpui_kit::rgb(hex).into() }
@@ -79,7 +80,7 @@ fn resolve(c: &AnsiColor, colors: &alacritty_terminal::term::color::Colors, fg: 
 
 impl TerminalView {
     pub fn new(session: Arc<PtySession>, cx: &mut Context<Self>) -> Self {
-        TerminalView { session, focus: cx.focus_handle(), cell: None, font_size: px(13.0) }
+        TerminalView { session, focus: cx.focus_handle(), cell: None, font_size: px(13.0), measured_font: None }
     }
 
     fn key_bytes(&self, ks: &Keystroke) -> Option<Vec<u8>> {
@@ -160,7 +161,10 @@ impl Render for TerminalView {
         let default_fg = cx.theme().foreground;
         let default_bg = cx.theme().background;
         self.session.dirty.store(false, Ordering::SeqCst);
-        let font = Font { family: "Menlo".into(), features: Default::default(), fallbacks: None, weight: FontWeight::NORMAL, style: FontStyle::Normal };
+        let font_key = (cx.theme().mono_font_family.clone(), super::theme::font_weight(cx));
+        if self.measured_font.as_ref() != Some(&font_key) { self.cell = None; self.measured_font = Some(font_key.clone()); }
+        let font = Font { family: font_key.0, features: Default::default(), fallbacks: None, weight: font_key.1, style: FontStyle::Normal };
+        if self.font_size != cx.theme().mono_font_size { self.font_size = cx.theme().mono_font_size; self.cell = None; }
         let font_size = self.font_size;
         if self.cell.is_none() {
             let shaped = window.text_system().shape_line("MMMMMMMMMM".into(), font_size, &[TextRun { len: 10, font: font.clone(), color: default_fg, background_color: None, underline: None, strikethrough: None }], None);

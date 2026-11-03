@@ -211,3 +211,68 @@ test('existing history projects embedded image data as a preview and replayed im
   assert.equal(result.active.messages[1].text, '');
   assert.equal(result.active.messages[1].images[0].data, data);
 });
+
+test('chat renders at most 20 cards, pages older messages and returns to latest without deleting history', async () => {
+  const mod = await load('modules/ui/ai/src/index.ts');
+  const messages = Array.from({ length: 200 }, (_, i) => ({ key: 'm' + (i + 1), role: 'user', text: 'Message ' + (i + 1) }));
+  const view = { activeId: 'c', conversations: [{ id: 'c', title: 'Chat' }], profiles: [{ id: 'codex', name: 'Codex', provider: 'codex' }], workspace: { id: 'ws', machineId: 'local', root: '/test' },
+    active: { conversation: { id: 'c', acpProfileId: 'codex' }, messages, hasOlder: false, live: { status: 'ready' } } };
+  const calls = [];
+  const ctx = { state: { get: () => ({ id: 'ws' }), watch() {} }, events: { on() {}, emit() {} }, ui: { invalidate() {} }, modules: { async call(_, method, args) { calls.push({ method, args }); if (method === 'view') return view; throw new Error(method); } } };
+  await mod.activate(ctx);
+  const walk = n => [n, ...(n.children || []).flatMap(walk)];
+  const transcript = () => walk(mod.render()).find(n => n.type === 'chatTranscript');
+  assert.equal(calls[0].args.messageLimit, 20);
+  assert.equal(transcript().messages.length, 20);
+  assert.equal(transcript().messages[0].key, 'm181');
+  assert.equal(transcript().loadOlderAction, 'revealOlder');
+  await mod.onEvent(ctx, { action: 'olderMessages', inputs: {} });
+  assert.equal(transcript().messages.length, 20);
+  assert.equal(transcript().messages[0].key, 'm161');
+  messages.push({ key: 'm201', role: 'assistant', text: 'Live reply' });
+  await mod.onEvent(ctx, { action: 'olderMessages', inputs: {} });
+  assert.equal(transcript().messages[0].key, 'm141');
+  await mod.onEvent(ctx, { action: 'newerMessages', inputs: {} });
+  assert.equal(transcript().messages[0].key, 'm161');
+  await mod.onEvent(ctx, { action: 'latestMessages', inputs: {} });
+  assert.equal(transcript().messages.length, 20);
+  assert.equal(transcript().messages.at(-1).key, 'm201');
+  assert.equal(messages.length, 201);
+});
+
+test('scroll history grows in batches, stays bounded to 60 and collapses to 20 at the latest end', async () => {
+  const mod = await load('modules/ui/ai/src/index.ts');
+  const messages = Array.from({ length: 200 }, (_, i) => ({ key: 'm' + (i + 1), role: 'user', text: String(i + 1) }));
+  const view = { activeId: 'c', conversations: [], profiles: [{ id: 'codex', name: 'Codex', provider: 'codex' }], workspace: { id: 'ws', machineId: 'local', root: '/test' },
+    active: { conversation: { id: 'c', acpProfileId: 'codex' }, messages, hasOlder: false, live: { status: 'ready' } } };
+  const ctx = { state: { get: () => ({ id: 'ws' }), watch() {} }, events: { on() {}, emit() {} }, ui: { invalidate() {} }, modules: { async call(_, method) { if (method === 'view') return view; throw new Error(method); } } };
+  await mod.activate(ctx);
+  const walk = n => [n, ...(n.children || []).flatMap(walk)];
+  const transcript = () => walk(mod.render()).find(n => n.type === 'chatTranscript');
+  const event = action => mod.onEvent(ctx, { action, inputs: {} });
+  await event('revealOlder');
+  assert.equal(transcript().messages.length, 40);
+  assert.equal(transcript().messages[0].key, 'm161');
+  assert.equal(transcript().preserveScrollOnChange, true);
+  await event('revealOlder');
+  assert.equal(transcript().messages.length, 60);
+  await event('revealOlder');
+  assert.equal(transcript().messages.length, 60);
+  assert.equal(transcript().messages[0].key, 'm121');
+  assert.equal(transcript().messages.at(-1).key, 'm180');
+  assert.equal(transcript().bottomAction, 'revealNewer');
+  await event('revealOlder');
+  assert.equal(transcript().messages[0].key, 'm101');
+  await event('revealNewer');
+  assert.equal(transcript().messages[0].key, 'm121');
+  await event('revealNewer');
+  assert.equal(transcript().messages.at(-1).key, 'm200');
+  assert.equal(transcript().bottomAction, 'collapseHistory');
+  await event('collapseHistory');
+  assert.equal(transcript().messages.length, 20);
+  assert.equal(transcript().messages[0].key, 'm181');
+  assert.equal(transcript().bottomAction, undefined);
+  assert.equal(transcript().preserveScrollOnChange, false);
+  assert.ok(transcript().scrollReset > 0);
+  assert.equal(messages.length, 200);
+});

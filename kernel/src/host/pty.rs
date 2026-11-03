@@ -1,6 +1,6 @@
 //! PTY sessions with a native terminal emulator (alacritty_terminal) owned by the kernel.
-//! PTY bytes never cross into JS: they are parsed natively and rendered by the GPUI terminal
-//! element. Sessions are independent of module generations and survive TS hot-swaps.
+//! PTY bytes are parsed and rendered natively; modules can explicitly read bounded output by cursor.
+//! Sessions are independent of module generations and survive TS hot-swaps.
 use crate::util::{HResult, HostError};
 use alacritty_terminal::event::{Event, EventListener};
 use alacritty_terminal::grid::Dimensions;
@@ -59,6 +59,7 @@ pub struct PtySession {
     pub description: String,
     pub dirty: AtomicBool,
     pub notify: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    output: Mutex<super::pty_output::OutputJournal>,
     pub bytes_in: std::sync::atomic::AtomicU64,
 }
 
@@ -112,6 +113,7 @@ pub fn open(spec: PtySpec) -> HResult<Arc<PtySession>> {
         description: format!("{} {}", spec.program, spec.args.join(" ")),
         dirty: AtomicBool::new(true),
         notify: Mutex::new(None),
+        output: Default::default(),
         bytes_in: Default::default(),
     });
     let s2 = sess.clone();
@@ -137,6 +139,7 @@ pub fn open(spec: PtySpec) -> HResult<Arc<PtySession>> {
 
 impl PtySession {
     pub fn feed(&self, bytes: &[u8]) {
+        self.output.lock().push(bytes);
         self.bytes_in.fetch_add(bytes.len() as u64, Ordering::Relaxed);
         {
             let mut term = self.term.lock();
@@ -148,6 +151,12 @@ impl PtySession {
                 n();
             }
         }
+    }
+
+    pub fn read_output(&self, cursor: Option<u64>, limit: usize) -> Value {
+        let mut value = self.output.lock().read(cursor, limit);
+        value["exit"] = json!(self.exit.lock().clone());
+        value
     }
 
     pub fn write(&self, data: &[u8]) -> HResult<()> {

@@ -8,6 +8,7 @@ export function exportSettings(
   ctx: ModuleContext,
   getSections: () => SettingsSection[],
   onChange: (section: string, key: string, value: boolean | string) => Promise<void> | void,
+  options: { invalidate?: boolean } = {},
 ) {
   const publish = (error: string | null = null) => {
     const value: SettingsExport = { sections: getSections(), error };
@@ -28,7 +29,7 @@ export function exportSettings(
         await onChange(section!.key, field.key, edit.value);
         publish();
       } catch (e) { publish(e instanceof Error ? e.message : String(e)); }
-      ctx.ui.invalidate();
+      if (options.invalidate !== false) ctx.ui.invalidate();
     });
   });
   publish();

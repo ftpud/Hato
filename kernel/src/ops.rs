@@ -440,6 +440,15 @@ fn dispatch(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: &Value) -> H
             k.handles.remove(h, owner)?;
             Ok(Value::Null)
         }
+        "pty.read" => {
+            let p: Arc<PtySession> = k.handles.get(arg_str(args, "handle")?, "pty", owner)?;
+            let cursor = match args.get("cursor") {
+                None | Some(Value::Null) => None,
+                Some(value) => Some(value.as_u64().ok_or_else(|| HostError::invalid("invalid output cursor"))?),
+            };
+            let limit = args.get("limitBytes").and_then(|n| n.as_u64()).unwrap_or(65536).min(65536) as usize;
+            Ok(p.read_output(cursor, limit))
+        }
         "pty.info" => {
             let p: Arc<PtySession> = k.handles.get(arg_str(args, "handle")?, "pty", owner)?;
             let mut i = p.info();

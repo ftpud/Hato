@@ -329,6 +329,8 @@ impl Kernel {
                 self.boot_report.lock().push(json!({"module": id, "ok": false, "error": e.message}));
             }
         }
+        // Discovery subscribers need the same lifecycle event at boot as at hot cutover.
+        self.router.emit(KERNEL_TOPIC_MODULES, &json!({"module": id, "version": gen.version, "generation": gen.gen_id}));
         if gen.kind == "ui" {
             self.request_render(&id);
         }

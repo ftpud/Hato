@@ -1,3 +1,4 @@
+import { fileIcons } from "../../../../sdk/file-icons";
 import type { TreeRow } from "../../../../sdk/types";
 export interface Entry { name: string; kind: string; relativePath: string; size?: number }
 export function fileIcon(entry: Entry): TreeRow["icon"] {
@@ -23,7 +24,12 @@ export function treeRows(dirs: Map<string, Entry[]>, expanded: Set<string>, sele
       if (rows.length >= 5000) return;
       const folder = entry.kind === "dir";
       const open = folder && (filtering ? !filterCollapsed.has(entry.relativePath) : expanded.has(entry.relativePath));
-      rows.push({ key: entry.relativePath, label: entry.name, depth, expandable: folder, expanded: open, selected: entry.relativePath === selected, icon: fileIcon(entry) });
+      const kind = fileIcon(entry) || "file";
+      const drawing = folder ? open ? fileIcons.folderOpen : fileIcons.folder : fileIcons[kind as keyof typeof fileIcons] || fileIcons.file;
+      // Soften only the explorer's icons; keep the shared tab drawings unchanged.
+      const softDrawing = drawing.replace('stroke-width="1.7"', 'stroke-width="1.5" stroke-opacity="0.7"');
+      const iconColor: TreeRow["iconColor"] = kind === "config" ? "warning" : ["text", "code"].includes(kind) ? "accent" : "muted";
+      rows.push({ iconSvg: softDrawing, iconColor, key: entry.relativePath, label: entry.name, depth, expandable: folder, expanded: open, selected: entry.relativePath === selected, icon: fileIcon(entry) });
       if (open) visit(entry.relativePath, depth + 1);
     }
   };

@@ -268,6 +268,13 @@ impl Shell {
             Some("chat-control") => d.rounded(px(8.0)).text_color(p.text),
             _ => d,
         };
+        let style = &n["style"];
+        if let Some(token) = style["background"].as_str() { d = d.bg(theme::token(cx, token, cx.theme().background)); }
+        if let Some(token) = style["color"].as_str() { d = d.text_color(theme::token(cx, token, cx.theme().foreground)); }
+        if let Some(width) = style["borderBottom"].as_f64() { d = d.border_b(px(width.clamp(0.0, 4.0) as f32)); }
+        if let Some(token) = style["borderColor"].as_str() { d = d.border_color(theme::token(cx, token, cx.theme().border)); }
+        if let Some(radius) = style["radius"].as_f64() { d = d.rounded(px(radius.clamp(0.0, 32.0) as f32)); }
+        if let Some(weight) = style["fontWeight"].as_f64() { d = d.font_weight(FontWeight(weight.clamp(100.0, 900.0) as f32)); }
         d
     }
 
@@ -289,7 +296,7 @@ impl Shell {
         let b = |k: &str| n.get(k).and_then(|v| v.as_bool()).unwrap_or(false);
         let theme_muted = cx.theme().muted_foreground;
         match ty {
-            "theme" => { theme::configure(cx, &n["palette"]); div().into_any_element() }
+            "theme" => { theme::configure(cx, &n["palette"], &n["typography"]); div().into_any_element() }
             "row" | "column" => {
                 let mut d = if ty == "row" { h_flex() } else { v_flex() };
                 if ty == "row" {
@@ -374,9 +381,13 @@ impl Shell {
                     Some("lg") => d.text_lg(),
                     _ => d.text_sm(),
                 };
-                if s("weight") == "bold" {
-                    d = d.font_weight(FontWeight::BOLD);
-                }
+                d = match n["weight"].as_str() {
+                    Some("bold") => d.font_weight(FontWeight::BOLD),
+                    Some("semibold") => d.font_weight(FontWeight::SEMIBOLD),
+                    Some("medium") => d.font_weight(FontWeight::MEDIUM),
+                    Some("normal") => d.font_weight(FontWeight::NORMAL),
+                    _ => d,
+                };
                 d = match n.get("color").and_then(|v| v.as_str()) {
                     Some("muted") => d.text_color(theme_muted),
                     Some("accent") => d.text_color(cx.theme().primary),
@@ -437,6 +448,11 @@ impl Shell {
                 } else if n["surface"].as_str() == Some("chat-result") {
                     btn = btn.w_full().h(px(34.0)).text_color(p.text).justify_start();
                 }
+                let style = &n["style"];
+                if let Some(token) = style["background"].as_str() { btn = btn.bg(theme::token(cx, token, cx.theme().background)); }
+                if let Some(token) = style["color"].as_str() { btn = btn.text_color(theme::token(cx, token, cx.theme().foreground)); }
+                if let Some(radius) = style["radius"].as_f64() { btn = btn.rounded(px(radius.clamp(0.0, 32.0) as f32)); }
+                if let Some(weight) = style["fontWeight"].as_f64() { btn = btn.font_weight(FontWeight(weight.clamp(100.0, 900.0) as f32)); }
                 if let Some(width) = n["width"].as_f64() { btn = btn.w(px(width as f32)); }
                 if let Some(height) = n["height"].as_f64() { btn = btn.h(px(height as f32)); }
                 if b("grow") { btn = btn.w_full().min_w_0(); }
@@ -522,7 +538,7 @@ impl Shell {
                     slot.applied = value.clone();
                 }
                 let el = match &slot.input {
-                    AnyInput::Line(e) => Input::new(e).small().when(b("search"), |input| input.prefix(chat_style::icon("search").with_size(px(16.0)))).disabled(b("disabled")).into_any_element(),
+                    AnyInput::Line(e) => Input::new(e).small().bg(theme::token(cx, "field", cx.theme().background)).when(b("search"), |input| input.prefix(chat_style::icon("search").with_size(px(16.0)))).disabled(b("disabled")).into_any_element(),
                     AnyInput::Area(e) => Textarea::new(e).text_sm().font_family(cx.theme().font_family.clone()).bg(if n["surface"].as_str() == Some("chat-control") { chat_style::Palette::new(cx).panel } else { cx.theme().background }).disabled(b("disabled")).h(px(n.get("rows").and_then(|r| r.as_f64()).unwrap_or(3.0) as f32 * 20.0 + 12.0)).into_any_element(),
                 };
                 let k = self.kernel.clone();
@@ -719,7 +735,15 @@ impl Shell {
                         .child(h_flex().w_full().min_w_0().gap_1().child(div().flex_1().min_w_0().text_sm().when(project_tree && depth_ == 0.0, |d| d.font_weight(FontWeight::SEMIBOLD)).overflow_hidden().whitespace_nowrap().text_ellipsis().child(r["label"].as_str().unwrap_or("").to_string()))
                             .child(div().text_xs().text_color(theme_muted).whitespace_nowrap().child(r["badge"].as_str().map(|b| if project_tree { b.to_string() } else { format!("[{b}]") }).unwrap_or_default())))
                         .when_some(r["detail"].as_str(), |d, detail| d.child(div().text_xs().text_color(theme_muted).overflow_hidden().whitespace_nowrap().text_ellipsis().child(detail.to_string())));
-                    let icon_element = if project_tree {
+                    let icon_element = if let Some(svg) = r["iconSvg"].as_str() {
+                        let color = match r["iconColor"].as_str() {
+                            Some("accent") => theme::token(cx, "primary", cx.theme().primary),
+                            Some("warning") => theme::token(cx, "warning", cx.theme().warning),
+                            Some("success") => theme::token(cx, "success", cx.theme().success),
+                            _ => theme_muted,
+                        };
+                        gpui_component::Icon::default().data(svg.as_bytes()).with_size(px(16.0)).text_color(color).into_any_element()
+                    } else if project_tree {
                         let name = match r["icon"].as_str() { Some("task") | Some("git") => "git-branch", Some("remote") => "terminal", Some("warning") => "warning", _ => "folder" };
                         chat_style::icon(name).with_size(px(18.0)).text_color(theme_muted).into_any_element()
                     } else if file_tree { file_icons::icon(r["icon"].as_str().unwrap_or("file"), expanded, cx).into_any_element() }
@@ -833,22 +857,46 @@ impl Shell {
                 let scroll_key = format!("{module}::{path}/{}", n["conversationId"].as_str().unwrap_or("default"));
                 let state = self.scrolls.entry(scroll_key).or_default();
                 let first_message = msgs.first().and_then(|message| message["key"].as_str()).map(str::to_owned);
+                let last_message = msgs.last().and_then(|message| message["key"].as_str()).map(str::to_owned);
+                let changed = state.first_message != first_message || state.last_message != last_message;
+                let preserving = b("preserveScrollOnChange") && changed;
                 let prepended = state.first_message != first_message && state.first_message.as_ref().is_some_and(|old| msgs.iter().any(|message| message["key"].as_str() == Some(old.as_str())));
-                if prepended {
-                    if let Some(base) = state.geometry.get() { state.prepend.set(Some(transcript_scroll::PrependAnchor { base, last_max: base.max, stable_frames: 0 })); }
+                if preserving || prepended {
+                    let positions = state.positions.borrow();
+                    let anchor = msgs.iter().filter_map(|message| message["key"].as_str())
+                        .find_map(|key| positions.get(key).map(|y| (key.to_string(), *y)));
+                    if let Some(base) = state.geometry.get() {
+                        *state.anchor_key.borrow_mut() = anchor.as_ref().map(|(key, _)| key.clone());
+                        state.prepend.set(Some(transcript_scroll::PrependAnchor { base, last_max: base.max, stable_frames: 0, anchor_y: anchor.map(|(_, y)| y - state.viewport_y.get()) }));
+                    }
                     state.following.set(false);
+                    state.user_scrolled_up.set(true);
                 }
+                state.positions.borrow_mut().clear();
                 if state.first_message != first_message { state.history_requested.set(false); }
+                if state.last_message != last_message { state.bottom_requested.set(false); }
                 state.first_message = first_message;
+                state.last_message = last_message;
                 let last_user = msgs.iter().rev().find(|message| message["role"] == "user").and_then(|message| message["key"].as_str()).map(str::to_owned);
-                if !prepended && state.last_user != last_user {
+                let reset = n["scrollReset"].as_u64();
+                let requested_reset = reset != state.scroll_reset && state.scroll_reset.is_some();
+                if requested_reset || (!preserving && !prepended && state.last_user != last_user) {
                     state.following.set(true);
                     state.geometry.set(None);
                     state.prepend.set(None);
+                    state.user_scrolled_up.set(false);
                 }
+                state.scroll_reset = reset;
                 state.last_user = last_user;
                 let prepend = state.prepend.clone();
                 let history_requested = state.history_requested.clone();
+                let bottom_requested = state.bottom_requested.clone();
+                let user_scrolled_up = state.user_scrolled_up.clone();
+                let message_positions = state.positions.clone();
+                let anchor_positions = state.positions.clone();
+                let anchor_key = state.anchor_key.clone();
+                let viewport_y = state.viewport_y.clone();
+                let bottom_action = s("bottomAction");
                 let has_older = b("hasOlder");
                 let loading_older = b("loadingOlder");
                 let older_action = s("loadOlderAction");
@@ -861,10 +909,22 @@ impl Shell {
                 if following.get() && geometry.get().is_none() { handle.scroll_to_bottom(); }
                 let paint_handle = handle.clone();
                 let wheel_following = following.clone();
-                let follow_layout = canvas(|_, _, _| (), move |_, (), window, cx| {
+                let wheel_up = user_scrolled_up.clone();
+                let wheel_handle = handle.clone();
+                let wheel_requested = history_requested.clone();
+                let wheel_kernel = load_kernel.clone();
+                let wheel_module = load_module.clone();
+                let wheel_action = older_action.clone();
+                let wheel_key = load_key.clone();
+                let follow_layout = canvas(|_, _, _| (), move |bounds, (), window, cx| {
+                    viewport_y.set(f32::from(bounds.origin.y));
                     let current = transcript_scroll::Geometry { max: f32::from(paint_handle.max_offset().y), offset: f32::from(paint_handle.offset().y) };
                     if let Some(mut anchor) = prepend.get() {
-                        let wanted = transcript_scroll::prepended_offset(anchor.base, current.max);
+                        let measured_y = anchor_key.borrow().as_ref().and_then(|key| anchor_positions.borrow().get(key).map(|y| *y - viewport_y.get()));
+                        let wanted = match (anchor.anchor_y, measured_y) {
+                            (Some(old_y), Some(new_y)) => transcript_scroll::anchored_offset(current, old_y, new_y),
+                            _ => transcript_scroll::prepended_offset(anchor.base, current.max),
+                        };
                         let settled = (current.max - anchor.last_max).abs() <= 1.0 && (current.offset - wanted).abs() <= 1.0;
                         anchor.stable_frames = if settled { anchor.stable_frames + 1 } else { 0 };
                         anchor.last_max = current.max;
@@ -874,9 +934,18 @@ impl Shell {
                         window.refresh();
                         return;
                     }
+                    if let Some(old) = geometry.get() {
+                        if (current.max - old.max).abs() <= 1.0 && (current.offset - old.offset).abs() > 1.0 {
+                            user_scrolled_up.set(current.offset > old.offset);
+                        }
+                    }
                     following.set(transcript_scroll::following_bottom(following.get(), geometry.get(), current));
                     geometry.set(Some(current));
                     if current.offset < -80.0 { history_requested.set(false); }
+                    if current.max + current.offset > 80.0 { bottom_requested.set(false); }
+                    if following.get() && !user_scrolled_up.get() && !loading_older && !bottom_action.is_empty() && !bottom_requested.replace(true) {
+                        Self::fire(&load_kernel, &load_module, &[], &bottom_action, &load_key, None, Value::Null, cx);
+                    }
                     if !following.get() && current.offset >= -48.0 && has_older && !loading_older && !older_action.is_empty() && !history_requested.replace(true) {
                         Self::fire(&load_kernel, &load_module, &[], &older_action, &load_key, None, Value::Null, cx);
                     }
@@ -905,9 +974,10 @@ impl Shell {
                     let text = m["text"].as_str().unwrap_or("").to_string();
                     let message_path = format!("{path}/{}", m["key"].as_str().unwrap_or("message"));
                     if role == "thought" {
-                        list = list.child(v_flex().w_full().min_w_0().overflow_hidden().gap(px(2.0)).border_l_2().border_color(p.border).px_3().py_1().text_sm().text_color(p.muted)
+                        let thought = v_flex().w_full().min_w_0().overflow_hidden().gap(px(2.0)).border_l_2().border_color(p.border).px_3().py_1().text_sm().text_color(p.muted)
                             .child(div().text_xs().child("REASONING"))
-                            .child(TextView::markdown(sid(module, &format!("{message_path}/reasoning")), text).style(TextViewStyle::default().paragraph_gap(rems(0.3))).selectable(true).line_height(px(18.0)).w_full().min_w_0().overflow_hidden().text_sm()));
+                            .child(TextView::markdown(sid(module, &format!("{message_path}/reasoning")), text).style(TextViewStyle::default().paragraph_gap(rems(0.3))).selectable(true).line_height(px(18.0)).w_full().min_w_0().overflow_hidden().text_sm());
+                        list = list.child(Self::measured_message(thought.into_any_element(), m["key"].as_str().unwrap_or("message"), message_positions.clone()));
                         continue;
                     }
                     if role == "tool" {
@@ -922,7 +992,7 @@ impl Shell {
                             .when(!status.is_empty(), |d| d.child(div().max_w(px(72.0)).overflow_hidden().whitespace_nowrap().text_ellipsis().text_xs().child(chat_style::single_line(status))))
                             .child(Button::new(sid(module, &format!("{message_path}/copy-tool"))).icon(chat_style::icon("copy").with_size(px(14.0))).ghost().small().w(px(22.0)).h(px(22.0)).p_0().flex_shrink_0().tooltip("Copy tool output")
                                 .on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(copied.clone()))));
-                        list = list.child(tool);
+                        list = list.child(Self::measured_message(tool.into_any_element(), m["key"].as_str().unwrap_or("message"), message_positions.clone()));
                         continue;
                     }
                     let label = match role { "user" => "YOU", "assistant" => n["agentLabel"].as_str().unwrap_or("AGENT"), "plan" => "PLAN", "error" => "ERROR", _ => "SYSTEM" };
@@ -948,14 +1018,21 @@ impl Shell {
                         }
                     }
                     card = card.child(body).child(div().absolute().top_0().bottom_0().left_0().w(px(2.0)).bg(edge));
-                    list = list.child(card);
+                    list = list.child(Self::measured_message(card.into_any_element(), m["key"].as_str().unwrap_or("message"), message_positions.clone()));
                 }
                 // The transcript must take only the space its parent gives it and scroll internally;
                 // flex_1 + min_h_0 (rather than a percentage height) keeps it bounded when messages grow.
                 self.apply_base(v_flex(), n, cx).relative().min_w_0().min_h_0().overflow_hidden()
                     .child(div().id(sid(module, &path)).flex_1().min_w_0().min_h_0().w_full().relative().overflow_x_hidden().overflow_y_scroll().track_scroll(&handle)
-                        .on_scroll(move |event, _, _| {
-                            if event.delta.pixel_delta(px(18.0)).y > px(0.0) { wheel_following.set(false); }
+                        .on_scroll(move |event, _, cx| {
+                            let up = event.delta.pixel_delta(px(18.0)).y > px(0.0);
+                            wheel_up.set(up);
+                            if up {
+                                wheel_following.set(false);
+                                if f32::from(wheel_handle.offset().y) >= -48.0 && has_older && !loading_older && !wheel_action.is_empty() && !wheel_requested.replace(true) {
+                                    Self::fire(&wheel_kernel, &wheel_module, &[], &wheel_action, &wheel_key, None, Value::Null, cx);
+                                }
+                            }
                         })
                         .child(list))
                     .child(follow_layout)
@@ -981,6 +1058,12 @@ impl Shell {
         }
     }
 
+    fn measured_message(element: AnyElement, key: &str, positions: std::rc::Rc<std::cell::RefCell<HashMap<String, f32>>>) -> Div {
+        let key = key.to_string();
+        div().relative().w_full().min_w_0().flex_shrink_0().child(element)
+            .child(canvas(move |bounds, _, _| { positions.borrow_mut().insert(key, f32::from(bounds.origin.y)); }, |_, _, _, _| {}).absolute().inset_0())
+    }
+
     fn render_modal(&mut self, module: &str, path: &str, n: &Value, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let title = n.get("title").and_then(|t| t.as_str()).unwrap_or("").to_string();
         let close = n.get("closeAction").and_then(|t| t.as_str()).map(|s| s.to_string());
@@ -988,8 +1071,11 @@ impl Shell {
         let k = self.kernel.clone();
         let m = module.to_string();
         let inputs = self.module_inputs(module);
-        div().absolute().top_0().left_0().size_full().bg(black().opacity(0.35)).flex().items_center().justify_center()
-            .child(v_flex().id(sid(module, &format!("{path}/card"))).w(px(640.0)).max_w(relative(0.95)).max_h(relative(0.85)).overflow_y_scroll().gap_2().p_4().rounded(px(8.0))
+        div().id(sid(module, &format!("{path}/backdrop"))).absolute().top_0().left_0().size_full().occlude().bg(black().opacity(0.35)).flex().items_center().justify_center()
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+            .on_scroll(|_, _, cx| cx.stop_propagation())
+            .child(v_flex().id(sid(module, &format!("{path}/card"))).occlude().w(px(640.0)).max_w(relative(0.95)).max_h(relative(0.85)).overflow_y_scroll().gap_2().p_4().rounded(px(8.0))
                 .bg(cx.theme().background).border_1().border_color(cx.theme().border).shadow_lg()
                 .child(h_flex().child(div().flex_1().font_weight(FontWeight::BOLD).child(title))
                     .when_some(close, |d, a| d.child(Button::new(sid(module, &format!("{path}/close"))).label("✕").ghost().small()
@@ -1014,7 +1100,7 @@ impl Shell {
             btn = match o.kind.as_str() { "allow" => btn.primary(), "deny" => btn.danger(), _ => btn };
             buttons = buttons.child(btn.on_click(move |_, _, _| k.approvals.resolve_from_native_ui(&id, &oid)));
         }
-        Some(div().absolute().top_0().left_0().size_full().bg(black().opacity(0.5)).flex().items_center().justify_center()
+        Some(div().absolute().top_0().left_0().size_full().occlude().bg(black().opacity(0.5)).flex().items_center().justify_center()
             .child(v_flex().w(px(760.0)).max_w(relative(0.95)).max_h(relative(0.9)).gap_2().p_4().rounded(px(10.0)).bg(cx.theme().background).border_2().border_color(cx.theme().warning).shadow_lg()
                 .child(h_flex().gap_2().child(div().text_xs().px_2().rounded(px(4.0)).bg(cx.theme().warning.opacity(0.25)).child("KERNEL APPROVAL"))
                     .child(div().text_xs().text_color(cx.theme().muted_foreground).child(format!("requested by module '{}' (generation {}) · operation {}", req.module, req.generation, req.operation))))
@@ -1086,7 +1172,7 @@ impl Render for Shell {
             toasts = toasts.child(div().p_2().rounded(px(6.0)).text_xs().bg(cx.theme().background).border_1().border_color(c).text_color(c).child(text.clone()));
         }
         let _ = &self.submit_queue;
-        div().size_full().relative().flex().flex_col().overflow_hidden().bg(cx.theme().background).text_color(cx.theme().foreground).font_family(cx.theme().font_family.clone())
+        div().size_full().relative().flex().flex_col().overflow_hidden().bg(cx.theme().background).text_color(cx.theme().foreground).font_family(cx.theme().font_family.clone()).font_weight(theme::font_weight(cx))
             .child(div().flex_1().min_h_0().min_w_0().overflow_hidden().flex().flex_col().child(body))
             .children(float_els)
             .children(modal_els)

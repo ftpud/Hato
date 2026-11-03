@@ -1,6 +1,8 @@
 // viewer: renders a native, read-only, syntax-highlighted code viewer bound to a kernel document
 // handle. Highlighting, scrolling and selection are native.
 import type { AppModule, ModuleContext, UiNode } from "../../../../sdk/types";
+import { fileIcons } from "../../../../sdk/file-icons";
+import { fileTabStyle, tabButtonStyle } from "../../../../sdk/tab-style";
 import { exportSettings } from "../../../../sdk/settings";
 import { errMsg } from "../../../../sdk/runtime";
 
@@ -69,9 +71,9 @@ const mod: AppModule = {
     const markdown = current && !current.binary && (current.language === "markdown" || /\.(md|markdown)$/i.test(current.relativePath));
     const title = current ? current.relativePath : ws?.view?.previewPath || "No file selected";
     const kids: UiNode[] = [
-      { type: "row", key: "tabs", gap: 3, wrap: true, children: tabs.map((path): UiNode => ({ type: "row", key: path, gap: 0, children: [
-        { type: "button", key: "select", text: path.split("/").pop() || path, tooltip: path, action: `select:${path}`, small: true, variant: ws?.view?.previewPath === path ? "primary" : "ghost" },
-        { type: "button", key: "close", text: "", icon: "x", tooltip: `Close ${path}`, action: `close:${path}`, small: true, variant: "ghost" },
+      { type: "row", key: "tabs", gap: 3, wrap: true, children: tabs.map((path): UiNode => ({ type: "row", key: path, gap: 0, style: fileTabStyle(ws?.view?.previewPath === path), children: [
+        { type: "button", key: "select", iconSvg: fileIcons.file, text: path.split("/").pop() || path, tooltip: path, action: `select:${path}`, small: true, variant: "ghost", style: tabButtonStyle(ws?.view?.previewPath === path) },
+        { type: "button", key: "close", text: "", icon: "x", tooltip: `Close ${path}`, action: `close:${path}`, small: true, variant: "ghost", style: tabButtonStyle(ws?.view?.previewPath === path) },
       ] })) },
 
     ];

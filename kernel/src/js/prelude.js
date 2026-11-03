@@ -180,6 +180,7 @@
         write: (pty, text) => call("pty.write", { handle: pty, text }),
         resize: (pty, columns, rows) => call("pty.resize", { handle: pty, columns, rows }),
         close: (pty) => call("pty.close", { handle: pty }),
+        read: (pty, opts) => call("pty.read", { handle: pty, ...(opts || {}) }),
         info: (pty) => call("pty.info", { handle: pty }),
       },
       ssh: {

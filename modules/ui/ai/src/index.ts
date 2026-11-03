@@ -1,5 +1,6 @@
 // ai: ACP chat panel. Layout and control handlers only; conversation state lives in ai-sessions,
 // protocol in acp, and approval authority in the kernel's native chrome.
+import { CHAT_MESSAGE_LIMIT, CHAT_HISTORY_LIMIT, messageWindow } from "../../../../sdk/chat-window";
 import { contextUsage } from "../../../../sdk/context-usage";
 import { imageAttachments } from "../../../../sdk/images";
 import type { AppModule, ModuleContext, UiNode, ImageAttachment } from "../../../../sdk/types";
@@ -13,6 +14,12 @@ let settingsOpen = false;
 let mcpOpen = false;
 let modelsOpen = false;
 let historyOpen = false;
+let historyConversationId: string | null = null;
+let historyBefore: string[] = [];
+let pagingHistory = false;
+let historyLimit = CHAT_MESSAGE_LIMIT;
+let preserveHistoryScroll = false;
+let historyScrollReset = 0;
 let skillsOpen = false;
 let modelQuery = "";
 let workspaceSkillState: any = null;
@@ -65,8 +72,10 @@ async function load(ctx: ModuleContext) {
   if (!ws) { view = null; ctx.ui.invalidate(); return; }
   try {
     const workspaceId = ws.id;
-    const next = await ctx.modules.call("ai-sessions", "view", { workspaceId });
+    const next = await ctx.modules.call("ai-sessions", "view", { workspaceId, messageLimit: historyLimit,
+      windowConversationId: historyConversationId, beforeMessageId: historyBefore[historyBefore.length - 1] });
     if (ws?.id !== workspaceId) return;
+    if (historyConversationId !== next.active?.conversation?.id) { historyBefore = []; historyLimit = CHAT_MESSAGE_LIMIT; preserveHistoryScroll = false; historyConversationId = next.active?.conversation?.id || null; }
     view = next; error = null;
     const active = view.active;
     if (active && !connectionAttempts.has(active.conversation.id)) {
@@ -75,7 +84,7 @@ async function load(ctx: ModuleContext) {
       if (!active.live || !["ready", "busy", "starting", "connecting"].includes(active.live.status)) {
         ctx.ui.invalidate();
         await ctx.modules.call("ai-sessions", "connect", { conversationId: id }, { timeoutMs: 600000 });
-        if (ws?.id === workspaceId) view = await ctx.modules.call("ai-sessions", "view", { workspaceId });
+        if (ws?.id === workspaceId) view = await ctx.modules.call("ai-sessions", "view", { workspaceId, messageLimit: historyLimit, windowConversationId: historyConversationId, beforeMessageId: historyBefore[historyBefore.length - 1] });
       }
     }
   }
@@ -118,6 +127,14 @@ function selectors(live: any, connected: boolean): UiNode[] {
   for (const o of opts.filter((o) => !["model", "thought_level", "mode"].includes(o.category) && o.type !== "boolean")) out.push(sel("cfg-" + o.id, o.name || o.id, o));
   for (const o of opts.filter((o) => o.type === "boolean")) out.push({ type: "toggle", key: "cfg-" + o.id, label: o.name || o.id, checked: !!o.currentValue, action: "setConfig:" + o.id, tooltip: o.description });
   return out;
+}
+
+function visibleHistory(active: any) {
+  const window = messageWindow<any>(active?.messages || [], historyLimit,
+    active?.windowed ? undefined : historyBefore[historyBefore.length - 1]);
+  return { messages: window.messages, hasOlder: !!active?.hasOlder || window.hasLoadedOlder,
+    hasLoadedOlder: window.hasLoadedOlder || !!(active?.windowed && active.hasLoadedOlder),
+    hasNewer: active?.windowed ? !!active.hasNewer : window.hasNewer };
 }
 
 const mod: AppModule = {
@@ -204,7 +221,18 @@ const mod: AppModule = {
         ] });
         kids.push({ type: "column", key: "settings", surface: "chat-settings", grow: true, scroll: true, gap: 10, padding: 12, children: fields });
       } else {
-        kids.push({ type: "chatTranscript", key: "transcript", conversationId: conv.id, hasOlder: !!active.hasOlder, loadingOlder: !!active.historyLoading, historyError: active.historyError, loadOlderAction: "loadOlder", messages: active.messages, agentLabel: providerName + (model.value ? " · " + modelName : ""), grow: true });
+        const history = visibleHistory(active);
+        if (history.hasOlder || historyBefore.length || historyLimit > CHAT_MESSAGE_LIMIT) kids.push({ type: "row", key: "message-history", gap: 6, children: [
+          { type: "button", key: "older-messages", text: pagingHistory ? "Loading…" : "Older", action: "revealOlder", small: true, variant: "ghost", disabled: pagingHistory || !history.hasOlder },
+          { type: "label", key: "history-window", text: historyBefore.length ? "Older messages" : `Latest ${history.messages.length} messages`, size: "xs", color: "muted", grow: true },
+          ...(historyBefore.length ? [{ type: "button", key: "newer-messages", text: "Newer", action: "revealNewer", small: true, variant: "ghost", disabled: pagingHistory } as UiNode] : []),
+          ...(historyBefore.length || historyLimit > CHAT_MESSAGE_LIMIT ? [{ type: "button", key: "latest-messages", text: "Latest", action: "latestMessages", small: true, variant: "ghost", disabled: pagingHistory } as UiNode] : []),
+        ] });
+        if (active.historyError) kids.push({ type: "status", key: "history-error", text: active.historyError, level: "error" });
+        kids.push({ type: "chatTranscript", key: "transcript", conversationId: conv.id, messages: history.messages,
+          hasOlder: history.hasOlder, loadingOlder: pagingHistory || !!active.historyLoading, historyError: active.historyError,
+          loadOlderAction: "revealOlder", bottomAction: history.hasNewer ? "revealNewer" : historyLimit > CHAT_MESSAGE_LIMIT ? "collapseHistory" : undefined,
+          preserveScrollOnChange: preserveHistoryScroll, scrollReset: historyScrollReset, agentLabel: providerName + (model.value ? " · " + modelName : ""), grow: true });
         const composer: UiNode[] = [];
         if (attachments.length) composer.push({ type: "row", key: "attachments", gap: 8, children: attachments.map((image, index): UiNode => ({ type: "column", key: "attachment-" + index, gap: 4, children: [
           { type: "image", key: "preview", image, width: 80, height: 64 },
@@ -294,7 +322,25 @@ const mod: AppModule = {
       if (ev.action === "newChat" && ws) { await call("create", { workspaceId: ws.id, profileId: conv?.acpProfileId }); historyOpen = false; settingsOpen = false; modelsOpen = false; }
       else if (ev.action === "selectConv" && ws) { await call("select", { workspaceId: ws.id, conversationId: ev.value }); historyOpen = false; settingsOpen = false; modelsOpen = false; }
       else if (!conv) return;
-      else if (ev.action === "loadOlder") await call("loadOlder", { conversationId: conv.id });
+      else if (ev.action === "olderMessages" || ev.action === "loadOlder" || ev.action === "revealOlder") {
+        if (pagingHistory) return;
+        const history = visibleHistory(view.active);
+        if (!history.hasOlder || !history.messages.length) return;
+        const first = history.messages[0].key, conversationId = conv.id;
+        pagingHistory = true; ctx.ui.invalidate();
+        try {
+          if (!history.hasLoadedOlder) { const result = await call("loadOlder", { conversationId }); if (result?.loaded === 0) return; }
+          if (historyConversationId === conversationId) {
+            preserveHistoryScroll = true;
+            if (ev.action === "revealOlder" && historyLimit < CHAT_HISTORY_LIMIT) historyLimit = Math.min(CHAT_HISTORY_LIMIT, historyLimit + CHAT_MESSAGE_LIMIT);
+            else historyBefore.push(ev.action === "revealOlder" ? history.messages[Math.max(0, history.messages.length - CHAT_MESSAGE_LIMIT)].key : first);
+          }
+        } finally { pagingHistory = false; }
+      }
+      else if (ev.action === "newerMessages" || ev.action === "revealNewer") { historyBefore.pop(); preserveHistoryScroll = true; }
+      else if (ev.action === "latestMessages" || ev.action === "collapseHistory") {
+        historyBefore = []; historyLimit = CHAT_MESSAGE_LIMIT; preserveHistoryScroll = false; historyScrollReset++;
+      }
       else if (ev.action === "connect") { busy = "connect"; ctx.ui.invalidate(); await call("connect", { conversationId: conv.id }, 600000); }
       else if (ev.action === "reconnect") { await call("disconnect", { conversationId: conv.id }); await call("connect", { conversationId: conv.id }, 600000); }
       else if (ev.action === "disconnect") await call("disconnect", { conversationId: conv.id });
@@ -305,6 +351,7 @@ const mod: AppModule = {
       else if (ev.action.startsWith("setConfig:")) await call("setConfig", { conversationId: conv.id, configId: ev.action.slice(10), value: ev.value });
       else if (ev.action === "cancel") await call("cancel", { conversationId: conv.id });
       else if (ev.action === "send") {
+        historyBefore = []; historyLimit = CHAT_MESSAGE_LIMIT; preserveHistoryScroll = false; historyScrollReset++;
         const text = (ev.inputs.prompt || "").trim();
         if (!text && !attachments.length) return;
         if (busy === "send") return;
@@ -316,7 +363,7 @@ const mod: AppModule = {
       }
       error = null;
     } catch (e) { error = errMsg(e); }
-    finally { if (ev.action !== "loadOlder") busy = null; await load(ctx); }
+    finally { if (!["loadOlder", "olderMessages", "newerMessages", "latestMessages", "revealOlder", "revealNewer", "collapseHistory"].includes(ev.action)) busy = null; await load(ctx); }
   },
 };
 export default mod;

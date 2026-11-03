@@ -10,6 +10,8 @@ export default {
       await ev("workspace-layout", "openSettings");
       let menu = await T("test.render", { module: "settings" });
       check("Settings opens with appearance control", menu.type === "modal" && !!find(menu, (n) => n.type === "appearanceControl"));
+      await ev("settings", "selectCategory", { value: JSON.stringify(["viewer", "viewer"]) });
+      menu = await T("test.render", { module: "settings" });
       const field = find(menu, (n) => n.type === "toggle" && n.label === "Show file metadata");
       check("viewer exports a setting", !!field);
       if (field) {
@@ -21,7 +23,7 @@ export default {
         });
         check("module applies and persists edits", !!saved);
         menu = await T("test.render", { module: "settings" });
-        check("menu shows confirmed value", find(menu, (n) => n.type === "toggle")?.checked === next);
+        check("menu shows confirmed value", find(menu, (n) => n.type === "toggle" && n.label === "Show file metadata")?.checked === next);
       }
       await ev("settings", "close");
       check("Settings closes", (await T("test.render", { module: "settings" })).key === "settings-closed");

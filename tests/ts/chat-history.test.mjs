@@ -84,3 +84,31 @@ test('failed history requests preserve the cursor and expose an error for retry'
   assert.equal(view.active.historyError, null);
   assert.equal(f.requests[1].beforeSequence, f.requests[2].beforeSequence);
 });
+
+test('the UI projection is limited to 20 messages and paging stays anchored during live appends', async () => {
+  const mod = await session(), f = fixture(120);
+  await mod.activate(f.ctx);
+  const read = beforeMessageId => mod.methods.view(f.ctx, { workspaceId: 'ws', messageLimit: 20, windowConversationId: 'c', beforeMessageId });
+  let view = await read();
+  assert.equal(view.active.messages.length, 20);
+  assert.equal(view.active.messages[0].key, 'm101');
+  assert.equal(view.active.hasLoadedOlder, true);
+  view = await read('m101');
+  assert.equal(view.active.messages[0].key, 'm81');
+  assert.equal(view.active.messages.at(-1).key, 'm100');
+  f.listeners['acp.update']({ conversationId: 'c', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Live reply' } } });
+  view = await read('m101');
+  assert.equal(view.active.messages.length, 20);
+  assert.equal(view.active.messages.at(-1).key, 'm100');
+  assert.equal(view.active.hasNewer, true);
+  await mod.methods.loadOlder(f.ctx, { conversationId: 'c' });
+  view = await read('m41');
+  assert.equal(view.active.messages.length, 20);
+  assert.equal(view.active.messages[0].key, 'm21');
+  assert.equal(view.active.messages.at(-1).key, 'm40');
+  const latest = await read();
+  assert.equal(latest.active.messages.length, 20);
+  assert.equal(latest.active.messages.at(-1).text, 'Live reply');
+  const unrestricted = await mod.methods.view(f.ctx, { workspaceId: 'ws' });
+  assert.equal(unrestricted.active.messages.length, 121);
+});

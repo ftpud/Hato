@@ -320,7 +320,7 @@ impl Shell {
         let grip = div().id(sid(module, &format!("{path}/grip"))).absolute().right_0().bottom_0().w(px(14.0)).h(px(14.0)).cursor_nwse_resize()
             .child(div().absolute().right(px(3.0)).bottom(px(3.0)).w(px(7.0)).h(px(7.0)).border_r_2().border_b_2().border_color(cx.theme().muted_foreground))
             .on_mouse_down(MouseButton::Left, cx.listener(start(true, id.clone(), module.to_string(), key, action)));
-        div().absolute().left(px(g[0])).top(px(g[1])).w(px(g[2])).h(px(g[3])).flex().flex_col().overflow_hidden()
+        div().absolute().left(px(g[0])).top(px(g[1])).w(px(g[2])).h(px(g[3])).occlude().flex().flex_col().overflow_hidden()
             .bg(cx.theme().background).border_1().border_color(cx.theme().border).rounded(px(6.0)).shadow_lg()
             .child(bar)
             .child(div().flex_1().min_h_0().min_w_0().overflow_hidden().flex().flex_col().children(kids))
