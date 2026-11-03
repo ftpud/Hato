@@ -35,7 +35,7 @@ s.on("close", () => process.exit(0));
 process.stdin.on("end", () => s.end());
 `;
 
-interface TokenInfo { conversationId: string; workspaceId: string; machineId: string; created: number }
+interface TokenInfo { conversationId: string; workspaceId: string; machineId: string; created: number; desktopOnly?: boolean }
 interface McpConn { handle: Handle; token: string | null; buf: string; peer: JsonRpcPeer | null; inflight: number; client: any }
 
 let registry: McpRegistry;
@@ -61,6 +61,7 @@ const TOOLS = [
 async function callTool(ctx: ModuleContext, conn: McpConn, name: string, args: any) {
   const info = tokens.get(conn.token!);
   if (!info) throw new Error("MCP session was revoked");
+  if(info.desktopOnly && name.startsWith("terminals__"))throw new Error("Terminal tools are provided by internal-remote-mcp");
   registry.assertAllowed(name);
   ctx.log.info(`tool ${name} from conversation ${info?.conversationId} (${info?.machineId})`);
   stats.toolCalls++;
@@ -102,7 +103,7 @@ function makePeer(ctx: ModuleContext, conn: McpConn) {
         };
       }
       case "ping": return {};
-      case "tools/list": return { tools: registry.list() };
+      case "tools/list": return { tools: registry.list().filter(t=>!tokens.get(conn.token!)?.desktopOnly || !t.name.startsWith("terminals__")) };
       case "tools/call": {
         conn.inflight++;
         try {
@@ -245,7 +246,7 @@ const mod: AppModule = {
       const desc: WorkspaceDescriptor = await ctx.modules.call("workspace", "resolve", { workspaceId: a.workspaceId });
       for (const [t, info] of tokens) if (info.conversationId === a.conversationId) tokens.delete(t);
       const token = crypto.randomHex(32);
-      tokens.set(token, { conversationId: a.conversationId, workspaceId: desc.id, machineId: desc.machineId, created: Date.now() });
+      tokens.set(token, { conversationId: a.conversationId, workspaceId: desc.id, machineId: desc.machineId, created: Date.now(), desktopOnly: a.desktopOnly === true });
       const l = await ensureListener(ctx);
       if (desc.location === "local") {
         const proxy = await deployLocalProxy(ctx);

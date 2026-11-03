@@ -141,7 +141,7 @@ export interface NativeHost {
     status(target?: DaemonTarget): Promise<DaemonStatus | null>;
     /** hello/status, resources.list (own resources only), pty.kill/proc.kill/proc.closeStdin {key},
      *  plugins.list, plugins.push {id} (locally installed + approved plugins only),
-     *  plugins.enable/disable {id}, modules.call {target, method, args}. */
+     *  plugins.enable/disable {id}, pty.read/write {key, cursor?/text}, modules.call {target, method, args}. */
     request<T = any>(target: DaemonTarget | undefined, op: string, args?: object): Promise<T>;
   };
   /** Every module is a plugin. Listing is open to all modules; mutations need `plugins.manage`

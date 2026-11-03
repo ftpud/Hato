@@ -375,6 +375,22 @@ const mod: AppModule = {
     });
     ws = ctx.state.get("workspace.selected") || null;
     ctx.state.watch("workspace.selected", (v: any) => { ws = v; ctx.ui.invalidate(); });
+    ctx.events.on("agents-panel.openMcps",()=>{
+      if(!PANELS.mcps)return;
+      let next=layout;
+      const place=locate(next,"mcps");
+      if(!place||place.kind==="hidden")next=moveTo(next,"mcps",homeOf("mcps"));
+      set(ctx,{...next,collapsed:{...next.collapsed,mcps:false}});
+    });
+    ctx.events.on("ai.chatOpened",()=>{
+      if(!PANELS.ai)return;
+      let next=layout;
+      const place=locate(next,"ai");
+      if(!place||place.kind==="hidden")next=moveTo(next,"ai",homeOf("ai"));
+      next={...next,collapsed:{...next.collapsed,ai:false}};
+      if(locate(next,"ai")?.kind==="bottom")next={...next,bottom:{...next.bottom,collapsed:false}};
+      set(ctx,next);
+    });
     ctx.events.on("kernel.modules.changed", () => loadModules(ctx));
     ctx.events.on("module-dev.updatesChanged", () => loadUpdates(ctx, false));
     subscribeSidebars(ctx);

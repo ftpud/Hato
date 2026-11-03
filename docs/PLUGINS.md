@@ -114,3 +114,6 @@ failure. Modules choose debounce timing and which caches/views to refresh. Files
 repository metadata notifications, including metadata outside linked checkouts. The Git panel
 uses those events while visible. Its Automatic refresh setting replaces the polling interval;
 previously disabled automatic refresh stays disabled. Manual refresh remains available.
+
+Independent background agents and the desktop/workspace MCP split are documented in
+[PERSISTENT_AGENTS.md](PERSISTENT_AGENTS.md).

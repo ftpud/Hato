@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 2,
+  "id": "internal-remote-mcp",
+  "name": "Internal workspace MCP",
+  "kind": "service",
+  "entry": "src/index.ts",
+  "moduleApiVersion": 1,
+  "dependencies": [],
+  "calls": [
+    "agent-runner",
+    "terminals",
+    "workspace",
+    "persistent-agents"
+  ],
+  "capabilities": [
+    "net.loopback",
+    "db:internal-remote-mcp",
+    "process.scope",
+    "fs.scope"
+  ],
+  "runsOn": "either",
+  "stateVersion": 1,
+  "description": "Machine-side, workspace-scoped MCP for background agents and terminals; daemon hosted or standalone locally."
+}

@@ -85,3 +85,25 @@ outside Rust. `internal-mcp` provides the agent-facing application tool surface;
 implements module editing/build/activation policy over constrained native APIs. Remote daemon
 support does not automatically make ACP re-handshake or offline agent tools persistent; verify
 those separately against implementation and `handover.md` follow-ups.
+
+## Independent background agents
+
+`agents-panel → persistent-agents → hatod → agent-runner` is independent of the existing chatbox.
+The runner owns ACP processes, protocol state, history, steering and pending provider permissions
+on the workspace machine, including a local daemon for local sessions. Desktop projections do
+not drive turns. Provider permissions wait offline and are reviewed through trusted desktop UI.
+
+`internal-local-mcp` presents desktop/UI tools over the compatible legacy transport.
+`internal-remote-mcp` hosts workspace-bound agent/terminal/selected-skill tools on hatod, or in the
+desktop for ordinary local non-daemon terminals. The runtime-facing server does not expose UI
+or module mutation tools. Child workers inherit the parent's selected configuration.
+
+See [docs/PERSISTENT_AGENTS.md](../../../../docs/PERSISTENT_AGENTS.md) for tool names, endpoint
+modes, restart/upgrade boundaries and integration fixture setup. Session/model contracts are in
+`sdk/persistent-agents.ts`. Do not replace the daemon runtime while it has live agents.
+
+MCP configuration has its own `modules/ui/mcp-panel` plugin. It uses a narrow owner-namespaced
+`mcp-panel.request` / `persistent-agents.mcpResponse` adapter for catalog CRUD; no native capabilities
+or direct call grants are needed. Configuration is still persisted at `persistent-agents.mcps`.
+The agent form consumes enabled entries. During activation, event-based requests must be started
+without awaiting their responses: the router fences event delivery until activation cuts over.

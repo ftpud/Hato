@@ -83,6 +83,12 @@ const mod: AppModule = {
   snapshot: () => ({ known: commands.snapshot() }),
   canSwap: async () => ({ ok: !commands.running() && !contribution.pending(), reason: "A terminal MCP command is in progress" }),
   methods: {
+    async workspaceControl(ctx,a,meta) {
+      if(meta.caller!=="internal-remote-mcp")throw new Error("Workspace terminal control requires the workspace MCP server");
+      const tool=commands.tools.find(t=>t.name===a.tool);
+      if(!tool)throw new Error("Unknown terminal tool");
+      return tool.handler(a.args||{},a.scope);
+    },
     attach: (ctx, a) => attach(ctx, a, false),
     restart: (ctx, a) => attach(ctx, a, true),
     async close(ctx, a) {

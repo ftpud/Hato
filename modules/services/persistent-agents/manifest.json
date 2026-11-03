@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 2,
+  "id": "persistent-agents",
+  "name": "Persistent agents",
+  "kind": "service",
+  "entry": "src/index.ts",
+  "moduleApiVersion": 1,
+  "dependencies": [
+    "workspace",
+    "persistence",
+    "agent-runner",
+    "internal-local-mcp",
+    "internal-remote-mcp"
+  ],
+  "capabilities": [
+    "remote.daemon",
+    "ssh.connect",
+    "fs.scope",
+    "approvals.request"
+  ],
+  "provides": [
+    "agents.persistent"
+  ],
+  "runsOn": "ui",
+  "stateVersion": 1,
+  "description": "Desktop gateway for independent background agents owned by local and SSH daemons."
+}

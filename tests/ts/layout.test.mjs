@@ -39,7 +39,7 @@ test("float / detach / hide / back to bottom keep a single location", () => {
   l = M.moveTo(l, "ai", "detached");
   assert.ok(l.detached.ai && !l.floating.ai);
   l = M.moveTo(l, "ai", "hidden");
-  assert.deepEqual(l.hidden, ["git", "remote", "ai"]); // git and remote are hidden by default
+  assert.deepEqual(l.hidden, ["agents", "git", "mcps", "remote", "ai"]); // git and remote are hidden by default
   l = M.moveTo(l, "ai", "bottom");
   assert.deepEqual(l.bottom.panels, ["terminal", "ai"]);
   assert.deepEqual(all(l), Object.keys(M.PANELS).sort());
@@ -114,7 +114,7 @@ test("collapsed panes use full-name restore buttons without reserving columns or
 test('new default-hidden panels stay hidden in older saved layouts instead of docking', () => {
   const saved = { v: 1, columns: [{ panels: ['projects', 'files', 'viewer', 'ai'], size: 1, sizes: [0.25, 0.25, 0.25, 0.25] }], bottom: { panels: ['terminal'], sizes: [1], collapsed: false }, hidden: [] };
   const l = M.repair(saved);
-  assert.deepEqual(l.hidden, ['git', 'remote']);
+  assert.deepEqual(l.hidden, ['agents', 'git', 'mcps', 'remote']);
   assert.ok(!l.columns.some((c) => c.panels.includes('git')));
   const shown = M.dropPanel(l, 'git', 'files', 'bottom');
   assert.deepEqual(shown.columns[0].panels.slice(0, 3), ['projects', 'files', 'git']);

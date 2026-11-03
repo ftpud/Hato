@@ -167,7 +167,7 @@ pub fn scoped_key(owner: &str, key: &str) -> HResult<String> {
 
 /// Allowed `daemon.request` operations (module-facing; attach/bridge go through PTY/process).
 pub fn allowed_op(op: &str) -> bool {
-    matches!(op, "hello" | "status" | "resources.list" | "pty.kill" | "proc.kill" | "proc.closeStdin" | "plugins.list" | "plugins.push" | "plugins.enable" | "plugins.disable" | "modules.call")
+    matches!(op, "hello" | "status" | "resources.list" | "pty.read" | "pty.write" | "pty.kill" | "proc.kill" | "proc.closeStdin" | "plugins.list" | "plugins.push" | "plugins.enable" | "plugins.disable" | "modules.call")
 }
 
 pub fn status_json(i: &DaemonInfo) -> Value { json!({"machineId": i.machine_id, "bin": i.bin, "dir": i.dir, "status": i.status}) }

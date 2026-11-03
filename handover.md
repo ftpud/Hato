@@ -205,3 +205,34 @@ pkill -f "daemon serve --dir /tmp/hato-daemon"   # test daemons hold shells and 
 - Built desktop debug binary, all modules and the static x86-64 Linux daemon. Linux execution
   remains unverified. No changes activated in the running desktop: restart is required for the
   new native primitive, prelude API and compiled first-party grants.
+
+## Independent background agents and split MCP (2026-11-03)
+
+- New modules: agent-runner (daemon-owned ACP/history), persistent-agents (desktop gateway),
+  agents-panel (separate UI), internal-local-mcp (desktop facade), internal-remote-mcp (workspace
+  agent/terminal/skill tools, daemon-hosted or standalone locally). Existing chatbox remains on
+  its existing controller and conversation tables.
+- Added generic daemon pty.read/write operations; brokered calls keep owner-prefixed keys.
+- Agent selections include provider, negotiated model, agent instructions, MCP servers and skills.
+  Provider-native tools retain provider permissions; instruction selection is not an OS sandbox.
+- History and queued steering live in the runner SQLite namespace. Desktop exit does not stop
+  accepted turns. Daemon restart marks interruption and requires provider-supported session/load.
+  Permissions wait for trusted desktop review. Child agents inherit the parent's configuration.
+- Desktop, modules and static x86-64 Linux daemon built. Changes are not activated in the user's
+  running desktop. Native APIs and first-party bounds require restart; older live daemons may
+  need separate maintenance. Never force-replace a runtime holding agents to update its bundle.
+- See docs/PERSISTENT_AGENTS.md and the skill's service-flows reference for source wiring and tests.
+
+Verification for this addition: 84 TypeScript tests; 27 Rust library tests and 2 architecture/grant
+checks; 12 local background-session checks, 12 real-SSH background-session checks, and 12 workspace
+MCP checks. ACP behavior uses the deterministic test provider, not paid/live provider requests.
+Both local and SSH tests verify a turn finishing between separate desktop process runs.
+
+### Background agent UI refinement
+
+Agents now use a Projects-style searchable tree. Selecting/creating a row opens the existing AI
+chatbox bound to that background session; the list no longer embeds its own transcript/composer.
+The normal and background services remain independent. Module-owned events provide the narrow
+chat adapter and layout reveal action, so this refinement needs no native rebuild or restart.
+Verified 85 TS tests plus 6 headless integration checks for list, selection, panel reveal, prompt
+routing and returning to regular chats without stopping the agent. Modules built, not activated.

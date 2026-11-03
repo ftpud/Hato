@@ -2,6 +2,11 @@
   "schemaVersion": 1,
   "_comment": "Install-time capability upper bounds for first-party modules. Compiled into the kernel binary (include_str!), so modules cannot widen it at runtime. 'calls' lists the modules each module may RPC.",
   "modules": {
+    "agent-runner": {"kind": "service", "capabilities": ["db:agent-runner", "process.scope", "fs.scope"], "calls": ["internal-remote-mcp"]},
+    "persistent-agents": {"kind": "service", "capabilities": ["remote.daemon", "ssh.connect", "fs.scope", "approvals.request"], "calls": ["workspace", "persistence", "agent-runner", "internal-local-mcp", "internal-remote-mcp"]},
+    "internal-local-mcp": {"kind": "service", "capabilities": [], "calls": ["internal-mcp"]},
+    "internal-remote-mcp": {"kind": "service", "capabilities": ["net.loopback", "db:internal-remote-mcp", "process.scope", "fs.scope"], "calls": ["agent-runner", "terminals", "workspace", "persistent-agents"]},
+    "agents-panel": { "kind": "ui", "capabilities": [], "calls": ["persistent-agents"] },
     "persistence":  { "kind": "service", "capabilities": ["db:persistence"], "calls": [] },
     "workspace":    { "kind": "service", "capabilities": ["events.publish"], "calls": ["persistence", "projects", "git-tasks"] },
     "projects":     { "kind": "service", "capabilities": ["fs.scope", "process.scope", "ssh.connect", "ui.dialog"], "calls": ["persistence", "workspace", "git-tasks"] },

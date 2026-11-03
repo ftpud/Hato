@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 2,
+  "id": "agent-runner",
+  "name": "Persistent agent runtime",
+  "kind": "service",
+  "entry": "src/index.ts",
+  "moduleApiVersion": 1,
+  "dependencies": [],
+  "capabilities": [
+    "db:agent-runner",
+    "process.scope",
+    "fs.scope"
+  ],
+  "provides": [
+    "agents.runtime"
+  ],
+  "runsOn": "either",
+  "stateVersion": 1,
+  "description": "Owns independent ACP sessions and durable history inside the local or SSH daemon.",
+  "calls": [
+    "internal-remote-mcp"
+  ]
+}

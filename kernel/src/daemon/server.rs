@@ -278,6 +278,19 @@ impl Daemon {
                 "os": std::env::consts::OS, "arch": std::env::consts::ARCH, "resources": self.resources(), "plugins": self.kernel.plugins_json()["plugins"],
             })),
             "resources.list" => Ok(self.resources()),
+            "pty.read" => {
+                let p = self.ptys.lock().get(s("key")?).cloned().ok_or_else(|| HostError::not_found("no terminal"))?;
+                let cursor = args.get("cursor").and_then(Value::as_u64);
+                let limit = args.get("limitBytes").and_then(Value::as_u64).unwrap_or(65536).min(262144) as usize;
+                Ok(p.sess.read_output(cursor, limit))
+            }
+            "pty.write" => {
+                let p = self.ptys.lock().get(s("key")?).cloned().ok_or_else(|| HostError::not_found("no terminal"))?;
+                let text = s("text")?;
+                if text.len() > 65536 { return Err(HostError::invalid("terminal input too large")); }
+                p.sess.write(text.as_bytes())?;
+                Ok(Value::Null)
+            }
             "pty.kill" => {
                 let key = s("key")?;
                 let p = self.ptys.lock().remove(key).ok_or_else(|| HostError::not_found(format!("no terminal {key}")))?;

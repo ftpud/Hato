@@ -1,0 +1,52 @@
+export default {id:"__driver",moduleApiVersion:1,async activate(ctx){
+ const call=(m,f,a={})=>ctx.modules.call(m,f,a,{timeoutMs:240000});
+ try{
+  await T("test.approvals",{policy:"allow"});
+  const root=await T("test.env",{name:"HATO_T_AGENTS_ROOT"}),node=await T("test.env",{name:"HATO_T_NODE"}),client=await T("test.env",{name:"HATO_T_MCP_CLIENT"});
+  let p=(await call("projects","tree")).find(p=>p.rootPath===root);if(!p)p=await call("projects","addLocal",{path:root});
+  const workspaceId=`project:${p.id}:root`;await call("workspace","select",{workspaceId});
+  const grant=await ctx.host.capabilities.request({kind:"process",root});
+  const run=async(server,request)=>{
+   const r=await ctx.host.process.run(grant.grant,{executable:node,args:[client,JSON.stringify({...server,command:node}),JSON.stringify(request)],cwd:root},{timeoutMs:20000});
+   if(r.code!==0)throw new Error(r.stderr||r.stdout||"MCP client failed");return JSON.parse(r.stdout).result;
+  };
+  const local=await call("persistent-agents","workspaceEndpoint",{workspaceId,sessionId:"local-fixture",skills:[]});
+  const listing=await run(local,{method:"tools/list"});
+  check("workspace MCP exposes agent and terminal tools",listing.tools.some(t=>t.name==="agents_prompt")&&listing.tools.some(t=>t.name==="terminals_write"));
+  check("workspace MCP omits UI/module mutation tools",!listing.tools.some(t=>t.name.includes("modules_")));
+  const terminal=await call("terminals","attach",{workspaceId,key:"main"});
+  let result=await run(local,{method:"tools/call",params:{name:"terminals_write",arguments:{key:"main",text:"echo local-workspace-mcp\r"}}});
+  check("standalone local workspace MCP writes desktop terminal",!result.isError,result);
+  check("local terminal receives workspace MCP input",await until(async()=>/local-workspace-mcp/.test((await T("test.ptyScreen",{handle:terminal.pty})).screen)));
+  result=await run(local,{method:"tools/call",params:{name:"skills_read",arguments:{path:"AGENTS.md"}}});
+  check("unselected skill denied",result.isError);
+  const localUi=await call("internal-local-mcp","endpoint",{workspaceId,conversationId:"ui-fixture"});
+  check("desktop MCP excludes terminal tool namespace",!(await run(localUi.server,{method:"tools/list"})).tools.some(t=>t.name.startsWith("terminals__")));
+  // Same server hosted by hatod: no reverse tunnel or desktop service dependency.
+  const daemon=await ctx.host.daemon.ensure({kind:"local"});
+  await ctx.host.daemon.request({kind:"local"},"plugins.push",{id:"internal-remote-mcp"});
+  const endpoint=await ctx.host.daemon.request({kind:"local"},"modules.call",{target:"internal-remote-mcp",method:"endpoint",args:{workspaceId,sessionId:"daemon-fixture",root,skills:[],daemon:{bin:daemon.bin,dir:daemon.dir}}});
+  const held=await ctx.host.pty.open((await ctx.host.capabilities.request({kind:"pty",root})).grant,{cwd:root,persist:{key:"mcp-terminal"}});
+  const resources=await until(async()=>{const r=await ctx.host.daemon.request({kind:"local"},"resources.list");return r.ptys.some(p=>p.key==="mcp-terminal")?r:null;});
+  const key=resources.ptys.find(p=>p.key==="mcp-terminal").key;
+  result=await run(endpoint,{method:"tools/call",params:{name:"terminals_write",arguments:{key:"__driver/"+key,text:"echo daemon-workspace-mcp\r"}}});
+  check("daemon workspace MCP writes daemon terminal",!result.isError,result);
+  check("daemon terminal receives MCP input",await until(async()=>/daemon-workspace-mcp/.test((await T("test.ptyScreen",{handle:held.handle})).screen)));
+  result=await run(endpoint,{method:"tools/call",params:{name:"terminals_write",arguments:{key:"foreign/terminal",text:"forbidden"}}});
+  check("unknown or out-of-scope terminal denied",result.isError);
+  const fixture=await T("test.env",{name:"HATO_T_AGENT_FIXTURE"});
+  await call("persistence","acpProfiles.upsert",{profile:{id:"mcp-fixture",machineId:"*",provider:"fixture",name:"Fixture",executable:node,args:[fixture],envRefs:{},enabled:true}});
+  const parent=await call("persistent-agents","create",{workspaceId,name:"MCP parent",profileId:"mcp-fixture",skills:[],mcps:["internal-remote-mcp"]});
+  const agentEndpoint=await ctx.host.daemon.request({kind:"local"},"modules.call",{target:"internal-remote-mcp",method:"endpoint",args:{workspaceId,sessionId:parent.id,root,skills:[],daemon:{bin:daemon.bin,dir:daemon.dir}}});
+  result=await run(agentEndpoint,{method:"tools/call",params:{name:"agents_create",arguments:{name:"MCP child",text:"child prompt"}}});
+  check("workspace MCP creates a background child",!result.isError,result);
+  const child=JSON.parse(result.content[0].text);
+  result=await run(agentEndpoint,{method:"tools/call",params:{name:"agents_prompt",arguments:{id:parent.id,text:"mcp prompted"}}});
+  check("workspace MCP prompts a background agent",!result.isError,result);
+  result=await run(agentEndpoint,{method:"tools/call",params:{name:"agents_history",arguments:{id:"outside-workspace"}}});
+  check("workspace MCP denies unknown agent access",result.isError);
+  await call("persistent-agents","stop",{workspaceId,id:parent.id});
+  await call("persistent-agents","stop",{workspaceId,id:child.id});
+  await ctx.host.pty.close(held.handle);
+ }catch(e){check("uncaught",false,`${e.message}\n${e.stack}`);}await finish();
+}};

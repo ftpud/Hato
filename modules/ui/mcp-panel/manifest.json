@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 2,
+  "id": "mcp-panel",
+  "name": "MCP servers",
+  "kind": "ui",
+  "entry": "src/index.ts",
+  "moduleApiVersion": 1,
+  "dependencies": [],
+  "requires": ["agents.persistent"],
+  "capabilities": [],
+  "stateVersion": 1,
+  "description": "List, add, edit, enable and remove MCP server configurations.",
+  "contributes": {
+    "panels": [{
+      "id": "mcps", "title": "MCP servers", "defaultHidden": true,
+      "dock": {"column": 1},
+      "activity": {"side": "right", "order": 27, "iconSvg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\"><path d=\"M9 3v4m6-4v4M7 7h10v4a5 5 0 0 1-10 0V7Zm5 9v5\"/></svg>"}
+    }]
+  }
+}

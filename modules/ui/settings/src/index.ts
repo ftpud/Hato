@@ -56,6 +56,9 @@ const mod: AppModule = {
   async activate(ctx, prev) {
     open = !!prev?.open;
     selectedCategory = typeof prev?.selectedCategory === "string" ? prev.selectedCategory : "";
+    // Refresh disk discovery when the plugin/settings UI loads, including newly built panels.
+    // This uses the existing plugin manager; no window restart or new native permission is needed.
+    if(ctx.host.plugins.rescan)await ctx.host.plugins.rescan();
     ctx.events.on("kernel.modules.changed", () => { void refresh(ctx); });
     await refresh(ctx);
   },

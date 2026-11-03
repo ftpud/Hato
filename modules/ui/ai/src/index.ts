@@ -10,6 +10,41 @@ import type { AppModule, ModuleContext, UiNode, ImageAttachment } from "../../..
 import { debounce, errMsg } from "../../../../sdk/runtime";
 import { resolveWorkspaceLink } from "../../../../sdk/links";
 
+import type { AgentView } from "../../../../sdk/persistent-agents";
+let background:{workspaceId:string;id:string}|null=null;
+let backgroundPage:AgentView|null=null;
+let backgroundTimer:ReturnType<typeof setInterval>|null=null;
+let normalDraft:string|undefined;
+let normalAttachments:ImageAttachment[]=[];
+const backgroundDrafts=new Map<string,string>();
+const requests=new Map<string,{resolve:(value:any)=>void;reject:(error:Error)=>void;timer:ReturnType<typeof setTimeout>}>();
+function persistent(ctx:ModuleContext,method:string,args:any={}) {
+  const selection=background;
+  if(!selection)return Promise.reject(new Error("No background session selected"));
+  const requestId=crypto.randomUUID();
+  return new Promise<any>((resolve,reject)=>{
+    const timer=setTimeout(()=>{requests.delete(requestId);reject(new Error("Background session request timed out"));},240000);
+    requests.set(requestId,{resolve,reject,timer});
+    ctx.events.emit("ai.persistentRequest",{requestId,method,args:{...selection,...args}});
+  });
+}
+function resetChatWindows(){historyBefore=[];historyLimit=CHAT_MESSAGE_LIMIT;settingsOpen=false;modelsOpen=false;historyOpen=false;mcpOpen=false;skillsOpen=false;error=null;}
+function publishSession(ctx:ModuleContext){ctx.state.set("ai.session",background?{kind:"background",...background}:{kind:"chat"});}
+async function openBackground(ctx:ModuleContext,selection:any) {
+  if(!ws||selection?.workspaceId!==ws.id||typeof selection.id!=="string")return;
+  if(background)backgroundDrafts.set(background.id,draft||"");
+  else {normalDraft=draft;normalAttachments=attachments;}
+  background={workspaceId:selection.workspaceId,id:selection.id};backgroundPage=null;view=null;
+  draft=backgroundDrafts.get(selection.id)||"";attachments=[];resetChatWindows();publishSession(ctx);
+  if(backgroundTimer)clearInterval(backgroundTimer);
+  backgroundTimer=setInterval(()=>{void load(ctx);},1500);
+  ctx.events.emit("ai.chatOpened",{});await load(ctx);
+}
+function leaveBackground(ctx:ModuleContext) {
+  if(background)backgroundDrafts.set(background.id,draft||"");
+  background=null;backgroundPage=null;view=null;draft=normalDraft;attachments=normalAttachments;
+  if(backgroundTimer)clearInterval(backgroundTimer);backgroundTimer=null;resetChatWindows();publishSession(ctx);
+}
 let ws: any = null;
 let view: any = null;
 let error: string | null = null;
@@ -74,11 +109,27 @@ function adapterWindow(): UiNode {
 
 async function load(ctx: ModuleContext) {
   if (!ws) { view = null; ctx.ui.invalidate(); return; }
+  if(background) {
+    const selection=background;
+    try {
+      const page:AgentView=await persistent(ctx,"view",{limit:Math.min(historyLimit,200),before:Number(historyBefore[historyBefore.length-1])||undefined});
+      if(background!==selection||ws?.id!==selection.workspaceId)return;
+      backgroundPage=page;
+      const session=page.session;
+      view={profiles:[session.profile],conversations:[],activeId:session.id,active:{
+        conversation:{id:session.id,title:session.name,acpProfileId:session.profile.id,status:session.status,approvalPolicy:"ask",mcpSelection:session.mcps.map(m=>m.id)},
+        live:{...session,profileId:session.profile.id},messages:page.messages,windowed:true,hasOlder:page.before!==null,hasLoadedOlder:false,hasNewer:historyBefore.length>0,
+        busy:["busy","waiting"].includes(session.status),steering:page.queued.length,
+      }};
+      error=null;
+    }catch(e){if(background===selection)error=errMsg(e);}
+    ctx.ui.invalidate();return;
+  }
   try {
     const workspaceId = ws.id;
     const next = await ctx.modules.call("ai-sessions", "view", { workspaceId, messageLimit: historyLimit,
       windowConversationId: historyConversationId, beforeMessageId: historyBefore[historyBefore.length - 1] });
-    if (ws?.id !== workspaceId) return;
+    if (ws?.id !== workspaceId || background) return;
     if (historyConversationId !== next.active?.conversation?.id) { historyBefore = []; historyLimit = CHAT_MESSAGE_LIMIT; preserveHistoryScroll = false; historyConversationId = next.active?.conversation?.id || null; }
     view = next; error = null;
     const active = view.active;
@@ -88,7 +139,10 @@ async function load(ctx: ModuleContext) {
       if (!active.live || !["ready", "busy", "starting", "connecting"].includes(active.live.status)) {
         ctx.ui.invalidate();
         await ctx.modules.call("ai-sessions", "connect", { conversationId: id }, { timeoutMs: 600000 });
-        if (ws?.id === workspaceId) view = await ctx.modules.call("ai-sessions", "view", { workspaceId, messageLimit: historyLimit, windowConversationId: historyConversationId, beforeMessageId: historyBefore[historyBefore.length - 1] });
+        if(ws?.id===workspaceId&&!background) {
+          const resumed=await ctx.modules.call("ai-sessions","view",{workspaceId,messageLimit:historyLimit,windowConversationId:historyConversationId,beforeMessageId:historyBefore[historyBefore.length-1]});
+          if(ws?.id===workspaceId&&!background)view=resumed;
+        }
       }
     }
   }
@@ -151,20 +205,32 @@ const mod: AppModule = {
     ws = ctx.state.get("workspace.selected") || null;
     workspaceSkillState = ctx.state.get("files.skills") || null;
     ctx.state.watch("files.skills", (value: any) => { workspaceSkillState = value; ctx.ui.invalidate(); });
-    ctx.state.watch("workspace.selected", (v: any) => { const changed = (ws && ws.id) !== (v && v.id); ws = v; if (changed) load(ctx); });
+    ctx.state.watch("workspace.selected", (v: any) => { const changed = ws?.id !== v?.id; ws = v; if(changed){if(background)leaveBackground(ctx);void load(ctx);} });
+    ctx.events.on("persistent-agents.chatResponse",(response:any)=>{
+      const pending=requests.get(response?.requestId);if(!pending)return;
+      requests.delete(response.requestId);clearTimeout(pending.timer);
+      if(response.error)pending.reject(new Error(response.error));else pending.resolve(response.value);
+    });
+    ctx.events.on("agents-panel.openChat",(selection:any)=>{void openBackground(ctx,selection);});
     ctx.events.on("ai-sessions.changed", () => refresh());
     ctx.events.on("acp.status", () => refresh());
     ctx.events.on("acp.adaptersChanged", () => { if (adaptersOpen) loadAdapters(ctx); });
     ctx.events.on("acp.authChanged", () => refresh());
-    await load(ctx);
+    if(prev?.background&&prev.background.workspaceId===ws?.id) {
+      normalDraft=prev.normalDraft;normalAttachments=prev.normalAttachments||[];
+      await openBackground(ctx,prev.background);
+      normalDraft=prev.normalDraft;normalAttachments=prev.normalAttachments||[];
+      draft=prev.draft||"";
+    }else await load(ctx);
   },
-  snapshot: () => ({ draft, attachments }),
+  deactivate(){if(backgroundTimer)clearInterval(backgroundTimer);backgroundTimer=null;for(const p of requests.values()){clearTimeout(p.timer);p.reject(new Error("Chat module reloaded"));}requests.clear();},
+  snapshot: () => background ? ({ draft, attachments, background, normalDraft, normalAttachments }) : ({draft,attachments}),
   render(): UiNode {
     const active = view?.active;
     const conv = active?.conversation;
     const live = active?.live;
     const context = contextUsage(live?.usage);
-    const connected = !!live && ["ready", "busy"].includes(live.status);
+    const connected = !!live && ["ready", "busy", ...(background?["waiting"]:[])].includes(live.status);
     const profile = view?.profiles.find((p: any) => p.id === conv?.acpProfileId);
     const providerName = profile?.name?.replace(/\s*\([^)]*\)$/, "") || "Agent";
     const skillState = workspaceSkillState?.workspaceId === ws?.id ? workspaceSkillState : null;
@@ -178,7 +244,7 @@ const mod: AppModule = {
     const iconButton = (key: string, icon: "sliders-horizontal" | "message-square" | "plus" | "x", action: string, tooltip: string): UiNode => ({ type: "button", key, text: "", iconSvg: uiIcons[icon], action, tooltip, style: chatStyle.iconControl, disabled: !ws });
     const header: UiNode = { type: "row", key: "hdr", style: chatStyle.toolbar, padding: 8, gap: 6, align: "center", children: [
       { type: "column", key: "provider-field", grow: true, minWidth: 100, gap: 0, children: [
-        { type: "select", key: "agent", buttonStyle: chatStyle.fieldControl, tooltip: "Provider", options: (view?.profiles || []).map((p: any) => ({ value: p.id, label: p.name.replace(/\s*\([^)]*\)$/, "") })), value: conv?.acpProfileId || null, action: "setProfile", disabled: !conv, placeholder: "Choose provider", grow: true },
+        { type: "select", key: "agent", buttonStyle: chatStyle.fieldControl, tooltip: "Provider", options: (view?.profiles || []).map((p: any) => ({ value: p.id, label: p.name.replace(/\s*\([^)]*\)$/, "") })), value: conv?.acpProfileId || null, action: "setProfile", disabled: !conv || !!background, placeholder: "Choose provider", grow: true },
       ] },
       { type: "column", key: "model-field", grow: true, minWidth: 100, gap: 0, children: [
         { type: "button", key: "cfg-model", style: { ...chatStyle.control, fullWidth: true }, text: modelName + "  ⌄", action: "toggleModels", disabled: model.disabled, tooltip: "Choose model", grow: true },
@@ -188,7 +254,17 @@ const mod: AppModule = {
       iconButton("new", "plus", "newChat", "New chat"),
       iconButton("history-toggle", "message-square", "toggleHistory", "Chat history"),
     ] };
+    if(background)header.children=header.children.filter(n=>!["auto","new","history-toggle"].includes(n.key));
     const kids: UiNode[] = [header];
+    if(background) {
+      kids.push({type:"row",key:"background-session",padding:8,gap:6,children:[
+        {type:"label",key:"name",text:conv?.title||"Background agent",grow:true,weight:"semibold"},
+        {type:"button",key:"back-to-chats",text:"Chats",action:"backToChats",small:true,variant:"ghost"},
+        {type:"button",key:"stop-agent",text:"Stop agent",action:"stopBackground",small:true,variant:"ghost"},
+      ]});
+      if(live&&["stopped","interrupted","error"].includes(live.status))kids.push({type:"button",key:"reconnect-background",text:"Reconnect saved agent",action:"reconnect",small:true});
+      for(const permission of backgroundPage?.permissions||[])kids.push({type:"button",key:permission.id,text:"Review: "+(permission.request.toolCall?.title||"Agent permission"),action:"reviewBackgroundPermission",value:permission.id,small:true});
+    }
     if (!ws) kids.push({ type: "label", key: "none", text: "Select a project or task to start chatting.", color: "muted", padding: 16, wrap: true });
     else if (!view) kids.push({ type: "progress", key: "ld", indeterminate: true });
     if (error) kids.push({ type: "status", key: "err", text: error, level: "error" });
@@ -199,7 +275,15 @@ const mod: AppModule = {
       ...view.conversations.map((c: any): UiNode => ({ type: "button", key: c.id, text: (c.id === view.activeId ? "✓ " : "") + c.title, action: "selectConv", value: c.id, variant: "ghost", style: chatStyle.result })),
     ] });
     if (conv) {
-      if (settingsOpen) {
+      if(settingsOpen&&background&&backgroundPage) {
+        const session=backgroundPage.session;
+        kids.push({type:"column",key:"settings",padding:12,gap:8,children:[
+          {type:"label",key:"workspace",text:session.workspaceName+" · "+session.machineId},
+          {type:"label",key:"instructions",text:"Instructions: "+(session.agentFile||"None"),wrap:true},
+          {type:"label",key:"skills",text:"Skills: "+(session.skills.join(", ")||"None"),wrap:true},
+          {type:"label",key:"mcp",text:"MCP: "+[...(session.workspaceMcp?["Workspace tools"]:[]),...session.mcps.map(m=>m.name)].join(", "),wrap:true},
+        ]});
+      } else if (settingsOpen) {
         const fields: UiNode[] = [
           { type: "row", key: "heading", gap: 8, children: [
             { type: "label", key: "title", text: providerName + " settings", weight: "bold", grow: true },
@@ -245,7 +329,7 @@ const mod: AppModule = {
           { type: "image", key: "preview", image, width: 80, height: 64 },
           { type: "button", key: "remove", text: "× " + image.name, action: "removeImage", value: index, small: true, tooltip: "Remove picture" },
         ] })) });
-        composer.push({ type: "textInput", key: "prompt", style: chatStyle.textarea, pasteImageAction: "attachImages", maxFiles: 4, maxBytes: 5 * 1024 * 1024, placeholder: active.busy ? "Steer " + providerName + "…" : "Ask " + providerName + "…", multiline: true, rows: 2, submitAction: "send", value: draft });
+        composer.push({ type: "textInput", key: "prompt", style: chatStyle.textarea, changeAction:"draftChanged", pasteImageAction: background?undefined:"attachImages", maxFiles: 4, maxBytes: 5 * 1024 * 1024, placeholder: active.busy ? "Steer " + providerName + "…" : "Ask " + providerName + "…", multiline: true, rows: 2, submitAction: "send", value: draft });
         if (mcpOpen) composer.push({ type: "column", key: "mcp-picker", gap: 8, padding: 12, border: true, children: [
           { type: "label", key: "title", text: "MCP servers", weight: "bold", size: "sm" },
           ...(view.mcpServers || [{ id: "internal", name: "Hato" }]).map((server: any): UiNode => ({ type: "toggle", key: "mcp-" + server.id, label: server.name, tooltip: server.description, checked: (conv.mcpSelection || []).includes(server.id), action: "toggleMcp:" + server.id })),
@@ -263,6 +347,7 @@ const mod: AppModule = {
           ...(active.busy ? [{ type: "button", key: "cancel", text: "Stop", action: "cancel", style: chatStyle.control } as UiNode] : []),
           { type: "button", key: "send", text: "", iconSvg: uiIcons.send, action: "send", style: chatStyle.iconPrimary, variant: "primary", disabled: busy === "send", tooltip: active.busy ? "Steer agent" : "Send message" },
         ] });
+        if(background){const actions=composer.find(n=>n.key==="act");if(actions&&"children" in actions)actions.children=(actions.children||[]).filter(n=>!["attach","mcp-toggle","skills-toggle","context-usage"].includes(n.key));}
         kids.push({ type: "column", key: "composer", style: chatStyle.composer, gap: 6, padding: 8, children: composer });
       }
       if (modelsOpen) {
@@ -287,6 +372,32 @@ const mod: AppModule = {
     return { type: "column", key: "ai-root", style: chatStyle.root, gap: 0, grow: true, children: kids };
   },
   async onEvent(ctx, ev) {
+    if(ev.action==="draftChanged"){draft=String(ev.value||"");ctx.ui.invalidate();return;}
+    if(ev.action==="backToChats"){leaveBackground(ctx);await load(ctx);return;}
+    if(background && !["toggleModels","searchModels","toggleSettings","openLink"].includes(ev.action)) {
+      const selection=background;
+      let actionError:string|null=null;
+      try {
+        if(ev.action==="send") {
+          const text=(ev.inputs.prompt||draft||"").trim();if(!text||busy==="send")return;
+          busy="send";ctx.ui.invalidate();await persistent(ctx,"send",{text,steer:!!view?.active?.busy});
+          if(background===selection){draft="";historyBefore=[];historyLimit=CHAT_MESSAGE_LIMIT;}
+        }else if(ev.action==="chooseModel") {await persistent(ctx,"setModel",{model:ev.value});modelsOpen=false;}
+        else if(ev.action==="cancel")await persistent(ctx,"cancel");
+        else if(ev.action==="stopBackground")await persistent(ctx,"stop");
+        else if(ev.action==="reconnect"||ev.action==="connect")await persistent(ctx,"reconnect");
+        else if(ev.action==="reviewBackgroundPermission")await persistent(ctx,"reviewPermission",{permissionId:ev.value});
+        else if(["revealOlder","loadOlder","olderMessages"].includes(ev.action)) {
+          if(historyLimit<200)historyLimit=Math.min(200,historyLimit+CHAT_MESSAGE_LIMIT);
+          else if(backgroundPage?.before)historyBefore.push(String(backgroundPage.before));
+          preserveHistoryScroll=true;
+        }else if(["revealNewer","newerMessages"].includes(ev.action)){historyBefore.pop();preserveHistoryScroll=true;}
+        else if(["latestMessages","collapseHistory"].includes(ev.action)){historyBefore=[];historyLimit=CHAT_MESSAGE_LIMIT;preserveHistoryScroll=false;historyScrollReset++;}
+        error=null;
+      }catch(e){actionError=errMsg(e);}
+      finally{busy=null;if(background===selection){await load(ctx);if(actionError)error=actionError;}ctx.ui.invalidate();}
+      return;
+    }
     const conv = view && view.active ? view.active.conversation : null;
     const call = (m: string, args: any, timeoutMs = 120000) => ctx.modules.call("ai-sessions", m, args, { timeoutMs });
     try {

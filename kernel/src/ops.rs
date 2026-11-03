@@ -790,7 +790,7 @@ fn dispatch(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: &Value) -> H
             // resources using full `<module>/<key>` keys; everyone else only their own.
             let admin = gen.caps.has("remote.daemon.admin");
             match op {
-                "pty.kill" | "proc.kill" | "proc.closeStdin" => {
+                "pty.read" | "pty.write" | "pty.kill" | "proc.kill" | "proc.closeStdin" => {
                     let raw = dargs["key"].as_str().unwrap_or("");
                     let key = if admin && raw.contains('/') { raw.to_string() } else { daemon_link::scoped_key(owner, raw)? };
                     dargs["key"] = json!(key);
