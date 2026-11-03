@@ -106,3 +106,24 @@ test("projects-panel renders keyed tree rows with separate select/expand actions
   assert.equal(tr.appearance, "projects");
   assert.equal(tr.rows[0].detail, "/a");
 });
+
+test("projects-panel animates rows whose workspace has an active AI turn", async () => {
+  const m = (await load("modules/ui/projects-panel/src/index.ts")).default;
+  const watchers = new Map();
+  let expanded = true;
+  const state = new Map([["ai-sessions.busy", { "task:t1": 2 }]]);
+  const ctx = {
+    state: { get: (k) => state.get(k), watch: (k, fn) => watchers.set(k, fn), set() {} },
+    events: { on() {} }, ui: { invalidate() {} },
+    modules: { call: async () => [{ id: "p1", name: "Alpha", kind: "local", rootPath: "/a", expanded, tasks: [{ id: "t1", name: "T", branch: "task/t-1", status: "ready" }] }] },
+  };
+  await m.activate(ctx);
+  let rows = m.render(ctx).children.find((c) => c.type === "tree").rows;
+  assert.equal(rows[0].busy, false);
+  assert.equal(rows[1].busy, true);
+  assert.equal(rows[1].detail, "AI working in 2 chats · task/t-1");
+  watchers.get("ai-sessions.busy")({ "project:p1:root": 1 });
+  rows = m.render(ctx).children.find((c) => c.type === "tree").rows;
+  assert.deepEqual(rows.map((r) => r.busy), [true, false]);
+  assert.equal(rows[0].detail, "AI working · /a");
+});

@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "id": "git-panel",
+  "kind": "ui",
+  "entry": "src/index.ts",
+  "moduleApiVersion": 1,
+  "dependencies": ["git", "workspace", "persistence"],
+  "capabilities": [],
+  "stateVersion": 1,
+  "description": "Lists modified Git files; click opens a diff, double click opens the file."
+}

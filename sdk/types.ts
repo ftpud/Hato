@@ -214,23 +214,25 @@ export type UiNode =
   | (Base & { type: "switch"; label: string; checked: boolean; action: string; disabled?: boolean })
   | (Base & { type: "popover"; children: UiNode[]; closeAction: string })
   | (Base & { type: "toggle"; label: string; checked: boolean; action: string; disabled?: boolean })
-  | (Base & { type: "tree"; appearance?: "files" | "projects"; rows: TreeRow[]; selectAction: string; expandAction: string })
+  | (Base & { type: "tree"; appearance?: "files" | "projects"; rows: TreeRow[]; selectAction: string; expandAction: string; /** Fired with the row key on double click (after the first click's selectAction). */ activateAction?: string })
+  /** Native diff view of a unified patch (e.g. `git diff` output) held in a document handle. */
+  | (Base & { type: "diff"; document: Handle | null; mode?: "split" | "unified"; header?: boolean; placeholder?: string; emptyText?: string })
   | (Base & { type: "fileList"; entries: { key: string; name: string; kind: string; size?: number; selected?: boolean }[]; action: string })
   | (Base & { type: "status"; text: string; level?: "info" | "warn" | "error" | "success" })
   | (Base & { type: "progress"; value?: number; indeterminate?: boolean; label?: string })
-  | (Base & { type: "markdown"; document: Handle; })
+  | (Base & { type: "markdown"; document: Handle; /** Non-web link clicks fire this action with the raw href as `value`; http(s)/mailto open natively. */ linkAction?: string })
   | (Base & { type: "codeViewer"; document: Handle | null; placeholder?: string })
   | (Base & { type: "terminal"; pty: Handle | null; placeholder?: string })
   | (Base & { type: "imagePicker"; action: string; disabled?: boolean })
   | (Base & { type: "image"; image: ImageAttachment })
-  | (Base & { type: "chatTranscript"; messages: ChatMessage[]; conversationId?: string; hasOlder?: boolean; loadingOlder?: boolean; historyError?: string | null; loadOlderAction?: string; bottomAction?: string; preserveScrollOnChange?: boolean; scrollReset?: number; agentLabel?: string })
+  | (Base & { type: "chatTranscript"; messages: ChatMessage[]; conversationId?: string; hasOlder?: boolean; loadingOlder?: boolean; historyError?: string | null; loadOlderAction?: string; bottomAction?: string; preserveScrollOnChange?: boolean; scrollReset?: number; agentLabel?: string; /** Same as markdown `linkAction`, for rendered message bodies. */ linkAction?: string })
   | (Base & { type: "appearanceControl" })
   | (Base & { type: "approvalPanel" })
   | (Base & { type: "divider" })
   | (Base & { type: "spacer" })
   | (Base & { type: "modal"; title: string; children: UiNode[]; closeAction?: string });
 
-export interface TreeRow { iconSvg?: string; iconColor?: "muted" | "accent" | "warning" | "success"; connector?: "branch" | "last"; key: string; label: string; depth: number; expandable: boolean; expanded: boolean; selected: boolean; badge?: string; detail?: string; icon?: "folder" | "git" | "remote" | "task" | "file" | "warning" | "code" | "config" | "text" | "image" | "archive" | "link" }
+export interface TreeRow { /** Shows an animated activity indicator after the label. */ busy?: boolean; iconSvg?: string; iconColor?: "muted" | "accent" | "warning" | "success"; connector?: "branch" | "last"; key: string; label: string; depth: number; expandable: boolean; expanded: boolean; selected: boolean; badge?: string; detail?: string; icon?: "folder" | "git" | "remote" | "task" | "file" | "warning" | "code" | "config" | "text" | "image" | "archive" | "link" }
 export interface ImageAttachment { name: string; mimeType: string; data: string }
 export interface ChatMessage { images?: ImageAttachment[]; key: string; role: "user" | "assistant" | "thought" | "tool" | "system" | "error" | "plan"; text: string; title?: string; status?: string }
 

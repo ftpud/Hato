@@ -47,7 +47,7 @@ test('separate sidebar toggles layout panels and reflects collapse, hide and res
 
 test('sidebar drawings are module data and a new module build picks up edited SVGs', async () => {
   const sidebar = await load('sidebar'), left = await load('left-sidebar');
-  assert.deepEqual(sidebar.render().children.map(n => n.key), ['projects', 'files']);
+  assert.deepEqual(sidebar.render().children.map(n => n.key), ['projects', 'files', 'git']);
   for (const node of [...sidebar.render().children, ...left.render().children]) {
     assert.equal(node.icon, undefined);
     assert.match(node.iconSvg, /<svg /);

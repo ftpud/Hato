@@ -282,12 +282,16 @@ function panelVisible(id: string): boolean {
   return !!place && place.kind !== "hidden" && !layout.collapsed[id] && !(place.kind === "bottom" && layout.bottom.collapsed);
 }
 function publishPanels(ctx: ModuleContext) {
-  ctx.state.set("workspace-layout.panels", { files: panelVisible("files"), projects: panelVisible("projects"), ai: panelVisible("ai"), terminal: panelVisible("terminal") });
+  ctx.state.set("workspace-layout.panels", Object.fromEntries(Object.keys(PANELS).map((id) => [id, panelVisible(id)])));
 }
 function toggleSidebarPanel(ctx: ModuleContext, id: string) {
-  if (!["files", "projects", "ai", "terminal"].includes(id)) return;
+  if (typeof id !== "string" || !Object.prototype.hasOwnProperty.call(PANELS, id) || id === "viewer") return;
   const place = locate(layout, id);
-  if (!place || place.kind === "hidden") { set(ctx, moveTo(layout, id, id === "terminal" ? "bottom" : "column")); return; }
+  if (!place || place.kind === "hidden") {
+    const near = PANELS[id].dockBelow, nearPlace = near ? locate(layout, near) : null;
+    set(ctx, nearPlace?.kind === "column" ? dropPanel(layout, id, near!, "bottom") : moveTo(layout, id, id === "terminal" ? "bottom" : "column"));
+    return;
+  }
   if (place.kind === "floating" || place.kind === "detached") { set(ctx, moveTo(layout, id, "hidden")); return; }
   const next = { ...layout, collapsed: { ...layout.collapsed, [id]: panelVisible(id) } };
   if (!next.collapsed[id] && place.kind === "bottom") next.bottom = { ...layout.bottom, collapsed: false };

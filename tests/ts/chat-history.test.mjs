@@ -10,7 +10,7 @@ function fixture(total) {
   const rows = Array.from({ length: total }, (_, index) => ({ id: 'm' + (index + 1), sequence: index + 1, kind: 'user', payload: { text: 'Message ' + (index + 1) } }));
   const listeners = {}, requests = [];
   let intercept;
-  const ctx = { events: { on: (topic, fn) => { listeners[topic] = fn; }, emit() {} }, log: { warn() {} }, modules: { async call(_, method, args) {
+  const ctx = { events: { on: (topic, fn) => { listeners[topic] = fn; }, emit() {} }, state: { set() {}, get() {}, watch() {} }, log: { warn() {} }, modules: { async call(_, method, args) {
     if (method === 'resolve') return { id: 'ws', machineId: 'local' };
     if (method === 'conversations.list') return [{ id: 'c', title: 'Chat' }];
     if (method === 'view.get') return { activeConversationId: 'c' };

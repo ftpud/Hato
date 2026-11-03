@@ -4,6 +4,7 @@ let visible: Record<string, boolean> = {};
 const panels = [
   { id: "projects", title: "Projects", iconSvg: sidebarIcons.projects },
   { id: "files", title: "Files", iconSvg: sidebarIcons.files },
+  { id: "git", title: "Git changes", iconSvg: sidebarIcons.git },
 ];
 const mod: AppModule = {
   id: "sidebar", moduleApiVersion: 1,

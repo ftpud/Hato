@@ -7,9 +7,10 @@
   "dependencies": [
     "files",
     "workspace",
-    "persistence"
+    "persistence",
+    "git"
   ],
   "capabilities": [],
   "stateVersion": 1,
-  "description": "Read-only syntax-highlighted code viewer."
+  "description": "Read-only syntax-highlighted code viewer and Git diff tabs."
 }

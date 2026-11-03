@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "id": "git",
+  "kind": "service",
+  "entry": "src/index.ts",
+  "moduleApiVersion": 1,
+  "dependencies": ["workspace"],
+  "capabilities": ["process.scope", "ssh.connect", "ui.document"],
+  "stateVersion": 1,
+  "description": "Working-tree Git status and per-file diffs for the selected workspace."
+}

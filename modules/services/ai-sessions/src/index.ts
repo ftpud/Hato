@@ -31,6 +31,16 @@ const loading = new Map<string, Promise<Conv>>();
 const HISTORY_PAGE = 80;
 const LOW_RISK_KINDS = new Set(["read", "search", "think", "fetch"]);
 let notify: () => void = () => {};
+let busySignature = "";
+/** Publish `ai-sessions.busy`: workspaceId -> number of conversations with an active turn. */
+function publishBusy(ctx: ModuleContext) {
+  const busy: Record<string, number> = {};
+  for (const c of convs.values()) if (c.busy || c.submitting || c.steering.length) busy[c.row.workspaceId] = (busy[c.row.workspaceId] || 0) + 1;
+  const sig = JSON.stringify(Object.entries(busy).sort());
+  if (sig === busySignature) return;
+  busySignature = sig;
+  ctx.state.set("ai-sessions.busy", busy);
+}
 let flushSoon: () => void = () => {};
 
 async function load(ctx: ModuleContext, id: string): Promise<Conv> {
@@ -197,7 +207,8 @@ const mod: AppModule = {
   id: "ai-sessions",
   moduleApiVersion: 1,
   async activate(ctx) {
-    notify = debounce(() => ctx.events.emit("ai-sessions.changed", {}), 60);
+    notify = debounce(() => { publishBusy(ctx); ctx.events.emit("ai-sessions.changed", {}); }, 60);
+    publishBusy(ctx);
     flushSoon = debounce(() => { flush(ctx); }, 1200);
     ctx.events.on("acp.update", (p: any) => {
       const c = convs.get(p.conversationId);

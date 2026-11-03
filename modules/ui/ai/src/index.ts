@@ -5,6 +5,7 @@ import { contextUsage } from "../../../../sdk/context-usage";
 import { imageAttachments } from "../../../../sdk/images";
 import type { AppModule, ModuleContext, UiNode, ImageAttachment } from "../../../../sdk/types";
 import { debounce, errMsg } from "../../../../sdk/runtime";
+import { resolveWorkspaceLink } from "../../../../sdk/links";
 
 let ws: any = null;
 let view: any = null;
@@ -232,7 +233,7 @@ const mod: AppModule = {
         kids.push({ type: "chatTranscript", key: "transcript", conversationId: conv.id, messages: history.messages,
           hasOlder: history.hasOlder, loadingOlder: pagingHistory || !!active.historyLoading, historyError: active.historyError,
           loadOlderAction: "revealOlder", bottomAction: history.hasNewer ? "revealNewer" : historyLimit > CHAT_MESSAGE_LIMIT ? "collapseHistory" : undefined,
-          preserveScrollOnChange: preserveHistoryScroll, scrollReset: historyScrollReset, agentLabel: providerName + (model.value ? " · " + modelName : ""), grow: true });
+          preserveScrollOnChange: preserveHistoryScroll, scrollReset: historyScrollReset, agentLabel: providerName + (model.value ? " · " + modelName : ""), linkAction: "openLink", grow: true });
         const composer: UiNode[] = [];
         if (attachments.length) composer.push({ type: "row", key: "attachments", gap: 8, children: attachments.map((image, index): UiNode => ({ type: "column", key: "attachment-" + index, gap: 4, children: [
           { type: "image", key: "preview", image, width: 80, height: 64 },
@@ -281,6 +282,12 @@ const mod: AppModule = {
     const conv = view && view.active ? view.active.conversation : null;
     const call = (m: string, args: any, timeoutMs = 120000) => ctx.modules.call("ai-sessions", m, args, { timeoutMs });
     try {
+      if (ev.action === "openLink") {
+        const path = ws && resolveWorkspaceLink(String(ev.value || ""), ws.rootAbsolutePath);
+        if (!path) throw new Error(`Cannot open link outside the workspace: ${ev.value}`);
+        await ctx.modules.call("workspace", "view.patch", { workspaceId: ws.id, patch: { previewPath: path } });
+        return;
+      }
       if (ev.action === "toggleModels") { modelsOpen = !modelsOpen; modelQuery = ""; ctx.ui.invalidate(); return; }
       if (ev.action === "searchModels") { modelQuery = String(ev.value || ""); ctx.ui.invalidate(); return; }
       if (ev.action === "toggleHistory") { historyOpen = !historyOpen; ctx.ui.invalidate(); return; }

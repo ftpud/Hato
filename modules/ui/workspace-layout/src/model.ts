@@ -2,12 +2,13 @@
 // Every panel lives in exactly one place: a column stack, the bottom dock, floating, a detached
 // OS window, or hidden. Bars (top/bottom) hold an ordered list of items.
 
-export const PANELS: Record<string, { slot: string; title: string }> = {
+export const PANELS: Record<string, { slot: string; title: string; defaultHidden?: boolean; /** When shown from hidden, stack below this panel if it is docked in a column. */ dockBelow?: string }> = {
   projects: { slot: "projects-panel", title: "Projects" },
   files: { slot: "explorer", title: "Files" },
   viewer: { slot: "viewer", title: "Source viewer" },
   ai: { slot: "ai", title: "AI / ACP" },
   terminal: { slot: "terminal-panel", title: "Terminal" },
+  git: { slot: "git-panel", title: "Git changes", defaultHidden: true, dockBelow: "files" },
 };
 
 export const BAR_ITEMS: Record<string, { title: string; grow?: boolean }> = {
@@ -57,7 +58,7 @@ export function defaultLayout(): Layout {
     collapsed: {},
     floating: {},
     detached: {},
-    hidden: [],
+    hidden: Object.keys(PANELS).filter((id) => PANELS[id].defaultHidden),
     bars: {
       top: { visible: true, items: ["title", "workspace", "layoutMenu", "modules", "settings"] },
       bottom: { visible: true, items: ["machine", "versions", "approvals"] },
@@ -189,7 +190,7 @@ export function repair(raw: any): Layout {
   for (const k of Object.keys(l.floating)) if (!keep(k)) delete l.floating[k];
   for (const k of Object.keys(l.detached || {})) if (!keep(k)) delete l.detached[k];
   l.hidden = (Array.isArray(l.hidden) ? l.hidden : []).filter(keep);
-  for (const id of Object.keys(PANELS)) if (!seen.has(id)) { if (l.columns.length) l.columns[l.columns.length - 1].panels.push(id), l.columns[l.columns.length - 1].sizes = norm([...l.columns[l.columns.length - 1].sizes, 0.3]); else l.columns.push({ panels: [id], size: 1, sizes: [1] }); }
+  for (const id of Object.keys(PANELS)) if (!seen.has(id)) { if (PANELS[id].defaultHidden) l.hidden.push(id); else if (l.columns.length) l.columns[l.columns.length - 1].panels.push(id), l.columns[l.columns.length - 1].sizes = norm([...l.columns[l.columns.length - 1].sizes, 0.3]); else l.columns.push({ panels: [id], size: 1, sizes: [1] }); }
   const ms = Array.isArray(l.mainSizes) && l.mainSizes.length === 2 ? norm(l.mainSizes) : d.mainSizes;
   l.mainSizes = [ms[0], ms[1]];
   for (const b of ["top", "bottom"] as BarId[]) {

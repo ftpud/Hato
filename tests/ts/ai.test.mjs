@@ -58,7 +58,7 @@ test('steering cancels once, retains follow-ups, and submits them after the acti
   const listeners = {}, prompts = [], stored = [];
   let cancels = 0;
   const ctx = {
-    events: { on: (name, fn) => { listeners[name] = fn; }, emit() {} },
+    events: { on: (name, fn) => { listeners[name] = fn; }, emit() {} }, state: { set() {}, get() {}, watch() {} },
     log: { warn() {} },
     modules: { async call(service, method, args) {
       if (method === 'conversations.get') return { id: 'steer-c', workspaceId: 'ws', title: 'Existing' };
@@ -116,7 +116,7 @@ test('image-only prompts are persisted and passed to ACP, including steering', a
   const picture = { name: 'test.png', mimeType: 'image/png', data: 'iVBORw0KGgo=' };
   const listeners = {}, prompts = [], stored = [];
   let support = true;
-  const ctx = { events: { on: (name, fn) => { listeners[name] = fn; }, emit() {} }, log: { warn() {} }, modules: { async call(_, method, args) {
+  const ctx = { events: { on: (name, fn) => { listeners[name] = fn; }, emit() {} }, state: { set() {}, get() {}, watch() {} }, log: { warn() {} }, modules: { async call(_, method, args) {
     if (method === 'conversations.get') return { id: args.id, title: 'Existing' };
     if (method === 'messages.list') return [];
     if (method === 'state') return { status: 'ready', agentCapabilities: { promptCapabilities: { image: support } } };
@@ -190,7 +190,7 @@ test('existing history projects embedded image data as a preview and replayed im
   const mod = await load('modules/services/ai-sessions/src/index.ts');
   const data = '/9j/' + 'ABCD'.repeat(200);
   const listeners = {};
-  const ctx = { events: { on: (topic, fn) => { listeners[topic] = fn; }, emit() {} }, modules: { async call(_, method) {
+  const ctx = { events: { on: (topic, fn) => { listeners[topic] = fn; }, emit() {} }, state: { set() {}, get() {}, watch() {} }, modules: { async call(_, method) {
     if (method === 'resolve') return { id: 'ws', machineId: 'local' };
     if (method === 'conversations.list') return [{ id: 'history', title: 'History' }];
     if (method === 'view.get') return { activeConversationId: 'history' };

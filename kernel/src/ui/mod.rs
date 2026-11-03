@@ -20,6 +20,8 @@ use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::checkbox::Checkbox;
 use gpui_component::input::{Editor, EditorState, Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_component::menu::{DropdownMenu, PopupMenuItem};
+use gpui_component::diff::{Diff, DiffFile, DiffMode, DiffState};
+use gpui_component::spinner::Spinner;
 use gpui_component::text::{TextView, TextViewStyle};
 use gpui_component::scroll::{Scrollbar, ScrollbarMode};
 use gpui_kit::base::SelectableText;
@@ -59,6 +61,7 @@ pub struct Shell {
     render_errors: HashMap<String, String>,
     inputs: HashMap<(String, String), InputSlot>,
     editors: HashMap<String, (Entity<EditorState>, Instant)>,
+    diffs: HashMap<String, (Entity<DiffState>, Instant)>,
     terminals: HashMap<String, Entity<TerminalView>>,
     scrolls: HashMap<String, transcript_scroll::TranscriptScroll>,
     toasts: Vec<(String, String, Instant)>,
@@ -102,6 +105,7 @@ impl Shell {
             render_errors: HashMap::new(),
             inputs: HashMap::new(),
             editors: HashMap::new(),
+            diffs: HashMap::new(),
             terminals: HashMap::new(),
             scrolls: HashMap::new(),
             toasts: Vec::new(),
@@ -157,6 +161,24 @@ impl Shell {
         }
         let ev = json!({"action": action, "key": key, "rowKey": row_key, "value": value, "inputs": iv});
         kernel.ui_event(module, ev);
+    }
+
+    /// Web links open natively; any other link (relative path, `file://`, absolute path) is
+    /// routed to the owning module as `linkAction` with the raw href as `value`, so the module
+    /// decides how to resolve and open it.
+    fn markdown_links(&self, view: TextView, module: &str, key: &str, action: &str) -> TextView {
+        if action.is_empty() {
+            return view;
+        }
+        let (kernel, module, key, action) = (self.kernel.clone(), module.to_string(), key.to_string(), action.to_string());
+        view.on_link_click(move |href, _, _, cx| {
+            let lower = href.to_ascii_lowercase();
+            if ["http://", "https://", "mailto:"].iter().any(|p| lower.starts_with(p)) {
+                cx.open_url(href);
+            } else {
+                Self::fire(&kernel, &module, &[], &action, &key, None, json!(href.to_string()), cx);
+            }
+        })
     }
 
     fn module_inputs(&self, module: &str) -> Vec<(String, AnyInput)> {
@@ -690,6 +712,7 @@ impl Shell {
                 let rows = n.get("rows").and_then(|r| r.as_array()).cloned().unwrap_or_default();
                 let sel_action = s("selectAction");
                 let exp_action = s("expandAction");
+                let act_action = s("activateAction");
                 let inputs = self.module_inputs(module);
                 let mut list = v_flex().w_full().min_w_0().gap(px(if file_tree || project_tree { 0.0 } else { 1.0 }));
                 for r in rows.iter().take(5000) {
@@ -698,6 +721,7 @@ impl Shell {
                     let selected = r["selected"].as_bool().unwrap_or(false);
                     let expandable = r["expandable"].as_bool().unwrap_or(false);
                     let expanded = r["expanded"].as_bool().unwrap_or(false);
+                    let busy = r["busy"].as_bool().unwrap_or(false);
                     let icon = match r["icon"].as_str() {
                         Some("git") => "⎇",
                         Some("remote") => "⇄",
@@ -723,9 +747,15 @@ impl Shell {
                     let inputs2 = inputs.clone();
                     let key2 = key.to_string();
                     let rk2 = rk.clone();
+                    let act = act_action.clone();
                     let mut row = h_flex().id(sid(module, &format!("{path}/row/{rk}"))).w_full().min_w_0().overflow_hidden().pl(px(4.0 + depth_ * 14.0)).pr_1().py(px(3.0)).gap_1().rounded(px(3.0)).cursor_pointer()
                         .hover(|s| s.bg(cx.theme().list_hover))
-                        .on_click(move |_, _, cx| Self::fire(&k, &m, &inputs2, &a, &key2, Some(rk2.clone()), Value::Null, cx));
+                        .on_click(move |ev, _, cx| {
+                            // A double click fires the first click as a selection, then the activation.
+                            let action = if ev.click_count() >= 2 && !act.is_empty() { &act } else { &a };
+                            if ev.click_count() >= 2 && act.is_empty() { return; }
+                            Self::fire(&k, &m, &inputs2, action, &key2, Some(rk2.clone()), Value::Null, cx)
+                        });
                     if file_tree { row = row.h(px(21.0)).flex_shrink_0().py_0().gap(px(6.0)).rounded(px(5.0)); }
                     if project_tree { row = row.h(px(42.0)).flex_shrink_0().py_0().gap(px(6.0)).rounded(px(5.0)); }
                     if selected {
@@ -733,6 +763,7 @@ impl Shell {
                     }
                     let label = v_flex().flex_1().min_w_0()
                         .child(h_flex().w_full().min_w_0().gap_1().child(div().flex_1().min_w_0().text_sm().when(project_tree && depth_ == 0.0, |d| d.font_weight(FontWeight::SEMIBOLD)).overflow_hidden().whitespace_nowrap().text_ellipsis().child(r["label"].as_str().unwrap_or("").to_string()))
+                            .when(busy, |d| d.child(div().flex_none().child(Spinner::new().xsmall().color(theme::token(cx, "primary", cx.theme().primary)))))
                             .child(div().text_xs().text_color(theme_muted).whitespace_nowrap().child(r["badge"].as_str().map(|b| if project_tree { b.to_string() } else { format!("[{b}]") }).unwrap_or_default())))
                         .when_some(r["detail"].as_str(), |d, detail| d.child(div().text_xs().text_color(theme_muted).overflow_hidden().whitespace_nowrap().text_ellipsis().child(detail.to_string())));
                     let icon_element = if let Some(svg) = r["iconSvg"].as_str() {
@@ -809,11 +840,11 @@ impl Shell {
             "markdown" => {
                 let document = n["document"].as_str().and_then(|h| self.kernel.handles.get_kernel::<Document>(h, "document"));
                 let text = document.map(|d| d.text.clone()).unwrap_or_default();
+                let view = self.markdown_links(TextView::markdown(sid(module, &format!("{path}/content/{}", s("document"))), text), module, key, &s("linkAction"));
                 self.apply_base(v_flex(), n, cx).min_w_0().min_h_0().overflow_hidden()
                     .child(div().id(sid(module, &path)).flex_1().min_h_0().w_full().overflow_y_scroll()
                         .child(div().w_full().min_w_0().p_3().text_color(cx.theme().foreground)
-                            .child(TextView::markdown(sid(module, &format!("{path}/content/{}", s("document"))), text)
-                                .selectable(true).w_full().min_w_0().text_sm())))
+                            .child(view.selectable(true).w_full().min_w_0().text_sm())))
                     .into_any_element()
             }
             "codeViewer" => {
@@ -837,6 +868,32 @@ impl Shell {
                     v.sort_by_key(|x| x.1);
                     for (k, _) in v.into_iter().take(16) {
                         self.editors.remove(&k);
+                    }
+                }
+                self.apply_base(div(), n, cx).flex().flex_col().size_full().min_w_0().min_h_0().overflow_hidden().child(body).into_any_element()
+            }
+            "diff" => {
+                let doc_h = n.get("document").and_then(|d| d.as_str()).map(|s| s.to_string());
+                let mode = if n["mode"].as_str() == Some("split") { DiffMode::Split } else { DiffMode::Unified };
+                let body = match doc_h.and_then(|h| self.kernel.handles.get_kernel::<Document>(&h, "document").map(|d| (h, d))) {
+                    Some((h, doc)) => match DiffFile::parse(&doc.text) {
+                        Ok(files) if files.is_empty() => div().p_3().text_sm().text_color(theme_muted).child(s("emptyText")).into_any_element(),
+                        Ok(files) => {
+                            let entry = self.diffs.entry(h).or_insert_with(|| (cx.new(|cx| DiffState::new(files, cx).with_mode(mode)), Instant::now()));
+                            entry.1 = Instant::now();
+                            let st = entry.0.clone();
+                            if st.read(cx).mode() != mode { st.update(cx, |d, cx| d.set_mode(mode, cx)); }
+                            Diff::new(&st).line_number(true).syntax_highlight(true).header_visible(n["header"].as_bool().unwrap_or(true)).size_full().into_any_element()
+                        }
+                        Err(e) => div().p_3().text_sm().text_color(cx.theme().danger).child(format!("Cannot parse diff: {}", e.message())).into_any_element(),
+                    },
+                    None => div().p_3().text_sm().text_color(theme_muted).child(s("placeholder")).into_any_element(),
+                };
+                if self.diffs.len() > 24 {
+                    let mut v: Vec<(String, Instant)> = self.diffs.iter().map(|(k, (_, t))| (k.clone(), *t)).collect();
+                    v.sort_by_key(|x| x.1);
+                    for (k, _) in v.into_iter().take(8) {
+                        self.diffs.remove(&k);
                     }
                 }
                 self.apply_base(div(), n, cx).flex().flex_col().size_full().min_w_0().min_h_0().overflow_hidden().child(body).into_any_element()
@@ -976,7 +1033,7 @@ impl Shell {
                     if role == "thought" {
                         let thought = v_flex().w_full().min_w_0().overflow_hidden().gap(px(2.0)).border_l_2().border_color(p.border).px_3().py_1().text_sm().text_color(p.muted)
                             .child(div().text_xs().child("REASONING"))
-                            .child(TextView::markdown(sid(module, &format!("{message_path}/reasoning")), text).style(TextViewStyle::default().paragraph_gap(rems(0.3))).selectable(true).line_height(px(18.0)).w_full().min_w_0().overflow_hidden().text_sm());
+                            .child(self.markdown_links(TextView::markdown(sid(module, &format!("{message_path}/reasoning")), text), module, key, &s("linkAction")).style(TextViewStyle::default().paragraph_gap(rems(0.3))).selectable(true).line_height(px(18.0)).w_full().min_w_0().overflow_hidden().text_sm());
                         list = list.child(Self::measured_message(thought.into_any_element(), m["key"].as_str().unwrap_or("message"), message_positions.clone()));
                         continue;
                     }
@@ -1007,7 +1064,7 @@ impl Shell {
                     let mut body = v_flex().w_full().min_w_0().overflow_hidden().gap_1().px_3().py(px(4.0)).line_height(px(18.0)).bg(if role == "user" { p.user } else { p.answer }).text_color(p.text);
                     if !text.is_empty() {
                         if role == "assistant" || role == "plan" {
-                            body = body.child(TextView::markdown(sid(module, &format!("{message_path}/body")), text).style(TextViewStyle::default().paragraph_gap(rems(0.3))).selectable(true).line_height(px(18.0)).w_full().min_w_0().overflow_hidden().text_sm().text_color(p.text));
+                            body = body.child(self.markdown_links(TextView::markdown(sid(module, &format!("{message_path}/body")), text), module, key, &s("linkAction")).style(TextViewStyle::default().paragraph_gap(rems(0.3))).selectable(true).line_height(px(18.0)).w_full().min_w_0().overflow_hidden().text_sm().text_color(p.text));
                         } else {
                             body = body.child(div().w_full().min_w_0().overflow_hidden().text_sm().line_height(px(18.0)).child(SelectableText::new(sid(module, &format!("{message_path}/body")), text)));
                         }

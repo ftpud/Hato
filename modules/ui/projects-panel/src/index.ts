@@ -12,6 +12,8 @@ let sshForm = false;
 let addForm = false;
 let filter = "";
 let taskFormFor: string | null = null;
+let aiBusy: Record<string, number> = {};
+const busyText = (n: number) => `AI working${n > 1 ? ` in ${n} chats` : ""}`;
 
 async function reload(ctx: ModuleContext) {
   try { tree = await ctx.modules.call("projects", "tree"); error = null; }
@@ -28,16 +30,21 @@ function rows(): TreeRow[] {
     const tasks = projectMatches ? p.tasks : p.tasks.filter((task: any) => [task.name, task.branch].some(value => String(value || "").toLowerCase().includes(query)));
     if (!projectMatches && !tasks.length) continue;
     const location = p.kind === "ssh" ? `SSH · ${p.host || p.rootPath}` : p.rootPath;
+    const open = !!query || p.expanded;
+    // A collapsed project also reports activity in its hidden tasks.
+    const busyCount = (aiBusy[key] || 0) + (open ? 0 : p.tasks.reduce((n: number, t: any) => n + (aiBusy[`task:${t.id}`] || 0), 0));
     out.push({
+      busy: busyCount > 0,
       key, label: p.name, depth: 0, expandable: tasks.length > 0, expanded: !!query || p.expanded, selected: selected === key,
       badge: p.offline ? "Offline" : tasks.length ? `${tasks.length} ${tasks.length === 1 ? "task" : "tasks"}` : undefined,
-      detail: p.offline ? `Offline · ${p.offline}` : location,
+      detail: p.offline ? `Offline · ${p.offline}` : busyCount ? `${busyText(busyCount)} · ${location}` : location,
       icon: p.offline ? "warning" : p.kind === "ssh" ? "remote" : "folder",
     });
     if (query || p.expanded) for (const [index, t] of tasks.entries()) {
       const tk = `task:${t.id}`;
-      out.push({ key: tk, label: t.name, connector: index === tasks.length - 1 ? "last" : "branch", depth: 1, expandable: false, expanded: false, selected: selected === tk,
-        badge: t.status !== "ready" ? t.status : undefined, detail: t.branch, icon: t.status === "ready" ? "task" : "warning" });
+      const taskBusy = aiBusy[tk] || 0;
+      out.push({ busy: taskBusy > 0, key: tk, label: t.name, connector: index === tasks.length - 1 ? "last" : "branch", depth: 1, expandable: false, expanded: false, selected: selected === tk,
+        badge: t.status !== "ready" ? t.status : undefined, detail: taskBusy ? `${busyText(taskBusy)} · ${t.branch}` : t.branch, icon: t.status === "ready" ? "task" : "warning" });
     }
   }
   return out;
@@ -60,6 +67,8 @@ const mod: AppModule = {
     const sel: any = ctx.state.get("workspace.selected");
     selected = sel ? sel.id : null;
     ctx.state.watch("workspace.selected", (v: any) => { selected = v ? v.id : null; ctx.ui.invalidate(); });
+    aiBusy = (ctx.state.get("ai-sessions.busy") as any) || {};
+    ctx.state.watch("ai-sessions.busy", (v: any) => { aiBusy = v && typeof v === "object" ? v : {}; ctx.ui.invalidate(); });
     ctx.events.on("projects.changed", () => reload(ctx));
     ctx.events.on("git-tasks.changed", () => reload(ctx));
     await reload(ctx);
