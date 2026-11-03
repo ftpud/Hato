@@ -5,7 +5,32 @@
 import { exportMcpTools } from "../../../../sdk/mcp";
 import { terminalTools } from "./tools";
 import type { AppModule, ModuleContext } from "../../../../sdk/types";
-import { workspaceGrant, withWorkspace, type WorkspaceDescriptor } from "../../../../sdk/runtime";
+import { errMsg, sshConnect, workspaceGrant, withWorkspace, type WorkspaceDescriptor } from "../../../../sdk/runtime";
+import { exportSettings } from "../../../../sdk/settings";
+import type { DaemonTarget } from "../../../../sdk/types";
+
+// Persistence preferences: terminals held by `hato daemon` survive disconnects (remote) and app
+// restarts (local). Failures fall back to an ordinary shell with a warning.
+let keepRemote = true;
+let keepLocal = false;
+const ensured = new Map<string, Promise<unknown>>();
+const daemonKey = (stable: string) => stable.replace(/[^A-Za-z0-9\-_.:@/]/g, "_");
+
+async function daemonTarget(ctx: ModuleContext, d: WorkspaceDescriptor): Promise<DaemonTarget | null> {
+  if (d.location === "ssh" ? !keepRemote : !keepLocal) return null;
+  const target: DaemonTarget = d.location === "ssh" ? { kind: "ssh", connection: (await sshConnect(ctx, d)).connection } : { kind: "local" };
+  let p = ensured.get(d.machineId);
+  if (!p) {
+    p = ctx.host.daemon.ensure(target);
+    ensured.set(d.machineId, p);
+  }
+  try { await p; return target; }
+  catch (e) {
+    ensured.delete(d.machineId);
+    ctx.host.ui.toast("warn", `Terminals on ${d.machineId} will not survive disconnects: ${errMsg(e)}`);
+    return null;
+  }
+}
 
 let commands: ReturnType<typeof terminalTools>;
 let contribution: ReturnType<typeof exportMcpTools>;
@@ -24,7 +49,11 @@ async function attach(ctx: ModuleContext, a: any, forceNew = false) {
   if (existing && forceNew) await ctx.host.pty.close(existing).catch(() => {});
   return withWorkspace(ctx, d, async () => {
     const g = await workspaceGrant(ctx, d, "pty");
-    const r = await ctx.host.pty.open(g.grant, { cwd: d.rootAbsolutePath, columns: a.columns || 120, rows: a.rows || 30 });
+    const target = await daemonTarget(ctx, d);
+    // Restart means a fresh shell: drop the daemon-held one first.
+    if (target && forceNew) await ctx.host.daemon.request(target, "pty.kill", { key: daemonKey(stable) }).catch(() => {});
+    const r = await ctx.host.pty.open(g.grant, { cwd: d.rootAbsolutePath, columns: a.columns || 120, rows: a.rows || 30,
+      ...(target ? { persist: { key: daemonKey(stable) } } : {}) });
     await ctx.host.resources.retainForWorkspace(r.handle, stable);
     ctx.events.emit("terminals.changed", { workspaceId: d.id });
     return { pty: r.handle, machineId: r.machineId, cwd: r.cwd, exited: null, reattached: false };
@@ -34,9 +63,22 @@ async function attach(ctx: ModuleContext, a: any, forceNew = false) {
 const mod: AppModule = {
   id: "terminals",
   moduleApiVersion: 1,
-  activate(ctx, prev) {
+  async activate(ctx, prev) {
     commands = terminalTools(ctx, prev?.known);
     contribution = exportMcpTools(ctx, "Terminal", commands.tools);
+    const saved = await ctx.modules.call("persistence", "settings.get", { key: "terminals.persistence" }).catch(() => null);
+    if (saved && typeof saved === "object") { keepRemote = saved.remote !== false; keepLocal = saved.local === true; }
+    exportSettings(ctx, () => [{ key: "terminals", title: "Terminals", fields: [
+      { key: "remote", label: "Keep SSH terminals running on the server", type: "toggle", value: keepRemote,
+        description: "Shells run inside the Hato daemon on the remote machine and survive disconnects; reopening reattaches." },
+      { key: "local", label: "Keep local terminals running after quitting", type: "toggle", value: keepLocal,
+        description: "Shells run inside a local Hato daemon and are reattached at the next start." },
+    ] }], async (_section, key, value) => {
+      if ((key !== "remote" && key !== "local") || typeof value !== "boolean") throw new Error("Invalid terminal preference");
+      const next = { remote: key === "remote" ? value : keepRemote, local: key === "local" ? value : keepLocal };
+      await ctx.modules.call("persistence", "settings.set", { key: "terminals.persistence", value: next });
+      keepRemote = next.remote; keepLocal = next.local;
+    });
   },
   snapshot: () => ({ known: commands.snapshot() }),
   canSwap: async () => ({ ok: !commands.running() && !contribution.pending(), reason: "A terminal MCP command is in progress" }),
@@ -46,6 +88,12 @@ const mod: AppModule = {
     async close(ctx, a) {
       const h = await ctx.host.resources.lookup(keyFor(a.workspaceId, a.key));
       if (h) await ctx.host.pty.close(h);
+      // Closing a tab ends the shell, including a daemon-held one.
+      try {
+        const d: WorkspaceDescriptor = await ctx.modules.call("workspace", "resolve", { workspaceId: a.workspaceId });
+        const target = await daemonTarget(ctx, d);
+        if (target) await ctx.host.daemon.request(target, "pty.kill", { key: daemonKey(keyFor(d.id, a.key)) }).catch(() => {});
+      } catch { /* workspace gone: nothing to clean up remotely */ }
       commands?.forget(a.workspaceId, a.key || "main");
       ctx.events.emit("terminals.changed", { workspaceId: a.workspaceId });
       return null;

@@ -1,0 +1,52 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import * as esbuild from 'esbuild';
+const load = async entry => import('data:text/javascript;base64,' + Buffer.from((await esbuild.build({entryPoints:[entry],bundle:true,format:'esm',write:false})).outputFiles[0].text).toString('base64'));
+const { fileWatch } = await load('sdk/file-watch.ts');
+test('watch streams invalidate, release on switch, and ignore obsolete notifications', async () => {
+  const callbacks=[], released=[], closed=[], changes=[];
+  let count=0;
+  const ctx={host:{capabilities:{request:async()=>({grant:'g'})},fs:{watch:async()=>({handle:`h${++count}`})},resources:{release:async h=>released.push(h)},streams:{listen:async(h,opts,data,end)=>{callbacks.push({data,end});return{close:async()=>closed.push(h)};}}},log:{warn(){}}};
+  const watch=fileWatch(ctx,id=>changes.push(id));
+  const ws=id=>({id,machineId:'local',location:'local',rootAbsolutePath:`/tmp/${id}`});
+  await watch.select(ws('a'));
+  callbacks[0].data('ready\n');
+  await watch.select(ws('b'));
+  callbacks[0].data('changed\n');
+  callbacks[1].data('changed\n');
+  assert.deepEqual(changes,['a','b']);
+  assert.deepEqual(released,['h1']);
+  await watch.stop();
+  callbacks[1].data('changed\n');
+  assert.deepEqual(released,['h1','h2']);
+  assert.deepEqual(closed,['h1','h2']);
+  assert.deepEqual(changes,['a','b']);
+});
+test('watcher releases a handle whose startup completes after shutdown', async () => {
+  let resolve, calls=0;
+  const pending=new Promise(r=>resolve=r), released=[];
+  const ctx={host:{capabilities:{request:async()=>({grant:'g'})},fs:{watch:()=>{calls++;return pending;}},resources:{release:async h=>released.push(h)}},log:{warn(){}}};
+  const watch=fileWatch(ctx,()=>assert.fail('obsolete watch emitted'));
+  const starting=watch.select({id:'a',machineId:'local',location:'local',rootAbsolutePath:'/tmp/a'});
+  while(!calls) await new Promise(setImmediate);
+  await watch.stop(); resolve({handle:'late'}); await starting;
+  assert.deepEqual(released,['late']);
+});
+test('Git panel reruns after changes arrive during an in-flight status request', async () => {
+  const mod=(await load('modules/ui/git-panel/src/index.ts')).default;
+  const handlers={}, state={'workspace.selected':{id:'w'},'workspace-layout.panels':{git:true}};
+  let finish, calls=0;
+  const ctx={moduleId:'git-panel',state:{get:k=>state[k],set(){},watch(){}},ui:{invalidate(){}},events:{on:(topic,fn)=>handlers[topic]=fn,emit(){}},modules:{call:async(m,f)=>{
+    if(m==='persistence')return null;
+    calls++;
+    if(calls===1)await new Promise(r=>finish=r);
+    return {workspaceId:'w',repo:true,branch:'main',files:[]};
+  }}};
+  const activation=mod.activate(ctx);
+  while(!finish)await new Promise(setImmediate);
+  handlers['git.changed']({workspaceId:'other'});
+  handlers['git.changed']({workspaceId:'w'});
+  finish(); await activation; await new Promise(setImmediate);
+  assert.equal(calls,2);
+  mod.deactivate();
+});

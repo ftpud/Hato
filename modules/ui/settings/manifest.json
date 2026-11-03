@@ -1,13 +1,20 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "id": "settings",
   "kind": "ui",
   "entry": "src/index.ts",
   "moduleApiVersion": 1,
   "dependencies": [],
   "capabilities": [
-    "modules.read"
+    "modules.read",
+    "plugins.manage",
+    "ui.dialog"
   ],
   "stateVersion": 1,
-  "description": "Settings menu and module-contributed preferences."
+  "description": "Settings menu and module-contributed preferences.",
+  "contributes": {
+    "overlays": [
+      true
+    ]
+  }
 }

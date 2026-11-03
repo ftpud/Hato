@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "id": "sidebar",
   "kind": "ui",
   "entry": "src/index.ts",
@@ -7,5 +7,12 @@
   "dependencies": [],
   "capabilities": [],
   "stateVersion": 1,
-  "description": "Right activity sidebar for toggling Files, Projects and Git panels."
+  "description": "Right activity sidebar for toggling Files, Projects and Git panels.",
+  "contributes": {
+    "sidebars": [
+      {
+        "side": "right"
+      }
+    ]
+  }
 }

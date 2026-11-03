@@ -74,9 +74,9 @@ test("persistence: migrations are transactional, idempotent and owned by TS", as
   };
   const ctx = { host, log: { info() {}, warn() {} } };
   await m.activate(ctx);
-  assert.deepEqual(applied, [1, 2]);
+  assert.deepEqual(applied, [1, 2, 3]);
   await m.activate(ctx);
-  assert.deepEqual(applied, [1, 2], "re-activation must not re-apply migrations");
+  assert.deepEqual(applied, [1, 2, 3], "re-activation must not re-apply migrations");
 });
 
 test("persistence refuses private key material", async () => {
@@ -103,7 +103,9 @@ test("projects-panel renders keyed tree rows with separate select/expand actions
   assert.deepEqual(tr.rows.map((r) => r.key), ["project:p1:root", "task:t1"]);
   assert.equal(tr.rows[0].badge, "1 task");
   assert.equal(tr.rows[1].connector, "last");
-  assert.equal(tr.appearance, "projects");
+  assert.equal(tr.rowHeight, 42);
+  assert.match(tr.rows[0].iconSvg, /<svg/);
+  assert.equal(tr.rows[0].weight, "semibold");
   assert.equal(tr.rows[0].detail, "/a");
 });
 

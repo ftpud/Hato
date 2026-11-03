@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as esbuild from 'esbuild';
+import { pluginsHost } from './plugin-fixture.mjs';
 async function load(id, icons) {
   const built = await esbuild.build({ entryPoints: [`modules/ui/${id}/src/index.ts`], bundle: true, format: 'esm', write: false, plugins: icons ? [{ name: 'edited-icons', setup(build) { build.onLoad({ filter: /sidebar-icons\.ts$/ }, () => ({ contents: `export const sidebarIcons = ${JSON.stringify(icons)}`, loader: 'ts' })); } }] : [] });
   return (await import('data:text/javascript;base64,' + Buffer.from(built.outputFiles[0].text).toString('base64'))).default;
@@ -8,13 +9,13 @@ async function load(id, icons) {
 test('separate sidebar toggles layout panels and reflects collapse, hide and restore state', async () => {
   const layout = await load('workspace-layout'), sidebar = await load('sidebar'), left = await load('left-sidebar');
   const values = new Map(), watches = new Map(), events = new Map();
-  const ctx = { state: { get: key => values.get(key), set(key, value) { values.set(key, value); for (const fn of watches.get(key) || []) fn(value); }, watch(key, fn) { watches.set(key, [...(watches.get(key) || []), fn]); } },
-    events: { on(key, fn) { events.set(key, fn); }, emit(key, value) { events.get(key)?.(value); } },
+  const ctx = { host: { plugins: pluginsHost() }, state: { get: key => values.get(key), set(key, value) { values.set(key, value); for (const fn of watches.get(key) || []) fn(value); }, watch(key, fn) { watches.set(key, [...(watches.get(key) || []), fn]); } },
+    events: { on(key, fn) { events.set(key, fn); return () => {}; }, emit(key, value) { events.get(key)?.(value); } },
     modules: { async call(_, method) { if (method === 'list') return []; if (method === 'updates') return { modules: [], available: [], errors: [] }; } },
     ui: { invalidate() {} }, log: { warn() {} } };
   await layout.activate(ctx);
-  sidebar.activate(ctx);
-  left.activate(ctx);
+  await sidebar.activate(ctx);
+  await left.activate(ctx);
   assert.equal(sidebar.render().border, undefined);
   assert.equal(sidebar.render().surface, undefined);
   assert.equal(left.render().surface, undefined);
@@ -47,7 +48,9 @@ test('separate sidebar toggles layout panels and reflects collapse, hide and res
 
 test('sidebar drawings are module data and a new module build picks up edited SVGs', async () => {
   const sidebar = await load('sidebar'), left = await load('left-sidebar');
-  assert.deepEqual(sidebar.render().children.map(n => n.key), ['projects', 'files', 'git']);
+  const ctx = { host: { plugins: pluginsHost() }, state: { get() {}, watch() {} }, events: { on() { return () => {}; } }, ui: { invalidate() {} }, log: { warn() {} } };
+  await sidebar.activate(ctx); await left.activate(ctx);
+  assert.deepEqual(sidebar.render().children.map(n => n.key), ['projects', 'files', 'git', 'remote']);
   for (const node of [...sidebar.render().children, ...left.render().children]) {
     assert.equal(node.icon, undefined);
     assert.match(node.iconSvg, /<svg /);
@@ -57,6 +60,7 @@ test('sidebar drawings are module data and a new module build picks up edited SV
   const changed = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/></svg>';
   const originalFiles = sidebar.render().children[1].iconSvg;
   const updated = await load('sidebar', { projects: changed, files: originalFiles });
+  await updated.activate(ctx);
   assert.equal(updated.render().children[0].iconSvg, changed);
   assert.equal(updated.render().children[1].iconSvg, originalFiles);
 });

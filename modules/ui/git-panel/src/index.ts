@@ -1,24 +1,26 @@
 // git-panel: modified files in the selected workspace. Click opens a diff tab in the viewer,
-// double click opens the file itself. Polls while the panel is visible.
+// double click opens the file itself. Refreshes from filesystem notifications.
 import type { AppModule, ModuleContext, UiNode } from "../../../../sdk/types";
 import { errMsg } from "../../../../sdk/runtime";
 import { diffTab, diffTabPath } from "../../../../sdk/git";
 import { exportSettings } from "../../../../sdk/settings";
 import { changeRows, signature, type Change } from "./model";
+import { uiIcons } from "../../../../sdk/ui-icons";
 
 let ws: any = null;
 let status: { workspaceId: string; repo: boolean; branch: string | null; files: Change[]; truncated?: boolean } | null = null;
 let error: string | null = null;
 let loading = false;
 let visible = false;
-const POLL_OPTIONS = [0, 2, 5, 15, 60];
-let pollSeconds = 5;
-let timer: any = null;
+let autoRefresh = true;
+let dirty = false;
 let epoch = 0;
 let lastSig = "";
 
 async function refresh(ctx: ModuleContext) {
-  if (!ws || loading) return;
+  if (!ws) return;
+  if (loading) { dirty = true; return; }
+  dirty = false;
   const mine = ++epoch, workspaceId = ws.id;
   loading = true;
   if (!status) ctx.ui.invalidate();
@@ -30,12 +32,7 @@ async function refresh(ctx: ModuleContext) {
     status = r;
     if (sig !== lastSig) { lastSig = sig; ctx.events.emit("git-panel.statusChanged", { workspaceId }); }
   } catch (e) { if (mine === epoch) error = errMsg(e); }
-  finally { if (mine === epoch) loading = false; ctx.ui.invalidate(); }
-}
-
-function schedule(ctx: ModuleContext) {
-  if (timer) clearInterval(timer);
-  timer = visible && ws && pollSeconds > 0 ? setInterval(() => { void refresh(ctx); }, pollSeconds * 1000) : null;
+  finally { if (mine === epoch) { loading = false; if (dirty && visible && autoRefresh) void refresh(ctx); } ctx.ui.invalidate(); }
 }
 
 async function show(ctx: ModuleContext, previewPath: string) {
@@ -46,36 +43,41 @@ const mod: AppModule = {
   id: "git-panel",
   moduleApiVersion: 1,
   async activate(ctx, prev) {
-    const saved = await ctx.modules.call("persistence", "settings.get", { key: "git-panel.pollSeconds" });
-    pollSeconds = typeof saved === "number" && POLL_OPTIONS.includes(saved) ? saved : 5;
+    const saved = await ctx.modules.call("persistence", "settings.get", { key: "git-panel.autoRefresh" });
+    const old = saved == null ? await ctx.modules.call("persistence", "settings.get", { key: "git-panel.pollSeconds" }) : null;
+    autoRefresh = typeof saved === "boolean" ? saved : old !== 0;
     exportSettings(ctx, () => [{ key: "git-panel", title: "Git changes", fields: [
-      { key: "pollSeconds", label: "Automatic refresh", type: "select", value: String(pollSeconds),
-        options: POLL_OPTIONS.map((n) => ({ value: String(n), label: n ? `Every ${n} s` : "Off" })),
-        description: "How often to re-run git status while the Git panel is visible." },
+      { key: "autoRefresh", label: "Automatic refresh", type: "toggle", value: autoRefresh,
+        description: "Refresh Git status when files or repository metadata change." },
     ] }], async (_section, key, value) => {
-      const n = Number(value);
-      if (key !== "pollSeconds" || !POLL_OPTIONS.includes(n)) throw new Error("Invalid refresh interval");
-      await ctx.modules.call("persistence", "settings.set", { key: "git-panel.pollSeconds", value: n });
-      pollSeconds = n; schedule(ctx);
+      if (key !== "autoRefresh" || typeof value !== "boolean") throw new Error("Invalid automatic refresh preference");
+      await ctx.modules.call("persistence", "settings.set", { key: "git-panel.autoRefresh", value });
+      autoRefresh = value;
+      if (visible && value) void refresh(ctx);
+    });
+    ctx.events.on("git.changed", (event: any) => {
+      if (event.workspaceId === ws?.id && autoRefresh) {
+        dirty = true;
+        if (visible) void refresh(ctx);
+      }
     });
     ws = ctx.state.get("workspace.selected") || null;
-    if (prev?.status?.workspaceId === ws?.id) status = prev.status;
+    if (prev?.status && prev.status.workspaceId === ws?.id) status = prev.status;
     visible = !!(ctx.state.get("workspace-layout.panels") as any)?.git;
     ctx.state.watch("workspace-layout.panels", (v: any) => {
       const next = !!v?.git;
       if (next === visible) return;
-      visible = next; schedule(ctx);
+      visible = next;
       if (visible) void refresh(ctx);
     });
     ctx.state.watch("workspace.selected", (v: any) => {
       const changed = ws?.id !== v?.id; ws = v;
-      if (changed) { epoch++; loading = false; status = null; error = null; lastSig = ""; schedule(ctx); void refresh(ctx); }
+      if (changed) { epoch++; loading = false; status = null; error = null; lastSig = ""; dirty = false; void refresh(ctx); }
       else ctx.ui.invalidate();
     });
-    schedule(ctx);
     await refresh(ctx);
   },
-  deactivate() { if (timer) clearInterval(timer); timer = null; },
+  deactivate() { epoch++; loading = false; dirty = false; },
   snapshot: () => ({ status }),
   render(): UiNode {
     const children: UiNode[] = [];
@@ -87,7 +89,7 @@ const mod: AppModule = {
     children.push({ type: "row", key: "tools", gap: 4, align: "center", children: [
       { type: "label", key: "branch", text: status?.branch ? `⎇ ${status.branch}` : "", size: "xs", weight: "semibold", tooltip: "Current branch" },
       { type: "label", key: "count", text: summary + (status?.truncated ? " (truncated)" : ""), size: "xs", color: "muted", grow: true },
-      { type: "button", key: "refresh", text: "", icon: "refresh", action: "refresh", small: true, variant: "ghost", disabled: loading, tooltip: "Refresh Git status" },
+      { type: "button", key: "refresh", text: "", iconSvg: uiIcons["refresh"], action: "refresh", small: true, variant: "ghost", disabled: loading, tooltip: "Refresh Git status" },
     ] });
     if (error) children.push({ type: "status", key: "err", text: error, level: "error" });
     if (loading && !status) children.push({ type: "progress", key: "loading", indeterminate: true });

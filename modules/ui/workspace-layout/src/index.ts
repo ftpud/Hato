@@ -11,11 +11,16 @@ import { exportSettings } from "../../../../sdk/settings";
 import { fontOptions, typography } from "../../../../sdk/typography";
 import { colorScheme } from "../../../../sdk/color-scheme";
 import { debounce, errMsg } from "../../../../sdk/runtime";
-import { BAR_ITEMS, PANELS, defaultLayout, dropPanel, locate, moveBarItem, moveTo, removeBarItem, repair, type BarId, type Layout } from "./model";
+import { BAR_ITEMS, PANELS, defaultLayout, dropPanel, homeOf, locate, moveBarItem, moveTo, panelSignature, removeBarItem, repair, setPanels, type BarId, type Layout, type PanelDef } from "./model";
+import { loadContributions, watchContributions, type Contributions } from "../../../../sdk/plugins";
+import { uiIcons } from "../../../../sdk/ui-icons";
 
 let fontFamily = "JetBrains Mono";
 let fontSize = "15";
 let fontWeight = "400";
+/** Appearance preference; "system" leaves the last mode the window used. */
+let mode: "light" | "dark" | "system" = "system";
+const modeOptions = [{ value: "dark", label: "Dark" }, { value: "light", label: "Light" }, { value: "system", label: "Keep current" }];
 const sizeOptions = [{ value: "14", label: "Small" }, { value: "15", label: "Compact" }, { value: "16", label: "Standard" }, { value: "18", label: "Large" }];
 const weightOptions = [{ value: "400", label: "Regular" }, { value: "500", label: "Medium" }];
 let ws: any = null;
@@ -29,6 +34,27 @@ let updSummary: { available: string[]; errors: string[] } = { available: [], err
 let scanningUpd = false;
 let layout: Layout = defaultLayout();
 let save: () => void = () => {};
+// Plugin contributions: panels, activity sidebars and overlays come from enabled plugins' manifests.
+let contributions: Contributions | null = null;
+let stopContributions: (() => void) | null = null;
+const sidebarSubscriptions = new Map<string, () => void>();
+
+function applyContributions(c: Contributions) {
+  contributions = c;
+  const defs: Record<string, PanelDef> = {};
+  for (const p of Object.values(c.panels)) defs[p.id] = { slot: p.module, title: p.title, defaultHidden: p.defaultHidden, dockBelow: p.dockBelow, dock: p.dock, pinned: p.pinned };
+  const before = panelSignature();
+  setPanels(defs);
+  return before !== panelSignature();
+}
+
+function subscribeSidebars(ctx: ModuleContext) {
+  const wanted = new Set((contributions?.sidebars || []).map((s) => s.module));
+  for (const [m, stop] of sidebarSubscriptions) if (!wanted.has(m)) { stop(); sidebarSubscriptions.delete(m); }
+  for (const m of wanted) if (!sidebarSubscriptions.has(m)) {
+    sidebarSubscriptions.set(m, ctx.events.on(`${m}.togglePanel`, (event: any) => toggleSidebarPanel(ctx, event?.id)));
+  }
+}
 
 const COLLAPSED_ROW = 0;
 const COLLAPSED_COL = 0;
@@ -105,7 +131,7 @@ function collapsedPanels(): UiNode | null {
   return { type: "column", key: "collapsed-panels", maxHeight: 108, scroll: true, bg: "panel", children: [
     { type: "row", key: "restore-buttons", wrap: true, gap: 6, padding: 4, children: [
       { type: "label", key: "caption", text: "Collapsed", size: "xs", color: "muted" },
-      ...ids.map((id): UiNode => ({ type: "button", key: "restore-" + id, text: PANELS[id].title, icon: "plus", action: layout.bottom.collapsed && layout.bottom.panels.includes(id) ? "expandBottom" : "toggleCollapse", value: id, small: true, tooltip: `Restore ${PANELS[id].title}` })),
+      ...ids.map((id): UiNode => ({ type: "button", key: "restore-" + id, text: PANELS[id].title, iconSvg: uiIcons["plus"], action: layout.bottom.collapsed && layout.bottom.panels.includes(id) ? "expandBottom" : "toggleCollapse", value: id, small: true, tooltip: `Restore ${PANELS[id].title}` })),
     ] },
   ] };
 }
@@ -285,11 +311,11 @@ function publishPanels(ctx: ModuleContext) {
   ctx.state.set("workspace-layout.panels", Object.fromEntries(Object.keys(PANELS).map((id) => [id, panelVisible(id)])));
 }
 function toggleSidebarPanel(ctx: ModuleContext, id: string) {
-  if (typeof id !== "string" || !Object.prototype.hasOwnProperty.call(PANELS, id) || id === "viewer") return;
+  if (typeof id !== "string" || !Object.prototype.hasOwnProperty.call(PANELS, id) || PANELS[id].pinned) return;
   const place = locate(layout, id);
   if (!place || place.kind === "hidden") {
     const near = PANELS[id].dockBelow, nearPlace = near ? locate(layout, near) : null;
-    set(ctx, nearPlace?.kind === "column" ? dropPanel(layout, id, near!, "bottom") : moveTo(layout, id, id === "terminal" ? "bottom" : "column"));
+    set(ctx, nearPlace?.kind === "column" ? dropPanel(layout, id, near!, "bottom") : moveTo(layout, id, homeOf(id)));
     return;
   }
   if (place.kind === "floating" || place.kind === "detached") { set(ctx, moveTo(layout, id, "hidden")); return; }
@@ -311,6 +337,8 @@ const mod: AppModule = {
   async activate(ctx, prev) {
     save = debounce(() => { ctx.modules.call("persistence", "settings.set", { key: "layout.v1", value: layout as any }).catch((e) => ctx.log.warn("save layout", errMsg(e))); }, 300);
     if (prev) { showModules = !!prev.showModules; showLayout = !!prev.showLayout; }
+    // Panels must be known before a persisted layout is repaired against them.
+    try { applyContributions(await loadContributions(ctx)); } catch (e) { ctx.log.warn("load plugins", errMsg(e)); }
     try {
       layout = repair(prev && prev.layout ? prev.layout : await ctx.modules.call("persistence", "settings.get", { key: "layout.v1" }));
     } catch (e) { ctx.log.warn("load layout", errMsg(e)); layout = defaultLayout(); }
@@ -320,12 +348,24 @@ const mod: AppModule = {
     const savedWeight = await ctx.modules.call("persistence", "settings.get", { key: "appearance.fontWeight" });
     fontSize = sizeOptions.some(option => option.value === savedSize) ? savedSize : "15";
     fontWeight = weightOptions.some(option => option.value === savedWeight) ? savedWeight : "400";
-    exportSettings(ctx, () => [{ key: "typography", title: "Typography", fields: [
+    const savedMode = await ctx.modules.call("persistence", "settings.get", { key: "appearance.mode" });
+    mode = savedMode === "light" || savedMode === "dark" ? savedMode : "system";
+    exportSettings(ctx, () => [{ key: "appearance", title: "Appearance", fields: [
+      { key: "mode", label: "Color mode", type: "select", value: mode, options: modeOptions,
+        description: "Soft blue and white surfaces with indigo accents in light mode. Colors come from sdk/color-scheme.ts." },
+    ] }, { key: "typography", title: "Typography", fields: [
       { key: "fontFamily", label: "Interface font", type: "select", value: fontFamily, options: fontOptions,
         description: "Applies to panels, chat, file previews and terminals. JetBrains Mono is bundled." },
       { key: "fontSize", label: "Text size", type: "select", value: fontSize, options: sizeOptions },
       { key: "fontWeight", label: "Text weight", type: "select", value: fontWeight, options: weightOptions },
-    ] }], async (_section, key, value) => {
+    ] }], async (section, key, value) => {
+      if (section === "appearance") {
+        if (key !== "mode" || !modeOptions.some(option => option.value === value)) throw new Error("Invalid appearance preference");
+        await ctx.modules.call("persistence", "settings.set", { key: "appearance.mode", value });
+        mode = value as typeof mode;
+        ctx.ui.invalidate();
+        return;
+      }
       const options = key === "fontFamily" ? fontOptions : key === "fontSize" ? sizeOptions : key === "fontWeight" ? weightOptions : [];
       if (typeof value !== "string" || !options.some(option => option.value === value)) throw new Error("Invalid typography preference");
       await ctx.modules.call("persistence", "settings.set", { key: `appearance.${key}`, value });
@@ -337,11 +377,21 @@ const mod: AppModule = {
     ctx.state.watch("workspace.selected", (v: any) => { ws = v; ctx.ui.invalidate(); });
     ctx.events.on("kernel.modules.changed", () => loadModules(ctx));
     ctx.events.on("module-dev.updatesChanged", () => loadUpdates(ctx, false));
-    ctx.events.on("sidebar.togglePanel", (event: any) => toggleSidebarPanel(ctx, event?.id));
-    ctx.events.on("left-sidebar.togglePanel", (event: any) => toggleSidebarPanel(ctx, event?.id));
+    subscribeSidebars(ctx);
+    stopContributions = watchContributions(ctx, (c) => {
+      const changed = applyContributions(c);
+      subscribeSidebars(ctx);
+      if (changed) set(ctx, repair(layout));
+      else ctx.ui.invalidate();
+    });
     publishPanels(ctx);
     await loadModules(ctx);
     loadUpdates(ctx, false);
+  },
+  deactivate() {
+    stopContributions?.();
+    for (const stop of sidebarSubscriptions.values()) stop();
+    sidebarSubscriptions.clear();
   },
   snapshot: () => ({ showModules, showLayout, layout }),
   methods: {
@@ -350,7 +400,7 @@ const mod: AppModule = {
     resetLayout: (ctx) => { set(ctx, defaultLayout()); return layout; },
   },
   render(): UiNode {
-    const kids: UiNode[] = [{ type: "theme", key: "color-scheme", palette: colorScheme, typography: typography(fontFamily, fontSize, fontWeight) }];
+    const kids: UiNode[] = [{ type: "theme", key: "color-scheme", palette: colorScheme, typography: typography(fontFamily, fontSize, fontWeight), ...(mode === "system" ? {} : { mode }) }];
     const top = barNode("top");
     if (top) kids.push(top);
     if (!["top", "bottom"].some((b) => layout.bars[b as BarId].visible && layout.bars[b as BarId].items.includes("layoutMenu"))) {
@@ -359,15 +409,18 @@ const mod: AppModule = {
     if (!["top", "bottom"].some((b) => layout.bars[b as BarId].visible && layout.bars[b as BarId].items.includes("settings"))) {
       kids.push({ type: "row", key: "settings-access", children: [btn("settings", "Settings", "openSettings", null, "Appearance and module preferences")] });
     }
-    // Settings renders an overlay; its slot must not reserve dock space.
-    kids.push({ type: "column", key: "settings-overlay", height: 0, children: [
-      { type: "slot", key: "settings-slot", module: "settings" },
-    ] });
+    // Overlay plugins (e.g. settings) render modals; their slots must not reserve dock space.
+    for (const o of contributions?.overlays || []) {
+      kids.push({ type: "column", key: `overlay:${o.module}`, height: 0, children: [{ type: "slot", key: "slot", module: o.module }] });
+    }
     const collapsed = collapsedPanels();
+    const sidebars = (side: "left" | "right") => (side === "left" ? layout.showLeftSidebar : layout.showRightSidebar)
+      ? (contributions?.sidebars || []).filter((s) => s.side === side).map((s) => ({ type: "slot", key: `sidebar:${s.module}`, module: s.module, width: s.width || 44 } as UiNode))
+      : [];
     kids.push({ type: "row", key: "workspace-content", grow: true, align: "stretch", children: [
-      ...(layout.showLeftSidebar ? [{ type: "slot", key: "left-sidebar", module: "left-sidebar", width: 44 } as UiNode] : []),
+      ...sidebars("left"),
       { type: "column", key: "workspace-panels", grow: true, children: [dockArea(), ...(collapsed ? [collapsed] : [])] },
-      ...(layout.showRightSidebar ? [{ type: "slot", key: "right-sidebar", module: "sidebar", width: 44 } as UiNode] : []),
+      ...sidebars("right"),
     ] });
     const bottom = barNode("bottom");
     if (bottom) kids.push(bottom);
@@ -383,7 +436,7 @@ const mod: AppModule = {
   },
   async onEvent(ctx, ev) {
     const v: any = ev.value;
-    const dockBack = (id: string) => moveTo(layout, id, id === "terminal" ? "bottom" : "column");
+    const dockBack = (id: string) => moveTo(layout, id, homeOf(id));
     switch (ev.action) {
       case "toggleSidebar": {
         const side = typeof v === "boolean" ? ev.key === "left-sidebar-visible" ? "left" : ev.key === "right-sidebar-visible" ? "right" : null : v;
@@ -395,6 +448,7 @@ const mod: AppModule = {
       }
       case "togglePanelControls": set(ctx, { ...layout, showPanelControls: typeof v === "boolean" ? v : !layout.showPanelControls }); break;
       case "openSettings": await ctx.modules.call("settings", "open"); break;
+      case "openPlugins": await ctx.modules.call("settings", "open", { category: "plugins" }); break;
       // -- docking / panels
       case "dropPanel": {
         if (v && v.payload && v.payload.kind === "panel" && typeof v.zone === "string" && v.zone.startsWith("panel:")) {

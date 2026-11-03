@@ -160,6 +160,7 @@
       },
       fs: {
         stat: (grant, path) => call("fs.stat", { grant, path }),
+        watch: (grant, path, opts) => call("fs.watch", { grant, path, ...opts }),
         list: (grant, path) => call("fs.list", { grant, path }),
         realpath: (grant, path) => call("fs.realpath", { grant, path }),
         read: (grant, path, limitBytes) => call("fs.read", { grant, path, limitBytes }),
@@ -221,6 +222,22 @@
         rollback: (id, opts) => call("modules.rollback", Object.assign({ id }, opts || {})),
         discard: (stageId) => call("modules.discard", { stageId }),
         sourceInfo: () => call("modules.sourceInfo", {}),
+      },
+      daemon: {
+        ensure: (target) => call("daemon.ensure", { target: target || { kind: "local" } }),
+        status: (target) => call("daemon.status", { target: target || { kind: "local" } }),
+        request: (target, op, args) => call("daemon.request", { target: target || { kind: "local" }, op, args: args || {} }),
+      },
+      plugins: {
+        list: () => call("plugins.list", {}),
+        providers: (contract) => call("plugins.providers", { contract }),
+        dependents: (id) => call("plugins.dependents", { id }),
+        enable: (id) => call("plugins.enable", { id }),
+        disable: (id, opts) => call("plugins.disable", Object.assign({ id }, opts || {})),
+        setRoot: (id) => call("plugins.setRoot", { id: id || null }),
+        install: (path) => call("plugins.install", { path }),
+        uninstall: (id) => call("plugins.uninstall", { id }),
+        rescan: () => call("plugins.rescan", {}),
       },
       approvals: {
         request: (req) => call("approvals.request", req),

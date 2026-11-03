@@ -17,12 +17,12 @@ pub fn run(k: &Arc<Kernel>, script: &std::path::Path) -> anyhow::Result<bool> {
     let code = std::fs::read_to_string(script)?;
     let manifest = Manifest {
         schema_version: 1, id: "__driver".into(), kind: "service".into(), entry: script.display().to_string(),
-        module_api_version: 1, dependencies: vec![], capabilities: vec![], state_version: 1, description: "headless test driver".into(),
+        module_api_version: 1, dependencies: vec![], capabilities: vec![], state_version: 1, description: "headless test driver".into(), ..Default::default()
     };
     let (tx, rx) = crossbeam_channel::unbounded();
     let gen = Arc::new(Generation {
         gen_id: k.router.alloc_gen_id(), module_id: "__driver".into(), version: 1, kind: "service".into(), hash: String::new(),
-        stage_id: String::new(), manifest, caps: EffectiveCaps { caps: Default::default(), calls: ["*".to_string()].into_iter().collect() },
+        stage_id: String::new(), manifest, caps: EffectiveCaps { caps: ["remote.daemon", "pty.scope", "process.scope", "fs.scope", "ssh.connect"].into_iter().map(String::from).collect(), calls: ["*".to_string()].into_iter().collect() },
         tx, status: Mutex::new(GenStatus::Loading), inflight: Default::default(), exports: Mutex::new(Value::Null),
         errors: Default::default(), created: std::time::Instant::now(),
     });
@@ -102,6 +102,13 @@ pub fn driver_op(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: &Value)
         }
         "test.activate" => k.activate_staged(None, arg_str(args, "id")?, arg_str(args, "stageId")?, false),
         "test.rollback" => k.rollback(None, arg_str(args, "id")?, args.get("toVersion").and_then(|v| v.as_u64()).map(|v| v as u32), false),
+        // Plugin lifecycle with the driver as requester (approvals follow the test.approvals policy).
+        "test.pluginEnable" => k.enable_plugin(Some(gen), arg_str(args, "id")?),
+        "test.pluginDisable" => k.disable_plugin(Some(gen), arg_str(args, "id")?, args.get("cascade").and_then(|c| c.as_bool()).unwrap_or(false)),
+        "test.pluginRoot" => k.set_root_plugin(args.get("id").and_then(|v| v.as_str())).map(|_| Value::Null),
+        "test.pluginRescan" => Ok(k.rescan_plugins()),
+        "test.pluginInstall" => k.install_plugin(gen, arg_str(args, "path")?),
+        "test.pluginUninstall" => k.uninstall_plugin(gen, arg_str(args, "id")?),
         "test.logs" => Ok(json!(k.logs.tail(arg_str(args, "id")?, 200))),
         "test.state" => Ok(k.state.values.lock().get(arg_str(args, "key")?).cloned().unwrap_or(Value::Null)),
         "test.env" => Ok(std::env::var(arg_str(args, "name")?).map(Value::String).unwrap_or(Value::Null)),

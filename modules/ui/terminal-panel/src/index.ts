@@ -5,6 +5,7 @@ import { terminalIcons } from "../../../../sdk/terminal-icons";
 import { terminalTabStyle, tabButtonStyle } from "../../../../sdk/tab-style";
 import { errMsg } from "../../../../sdk/runtime";
 import { blocks, firstBlock, remove, replace, resize, restore, type Block, type Node } from "./model";
+import { uiIcons } from "../../../../sdk/ui-icons";
 let ws: any = null;
 let layout: Node = firstBlock();
 let epoch = 0;
@@ -45,14 +46,14 @@ function renderNode(node: Node): UiNode {
     minSize: node.direction === "horizontal" ? 160 : 100, resizeAction: "resizeBlocks", grow: true, children: node.children.map(renderNode) };
   const all = blocks(layout), locked = !ws || busy.has(node.id) || loading.has(node.active);
   const action = (name: string) => `${name}:${node.id}`;
-  const control = (name: string, tooltip: string, icon: "plus" | "refresh" | "x"): UiNode => ({ type: "button", key: name, text: "", icon,
+  const control = (name: string, tooltip: string, icon: "plus" | "refresh" | "x"): UiNode => ({ type: "button", key: name, text: "", iconSvg: uiIcons[icon],
     action: action(name), small: true, variant: "ghost", tooltip, disabled: locked });
   return { type: "column", key: node.id, gap: 3, padding: 4, grow: true, children: [
     { type: "row", key: "tabs", gap: 3, wrap: true, children: [
       ...node.keys.map((key): UiNode => ({ type: "row", key, gap: 0, style: terminalTabStyle(node.active === key), children: [
         { type: "button", key: "select", iconSvg: sidebarIcons.terminal, text: `Terminal ${all.flatMap(b => b.keys).indexOf(key) + 1}`,
           action: `select:${key}`, small: true, variant: "ghost", style: tabButtonStyle(node.active === key, true), disabled: locked },
-        { type: "button", key: "close", text: "", icon: "x", action: `close:${key}`, small: true, variant: "ghost",
+        { type: "button", key: "close", text: "", iconSvg: uiIcons["x"], action: `close:${key}`, small: true, variant: "ghost",
           style: tabButtonStyle(node.active === key, true), tooltip: "Close terminal", disabled: locked },
       ] })),
       control("new", "New terminal tab", "plus"),

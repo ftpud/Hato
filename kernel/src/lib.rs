@@ -12,7 +12,10 @@ pub mod host;
 pub mod js;
 pub mod kernel;
 pub mod ops;
+pub mod plugins;
 pub mod quoting;
 pub mod router;
+#[cfg(feature = "gui")]
 pub mod ui;
+pub mod daemon;
 pub mod util;

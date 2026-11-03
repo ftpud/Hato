@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "id": "viewer",
   "kind": "ui",
   "entry": "src/index.ts",
@@ -12,5 +12,18 @@
   ],
   "capabilities": [],
   "stateVersion": 1,
-  "description": "Read-only syntax-highlighted code viewer and Git diff tabs."
+  "description": "Read-only syntax-highlighted code viewer and Git diff tabs.",
+  "contributes": {
+    "panels": [
+      {
+        "id": "viewer",
+        "title": "Source viewer",
+        "dock": {
+          "column": 2,
+          "size": 0.38
+        },
+        "pinned": true
+      }
+    ]
+  }
 }

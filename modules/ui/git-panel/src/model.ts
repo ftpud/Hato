@@ -26,7 +26,7 @@ export function changeRows(changes: Change[], selected: string | null): TreeRow[
   });
 }
 
-/** Cheap fingerprint so polling only re-renders (and notifies the viewer) on real changes. */
+/** Fingerprint so refreshes only notify the viewer when status changes. */
 export function signature(r: { branch?: string | null; files?: Change[] } | null): string {
   if (!r) return "";
   return (r.branch || "") + "\n" + (r.files || []).map((c) => `${c.index}${c.worktree} ${c.path} ${c.additions}/${c.deletions}`).join("\n");

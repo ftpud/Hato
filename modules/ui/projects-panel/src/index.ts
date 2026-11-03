@@ -2,6 +2,7 @@
 // Clicking a row selects a workspace; clicking the chevron expands/collapses (separate events).
 import type { AppModule, ModuleContext, TreeRow, UiNode } from "../../../../sdk/types";
 import { errMsg } from "../../../../sdk/runtime";
+import { uiIcons } from "../../../../sdk/ui-icons";
 
 let tree: any[] = [];
 let selected: string | null = null;
@@ -39,12 +40,14 @@ function rows(): TreeRow[] {
       badge: p.offline ? "Offline" : tasks.length ? `${tasks.length} ${tasks.length === 1 ? "task" : "tasks"}` : undefined,
       detail: p.offline ? `Offline · ${p.offline}` : busyCount ? `${busyText(busyCount)} · ${location}` : location,
       icon: p.offline ? "warning" : p.kind === "ssh" ? "remote" : "folder",
+      iconSvg: p.offline ? uiIcons.warning : p.kind === "ssh" ? uiIcons.terminal : uiIcons.folder, iconColor: "muted", weight: "semibold",
     });
     if (query || p.expanded) for (const [index, t] of tasks.entries()) {
       const tk = `task:${t.id}`;
       const taskBusy = aiBusy[tk] || 0;
       out.push({ busy: taskBusy > 0, key: tk, label: t.name, connector: index === tasks.length - 1 ? "last" : "branch", depth: 1, expandable: false, expanded: false, selected: selected === tk,
-        badge: t.status !== "ready" ? t.status : undefined, detail: taskBusy ? `${busyText(taskBusy)} · ${t.branch}` : t.branch, icon: t.status === "ready" ? "task" : "warning" });
+        badge: t.status !== "ready" ? t.status : undefined, detail: taskBusy ? `${busyText(taskBusy)} · ${t.branch}` : t.branch, icon: t.status === "ready" ? "task" : "warning",
+        iconSvg: t.status === "ready" ? uiIcons["git-branch"] : uiIcons.warning, iconColor: "muted" });
     }
   }
   return out;
@@ -79,20 +82,20 @@ const mod: AppModule = {
     const visibleRows = rows();
     const children: UiNode[] = [
       { type: "row", key: "hdr", gap: 3, children: [
-        { type: "textInput", key: "project-filter", search: true, placeholder: "Filter projects", value: filter, changeAction: "filter", grow: true },
-        { type: "button", key: "add-project", text: "", icon: "plus", action: "showAdd", small: true, variant: "ghost", tooltip: "Add project", disabled: !!busy },
-        { type: "button", key: "refresh", text: "", icon: "refresh", action: "refresh", small: true, variant: "ghost", tooltip: "Refresh projects", disabled: !!busy },
+        { type: "textInput", key: "project-filter", prefixSvg: uiIcons.search, placeholder: "Filter projects", value: filter, changeAction: "filter", grow: true },
+        { type: "button", key: "add-project", text: "", iconSvg: uiIcons["plus"], action: "showAdd", small: true, variant: "ghost", tooltip: "Add project", disabled: !!busy },
+        { type: "button", key: "refresh", text: "", iconSvg: uiIcons["refresh"], action: "refresh", small: true, variant: "ghost", tooltip: "Refresh projects", disabled: !!busy },
       ] },
       { type: "row", key: "summary", gap: 4, children: [
         { type: "label", key: "count", text: `${tree.length} ${tree.length === 1 ? "project" : "projects"}`, size: "xs", color: "muted", grow: true },
-        ...(proj?.isGit && proj.hasCommits !== false ? [{ type: "button", key: "new-task", text: "New task", icon: "git-branch", action: "newTask", small: true, variant: "ghost", tooltip: `Create a worktree in ${proj.name}`, disabled: !!busy } as UiNode] : []),
+        ...(proj?.isGit && proj.hasCommits !== false ? [{ type: "button", key: "new-task", text: "New task", iconSvg: uiIcons["git-branch"], action: "newTask", small: true, variant: "ghost", tooltip: `Create a worktree in ${proj.name}`, disabled: !!busy } as UiNode] : []),
       ] },
     ];
     if (error) children.push({ type: "status", key: "err", text: error, level: "error" });
     if (notice) children.push({ type: "status", key: "notice", text: notice, level: "warn" });
     if (busy) children.push({ type: "progress", key: "busy", indeterminate: true, label: busy });
     if (!visibleRows.length) children.push({ type: "label", key: "empty", text: filter.trim() ? "No matching projects or tasks." : "Add a project to get started.", size: "sm", color: "muted", padding: 8 });
-    children.push({ type: "tree", key: "tree", appearance: "projects", rows: visibleRows, selectAction: "selectWorkspace", expandAction: "toggleExpanded", grow: true });
+    children.push({ type: "tree", key: "tree", rowHeight: 42, rowGap: 0, iconSize: 18, rows: visibleRows, selectAction: "selectWorkspace", expandAction: "toggleExpanded", grow: true });
     if (proj && proj.isGit && proj.hasCommits !== false) {
       if (taskFormFor === proj.id) {
         children.push({ type: "modal", key: "task-form", title: "New Git task", closeAction: "cancelTask", children: [
@@ -108,14 +111,14 @@ const mod: AppModule = {
       }
     }
     if (addForm) children.push({ type: "modal", key: "add-modal", title: "Add project", closeAction: "hideAdd", children: [
-      { type: "button", key: "add-local", text: "Choose local folder…", icon: "folder", action: "addLocal", disabled: !!busy },
+      { type: "button", key: "add-local", text: "Choose local folder…", iconSvg: uiIcons["folder"], action: "addLocal", disabled: !!busy },
       { type: "label", key: "path-label", text: "Or enter a local folder path", size: "sm", color: "muted" },
       { type: "row", key: "manual", gap: 4, children: [
         { type: "textInput", key: "local-path", placeholder: "/path/to/project", submitAction: "addLocalPath", grow: true },
         { type: "button", key: "add-path", text: "Add", action: "addLocalPath", disabled: !!busy },
       ] },
       { type: "divider", key: "separator" },
-      { type: "button", key: "add-ssh", text: "Connect over SSH…", icon: "terminal", action: "showSsh", disabled: !!busy },
+      { type: "button", key: "add-ssh", text: "Connect over SSH…", iconSvg: uiIcons["terminal"], action: "showSsh", disabled: !!busy },
       ...(error ? [{ type: "status", key: "add-error", text: error, level: "error" } as UiNode] : []),
     ] });
     if (sshForm) {

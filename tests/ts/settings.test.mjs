@@ -35,23 +35,24 @@ test("Settings discovers live contributions, routes edits, closes and removes in
   let active = true;
   const emitted = [], stopped = [];
   const state = { sections: [{ key: "general", title: "Example preferences", fields: [{ key: "enabled", type: "toggle", label: "Enabled", value: true }] }], error: null };
-  const ctx = { moduleId: "settings", host: { modules: { list: async () => [{ id: "example", active: active ? {} : null }] } }, state: { get: () => state, watch: (key) => () => stopped.push(key) }, events: { on() {}, emit: (topic, payload) => emitted.push({ topic, payload }) }, ui: { invalidate() {} } };
+  const ctx = { moduleId: "settings", host: { modules: { list: async () => [{ id: "example", active: active ? {} : null }] }, plugins: { list: async () => ({ plugins: [], root: null, rootOverride: null }) } }, state: { get: () => state, watch: (key) => () => stopped.push(key) }, events: { on() {}, emit: (topic, payload) => emitted.push({ topic, payload }) }, ui: { invalidate() {} } };
   await mod.activate(ctx);
   assert.equal(mod.render(ctx).key, "settings-closed");
   await mod.methods.open(ctx);
   const tree = mod.render(ctx);
   assert.equal(tree.type, "modal");
-  assert.ok(walk(tree).some((n) => n.type === "appearanceControl"));
+  // The first module-contributed category opens by default.
+  assert.ok(walk(tree).some((n) => n.type === "toggle"));
   assert.ok(walk(tree).some(n => n.type === "choice" && n.text === "Example preferences"));
   mod.onEvent(ctx, { action: "selectCategory", value: JSON.stringify(["example", "general"]) });
   const toggle = walk(mod.render(ctx)).find((n) => n.type === "toggle");
-  assert.ok(!walk(mod.render(ctx)).some(n => n.type === "appearanceControl"));
+  assert.ok(!walk(mod.render(ctx)).some(n => n.key === "plugins-hint"));
   assert.equal(mod.snapshot().selectedCategory, JSON.stringify(["example", "general"]));
   mod.onEvent(ctx, { action: "change", key: toggle.key, value: false });
   assert.deepEqual(emitted, [{ topic: "settings.change", payload: { module: "example", section: "general", key: "enabled", value: false } }]);
   active = false; await mod.methods.open(ctx);
   assert.ok(!walk(mod.render(ctx)).some((n) => n.type === "toggle"));
-  assert.ok(walk(mod.render(ctx)).some(n => n.type === "appearanceControl"));
+  assert.ok(walk(mod.render(ctx)).some(n => n.key === "plugins-hint"));
   assert.deepEqual(stopped, ["example.settings"]);
   mod.onEvent(ctx, { action: "close" });
   assert.equal(mod.render(ctx).key, "settings-closed");
@@ -68,11 +69,11 @@ test("modules can publish multiple independent categories with identical section
     'two.settings': { sections: [{ key: 'general', title: 'Two general', fields: [{ key: 'value', label: 'Two value', type: 'toggle', value: false }] }] },
   };
   const emitted = [];
-  const ctx = { moduleId: 'settings', host: { modules: { list: async () => [{ id: 'one', active: {} }, { id: 'two', active: {} }] } },
+  const ctx = { moduleId: 'settings', host: { modules: { list: async () => [{ id: 'one', active: {} }, { id: 'two', active: {} }] }, plugins: { list: async () => ({ plugins: [], root: null, rootOverride: null }) } },
     state: { get: key => values[key], watch: () => () => {} }, events: { on() {}, emit: (topic, payload) => emitted.push({ topic, payload }) }, ui: { invalidate() {} } };
   await mod.activate(ctx);
   await mod.methods.open(ctx, { module: 'two', section: 'general' });
-  assert.deepEqual(walk(mod.render(ctx)).filter(n => n.type === 'choice').map(n => n.text), ['Appearance', 'One general', 'One advanced', 'Two general']);
+  assert.deepEqual(walk(mod.render(ctx)).filter(n => n.type === 'choice').map(n => n.text), ['Plugins', 'One general', 'One advanced', 'Two general']);
   const toggle = walk(mod.render(ctx)).find(n => n.type === 'toggle');
   assert.equal(toggle.label, 'Two value');
   mod.onEvent(ctx, { action: 'change', key: toggle.key, value: true });
@@ -80,6 +81,6 @@ test("modules can publish multiple independent categories with identical section
   mod.onEvent(ctx, { action: 'selectCategory', value: JSON.stringify(['one', 'advanced']) });
   assert.equal(walk(mod.render(ctx)).find(n => n.type === 'toggle').label, 'Advanced value');
   delete values['one.settings'];
-  assert.ok(walk(mod.render(ctx)).some(n => n.type === 'appearanceControl'));
+  assert.equal(walk(mod.render(ctx)).find(n => n.type === 'toggle').label, 'Two value');
   mod.deactivate();
 });

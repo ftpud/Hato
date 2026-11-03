@@ -2821,6 +2821,7 @@ dependencies = [
  "image",
  "libc",
  "log",
+ "notify",
  "parking_lot",
  "portable-pty",
  "rand 0.8.8",

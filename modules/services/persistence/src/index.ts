@@ -4,14 +4,22 @@
 import type { AppModule, Handle, Json, ModuleContext } from "../../../../sdk/types";
 import m001 from "../migrations/001_init.sql";
 import m002 from "../migrations/002_indexes.sql";
+import m003 from "../migrations/003_scoped_settings.sql";
 
 const MIGRATIONS: { version: number; name: string; sql: string }[] = [
   { version: 1, name: "001_init", sql: m001 },
   { version: 2, name: "002_indexes", sql: m002 },
+  { version: 3, name: "003_scoped_settings", sql: m003 },
 ];
 
 let db: Handle | null = null;
 let ready: Promise<void> | null = null;
+let settingsWrite: Promise<any> = Promise.resolve();
+function serializeSetting<T>(write: () => Promise<T>): Promise<T> {
+  const next = settingsWrite.catch(() => {}).then(write);
+  settingsWrite = next;
+  return next;
+}
 const now = () => new Date().toISOString();
 
 async function migrate(ctx: ModuleContext) {
@@ -42,6 +50,10 @@ function str(v: any, name: string, max = 4096): string {
   if (typeof v !== "string" || v.length === 0 || v.length > max) throw new Error(`invalid ${name}`);
   return v;
 }
+function scopeName(v: any): string {
+  if (v === "user" || (typeof v === "string" && /^(machine|workspace):[A-Za-z0-9:._@-]{1,200}$/.test(v))) return v;
+  throw new Error(`invalid settings scope ${JSON.stringify(v)}`);
+}
 function optStr(v: any): string | null { return typeof v === "string" ? v : null; }
 const parse = (s: any, d: any) => { try { return s ? JSON.parse(s) : d; } catch { return d; } };
 
@@ -67,6 +79,38 @@ const mod: AppModule = {
     // ---- settings
     "settings.get": async (ctx, a) => { const r = await q(ctx, "SELECT value_json FROM settings WHERE key = ?", [str(a.key, "key")]); return r.length ? parse(r[0].value_json, null) : null; },
     "settings.set": async (ctx, a) => { await x(ctx, "INSERT INTO settings(key, value_json) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json", [str(a.key, "key"), JSON.stringify(a.value ?? null)]); return null; },
+
+    // ---- scoped settings (user / machine:<id> / workspace:<id>) with revisions
+    "scoped.get": async (ctx, a) => {
+      const r = await q(ctx, "SELECT value_json, rev, updated_at FROM scoped_settings WHERE scope = ? AND key = ?", [scopeName(a.scope), str(a.key, "key")]);
+      return r.length ? { value: parse(r[0].value_json, null), rev: r[0].rev, updatedAt: r[0].updated_at } : null;
+    },
+    /** Write a value. With `expectedRev`, fails with "ECONFLICT" if someone else wrote since.
+     *  With `rev` (sync only), stores that exact revision when it is newer than the local one. */
+    "scoped.set": (ctx, a) => serializeSetting(async () => {
+      const scope = scopeName(a.scope), key = str(a.key, "key");
+      for (const name of ["rev", "expectedRev"]) {
+        if (a[name] !== undefined && (!Number.isSafeInteger(a[name]) || a[name] < (name === "rev" ? 1 : 0))) throw new Error(`invalid ${name}`);
+      }
+      const cur = (await q(ctx, "SELECT rev FROM scoped_settings WHERE scope = ? AND key = ?", [scope, key]))[0]?.rev ?? 0;
+      if (a.expectedRev !== undefined && a.expectedRev !== null && a.expectedRev !== cur) throw new Error(`ECONFLICT: ${scope}/${key} is at revision ${cur}, not ${a.expectedRev}`);
+      let rev = cur + 1;
+      if (typeof a.rev === "number") { if (a.rev <= cur) return { rev: cur, applied: false }; rev = a.rev; }
+      await x(ctx, "INSERT INTO scoped_settings(scope, key, value_json, rev, updated_at) VALUES(?,?,?,?,?) ON CONFLICT(scope, key) DO UPDATE SET value_json = excluded.value_json, rev = excluded.rev, updated_at = excluded.updated_at",
+        [scope, key, JSON.stringify(a.value ?? null), rev, now()]);
+      ctx.events.emit("persistence.settingChanged", { scope, key, rev });
+      return { rev, applied: true };
+    }),
+    "scoped.list": async (ctx, a) => (await q(ctx, "SELECT key, value_json, rev, updated_at FROM scoped_settings WHERE scope = ? ORDER BY key", [scopeName(a.scope)]))
+      .map((r: any) => ({ key: r.key, value: parse(r.value_json, null), rev: r.rev, updatedAt: r.updated_at })),
+    /** First value found in `scopes` order (most specific first). */
+    "scoped.resolve": async (ctx, a) => {
+      for (const scope of Array.isArray(a.scopes) ? a.scopes : []) {
+        const r = await q(ctx, "SELECT value_json, rev FROM scoped_settings WHERE scope = ? AND key = ?", [scopeName(scope), str(a.key, "key")]);
+        if (r.length) return { value: parse(r[0].value_json, null), rev: r[0].rev, scope };
+      }
+      return null;
+    },
 
     // ---- ssh profiles (metadata only; never key material)
     "ssh.upsert": async (ctx, a) => {

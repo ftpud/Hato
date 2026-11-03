@@ -155,3 +155,5 @@ COMPATIBILITY.md (adapter/account incompatibility, not exercised end-to-end).
   build grant (fixed executable, entry inside `modules/`, output only to stdout).
 * GUI visuals were verified via logs/render trees only (no screen-recording permission in this session);
   all behavior was verified through the same render/event paths headlessly.
+
+Plugin authoring and runtime APIs: [docs/PLUGINS.md](docs/PLUGINS.md).

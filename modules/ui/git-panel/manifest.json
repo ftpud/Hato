@@ -1,11 +1,30 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "id": "git-panel",
   "kind": "ui",
   "entry": "src/index.ts",
   "moduleApiVersion": 1,
-  "dependencies": ["git", "workspace", "persistence"],
+  "dependencies": [
+    "git",
+    "workspace",
+    "persistence"
+  ],
   "capabilities": [],
   "stateVersion": 1,
-  "description": "Lists modified Git files; click opens a diff, double click opens the file."
+  "description": "Lists modified Git files; click opens a diff, double click opens the file.",
+  "contributes": {
+    "panels": [
+      {
+        "id": "git",
+        "title": "Git changes",
+        "defaultHidden": true,
+        "dockBelow": "files",
+        "activity": {
+          "side": "right",
+          "order": 30,
+          "icon": "git"
+        }
+      }
+    ]
+  }
 }

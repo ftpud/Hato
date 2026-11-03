@@ -2,14 +2,25 @@
 // Every panel lives in exactly one place: a column stack, the bottom dock, floating, a detached
 // OS window, or hidden. Bars (top/bottom) hold an ordered list of items.
 
-export const PANELS: Record<string, { slot: string; title: string; defaultHidden?: boolean; /** When shown from hidden, stack below this panel if it is docked in a column. */ dockBelow?: string }> = {
-  projects: { slot: "projects-panel", title: "Projects" },
-  files: { slot: "explorer", title: "Files" },
-  viewer: { slot: "viewer", title: "Source viewer" },
-  ai: { slot: "ai", title: "AI / ACP" },
-  terminal: { slot: "terminal-panel", title: "Terminal" },
-  git: { slot: "git-panel", title: "Git changes", defaultHidden: true, dockBelow: "files" },
-};
+export interface PanelDef {
+  slot: string; title: string; defaultHidden?: boolean;
+  /** When shown from hidden, stack below this panel if it is docked in a column. */ dockBelow?: string;
+  /** Default placement. */ dock?: "bottom" | { column: number; size?: number };
+  /** Cannot be toggled from activity sidebars. */ pinned?: boolean;
+}
+
+/** Panels contributed by enabled plugins (manifest `contributes.panels`). Replaced by setPanels. */
+export const PANELS: Record<string, PanelDef> = {};
+
+/** Replace the panel registry in place (other modules hold a reference to PANELS). */
+export function setPanels(defs: Record<string, PanelDef>) {
+  for (const k of Object.keys(PANELS)) delete PANELS[k];
+  Object.assign(PANELS, defs);
+}
+
+export function panelSignature(): string {
+  return JSON.stringify(Object.keys(PANELS).sort().map((id) => [id, PANELS[id].slot]));
+}
 
 export const BAR_ITEMS: Record<string, { title: string; grow?: boolean }> = {
   title: { title: "App title" },
@@ -41,19 +52,29 @@ export interface Layout {
 }
 
 export function defaultLayout(): Layout {
+  const ids = Object.keys(PANELS).filter((id) => !PANELS[id].defaultHidden);
+  const byColumn = new Map<number, { panels: string[]; size: number }>();
+  const bottom: string[] = [];
+  for (const id of ids) {
+    const dock = PANELS[id].dock;
+    if (dock === "bottom") { bottom.push(id); continue; }
+    const col = dock && Number.isFinite(dock.column) ? dock.column : 1000;
+    const entry = byColumn.get(col) || { panels: [], size: 0 };
+    entry.panels.push(id);
+    entry.size = Math.max(entry.size, dock && typeof dock === "object" && dock.size ? dock.size : 0.25);
+    byColumn.set(col, entry);
+  }
+  const columns = [...byColumn.entries()].sort((a, b) => a[0] - b[0]).map(([, c]) => ({ panels: c.panels, size: c.size, sizes: c.panels.map(() => 1 / c.panels.length) }));
+  const total = columns.reduce((a, c) => a + c.size, 0) || 1;
+  columns.forEach((c) => (c.size = c.size / total));
   return {
     v: 1,
     settingsButton: true,
     showPanelControls: true,
     showLeftSidebar: true,
     showRightSidebar: true,
-    columns: [
-      { panels: ["projects"], size: 0.17, sizes: [1] },
-      { panels: ["files"], size: 0.17, sizes: [1] },
-      { panels: ["viewer"], size: 0.38, sizes: [1] },
-      { panels: ["ai"], size: 0.28, sizes: [1] },
-    ],
-    bottom: { panels: ["terminal"], sizes: [1], collapsed: false },
+    columns,
+    bottom: { panels: bottom, sizes: bottom.map(() => 1 / bottom.length), collapsed: false },
     mainSizes: [0.68, 0.32],
     collapsed: {},
     floating: {},
@@ -65,6 +86,9 @@ export function defaultLayout(): Layout {
     },
   };
 }
+
+/** Where a hidden or re-docked panel goes by default. */
+export function homeOf(id: string): "bottom" | "column" { return PANELS[id]?.dock === "bottom" ? "bottom" : "column"; }
 
 const clone = <T>(x: T): T => JSON.parse(JSON.stringify(x));
 const norm = (xs: number[]) => {
@@ -190,7 +214,13 @@ export function repair(raw: any): Layout {
   for (const k of Object.keys(l.floating)) if (!keep(k)) delete l.floating[k];
   for (const k of Object.keys(l.detached || {})) if (!keep(k)) delete l.detached[k];
   l.hidden = (Array.isArray(l.hidden) ? l.hidden : []).filter(keep);
-  for (const id of Object.keys(PANELS)) if (!seen.has(id)) { if (PANELS[id].defaultHidden) l.hidden.push(id); else if (l.columns.length) l.columns[l.columns.length - 1].panels.push(id), l.columns[l.columns.length - 1].sizes = norm([...l.columns[l.columns.length - 1].sizes, 0.3]); else l.columns.push({ panels: [id], size: 1, sizes: [1] }); }
+  for (const id of Object.keys(PANELS)) {
+    if (seen.has(id)) continue;
+    if (PANELS[id].defaultHidden) l.hidden.push(id);
+    else if (homeOf(id) === "bottom") { l.bottom.panels.push(id); l.bottom.sizes = norm([...l.bottom.sizes, 1 / l.bottom.panels.length]); }
+    else if (l.columns.length) { const last = l.columns[l.columns.length - 1]; last.panels.push(id); last.sizes = norm([...last.sizes, 0.3]); }
+    else l.columns.push({ panels: [id], size: 1, sizes: [1] });
+  }
   const ms = Array.isArray(l.mainSizes) && l.mainSizes.length === 2 ? norm(l.mainSizes) : d.mainSizes;
   l.mainSizes = [ms[0], ms[1]];
   for (const b of ["top", "bottom"] as BarId[]) {

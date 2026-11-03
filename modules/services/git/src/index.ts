@@ -1,6 +1,7 @@
 // git: read-only working-tree status and per-file patches for a workspace, run on the
 // workspace's own machine with argv (never shell strings). Patches are handed to the UI as
 // native document handles rendered by the `diff` node.
+import { fileWatch } from "../../../../sdk/file-watch";
 import type { AppModule, ModuleContext, RunResult } from "../../../../sdk/types";
 import { targetFor, withWorkspace, workspaceGrant, type WorkspaceDescriptor } from "../../../../sdk/runtime";
 import { parseNumstat, parseStatus } from "./status";
@@ -39,9 +40,50 @@ function cleanRel(p: any): string {
   return s;
 }
 
+let watchers: ReturnType<typeof fileWatch>[] = [];
+let selection = 0, selectedId: string | null = null;
+let changeTimer: ReturnType<typeof setTimeout> | null = null;
+function changed(ctx: ModuleContext, workspaceId: string) {
+  if (changeTimer) clearTimeout(changeTimer);
+  changeTimer = setTimeout(() => ctx.events.emit("git.changed", { workspaceId }), 200);
+}
+async function watchSelected(ctx: ModuleContext) {
+  const id = (ctx.state.get("workspace.selected") as any)?.id || null;
+  if (id === selectedId) return;
+  selectedId = id;
+  const mine = ++selection;
+  const previous = watchers; watchers = [];
+  await Promise.all(previous.map(w => w.stop()));
+  if (!id || mine !== selection) return;
+  try {
+    const d = await desc(ctx, id);
+    // A linked checkout stores its index/HEAD outside the workspace. Watch both its private
+    // metadata and shared refs, using independently scoped grants for those directories.
+    const roots = await git(ctx, d, ["rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir"]);
+    if (mine !== selection || roots.code !== 0) return;
+    for (const root of new Set(roots.stdout.trim().split("\n").filter(Boolean))) {
+      const watcher = fileWatch(ctx, workspaceId => changed(ctx, workspaceId));
+      watchers.push(watcher);
+      await watcher.select(d, root);
+      if (mine !== selection) { await watcher.stop(); return; }
+    }
+  } catch (e) { ctx.log.warn(`Git watcher: ${String(e)}`); }
+}
 const mod: AppModule = {
   id: "git",
   moduleApiVersion: 1,
+  async activate(ctx) {
+    ctx.events.on("files.changed", (event: any) => {
+      if (event.workspaceId === selectedId) changed(ctx, event.workspaceId);
+    });
+    ctx.state.watch("workspace.selected", () => { void watchSelected(ctx); });
+    await watchSelected(ctx);
+  },
+  async deactivate() {
+    selection++;
+    if (changeTimer) clearTimeout(changeTimer);
+    await Promise.all(watchers.map(w => w.stop())); watchers = [];
+  },
   methods: {
     /** Changed files in the working tree (staged, unstaged and untracked) with line counts. */
     async status(ctx, a) {

@@ -1,3 +1,4 @@
+pub mod daemon_link;
 pub mod db;
 pub mod fs;
 pub mod net;
@@ -7,3 +8,5 @@ mod pty_output;
 pub mod sftp;
 pub mod ssh;
 pub mod streams;
+
+pub mod watch;

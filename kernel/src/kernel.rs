@@ -10,6 +10,7 @@ use crate::handles::HandleRegistry;
 use crate::host::ssh::SshTable;
 use crate::host::streams::ByteStream;
 use crate::js::worker::{self, WorkerMsg};
+use crate::plugins::{self, Discovered, PluginRegistry, Source};
 use crate::router::{GenStatus, Generation, Reply, Router};
 use crate::util::{random_hex, sha256_hex, HResult, HostError};
 use parking_lot::Mutex;
@@ -51,9 +52,13 @@ pub struct Kernel {
     pub state: StateStore,
     pub ui: UiBridge,
     pub ssh: SshTable,
+    /// Remote runtimes started on machines (by machine id).
+    pub daemons: crate::host::daemon_link::DaemonTable,
     pub subs: Mutex<HashMap<String, StreamSub>>,
     render: Mutex<HashMap<String, RenderSched>>,
     pub manifests: Mutex<HashMap<String, (Manifest, PathBuf)>>,
+    sources: Mutex<HashMap<String, Source>>,
+    pub plugins: PluginRegistry,
     /// Serializes module lifecycle operations per module id.
     swap_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
     staged: Mutex<HashMap<String, Arc<Generation>>>,
@@ -63,6 +68,8 @@ pub struct Kernel {
 }
 
 pub const KERNEL_TOPIC_MODULES: &str = "kernel.modules.changed";
+/// Router error for slots of disabled plugins.
+pub const DISABLED: &str = "plugin is disabled";
 
 impl Kernel {
     pub fn new(cfg: Config, ui: UiBridge) -> anyhow::Result<Arc<Kernel>> {
@@ -70,6 +77,7 @@ impl Kernel {
         let audit = Audit::new(cfg.logs_dir().join("audit.log"));
         let logs = ModuleLogs::open(cfg.logs_dir().join("modules.log"));
         let artifacts = ArtifactStore::open(cfg.artifacts_dir(), cfg.registry_file());
+        let plugin_registry = cfg.plugin_registry_file();
         let k = Arc::new_cyclic(|me| Kernel {
             approvals: Approvals::new(ui.clone()),
             cfg,
@@ -83,9 +91,12 @@ impl Kernel {
             state: StateStore::default(),
             ui,
             ssh: SshTable::default(),
+            daemons: Default::default(),
             subs: Mutex::new(HashMap::new()),
             render: Mutex::new(HashMap::new()),
             manifests: Mutex::new(HashMap::new()),
+            sources: Mutex::new(HashMap::new()),
+            plugins: PluginRegistry::open(plugin_registry),
             swap_locks: Mutex::new(HashMap::new()),
             staged: Mutex::new(HashMap::new()),
             shutting_down: AtomicBool::new(false),
@@ -111,32 +122,78 @@ impl Kernel {
     // ---- discovery -----------------------------------------------------------------------------
 
     pub fn discover(&self) -> Vec<(Manifest, PathBuf)> {
-        let mut out = Vec::new();
-        for sub in ["services", "ui"] {
-            let d = self.cfg.modules_dir().join(sub);
-            let Ok(rd) = std::fs::read_dir(&d) else { continue };
+        self.discover_all().into_iter().map(|d| (d.manifest, d.dir)).collect()
+    }
+
+    /// Every plugin on disk: built-ins from the repository, then user plugins from the data dir.
+    /// A user plugin may not reuse a built-in id (replace built-ins through contracts instead).
+    pub fn discover_all(&self) -> Vec<Discovered> {
+        let mut out: Vec<Discovered> = Vec::new();
+        let sorted_dirs = |d: &std::path::Path| -> Vec<PathBuf> {
+            let Ok(rd) = std::fs::read_dir(d) else { return Vec::new() };
             let mut dirs: Vec<PathBuf> = rd.filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.join("manifest.json").is_file()).collect();
             dirs.sort();
-            for dir in dirs {
-                match std::fs::read_to_string(dir.join("manifest.json")).map_err(anyhow::Error::from).and_then(|s| Ok(serde_json::from_str::<Manifest>(&s)?)) {
+            dirs
+        };
+        for sub in ["services", "ui"] {
+            for dir in sorted_dirs(&self.cfg.modules_dir().join(sub)) {
+                match plugins::read_manifest(&dir) {
                     Ok(m) => {
-                        if let Err(e) = m.validate() {
-                            log::error!("invalid manifest {}: {e}", dir.display());
-                            continue;
-                        }
                         let expected_kind = if sub == "services" { "service" } else { "ui" };
-                        let dir_name = dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                        if m.kind != expected_kind || m.id != dir_name {
-                            log::error!("manifest {} id/kind does not match its location", dir.display());
+                        if m.kind != expected_kind {
+                            log::error!("manifest {} kind does not match its location", dir.display());
                             continue;
                         }
-                        out.push((m, dir));
+                        out.push(Discovered { manifest: m, dir, source: Source::Builtin });
                     }
-                    Err(e) => log::error!("cannot read manifest in {}: {e}", dir.display()),
+                    Err(e) => log::error!("invalid manifest in {}: {e}", dir.display()),
                 }
             }
         }
+        for dir in sorted_dirs(&self.cfg.plugins_dir()) {
+            match plugins::read_manifest(&dir) {
+                Ok(m) if out.iter().any(|d| d.manifest.id == m.id) => {
+                    log::error!("user plugin {} reuses the id of a built-in plugin; skipped", dir.display());
+                }
+                Ok(m) => out.push(Discovered { manifest: m, dir, source: Source::User }),
+                Err(e) => log::error!("invalid user plugin in {}: {e}", dir.display()),
+            }
+        }
         out
+    }
+
+    pub fn plugin_source(&self, id: &str) -> Option<Source> { self.sources.lock().get(id).copied() }
+
+    pub fn plugin_enabled(&self, id: &str) -> bool {
+        match self.plugin_source(id) {
+            Some(s) => self.plugins.is_enabled(id, s),
+            None => id.starts_with("__"),
+        }
+    }
+
+    /// Plugin that renders the window: the explicit override if it is enabled and provides the
+    /// root contract, else the first enabled provider (user plugins before built-ins).
+    pub fn root_module(&self) -> Option<String> {
+        let manifests = self.manifests.lock();
+        let provides_root = |id: &str| manifests.get(id).map(|(m, _)| m.provides.iter().any(|c| c == plugins::ROOT_CONTRACT)).unwrap_or(false);
+        if let Some(id) = self.plugins.root_override() {
+            if provides_root(&id) && self.plugin_enabled(&id) {
+                return Some(id);
+            }
+        }
+        let mut candidates: Vec<(u8, String)> = manifests.keys().filter(|id| provides_root(id) && self.plugin_enabled(id))
+            .map(|id| (if self.plugin_source(id) == Some(Source::User) { 0 } else { 1 }, id.clone())).collect();
+        candidates.sort();
+        candidates.into_iter().next().map(|(_, id)| id)
+    }
+
+    /// Enabled plugins implementing a contract.
+    pub fn providers(&self, contract: &str) -> Vec<String> {
+        let mut v: Vec<String> = self.manifests.lock().iter()
+            .filter(|(_, (m, _))| m.provides.iter().any(|c| c == contract))
+            .map(|(id, _)| id.clone()).filter(|id| self.plugin_enabled(id)).collect();
+        v.sort();
+        v
     }
 
     /// Static manifest for a module, read fresh from its source directory (never from JS).
@@ -187,50 +244,89 @@ impl Kernel {
     /// falling back to last-known-good on failure. Activations run in parallel; calls queue
     /// until the target module finished `activate()`.
     pub fn boot(&self) {
-        let discovered = self.discover();
-        {
-            let mut m = self.manifests.lock();
-            for (man, dir) in &discovered {
-                m.insert(man.id.clone(), (man.clone(), dir.clone()));
-            }
-        }
-        for (m, _) in &discovered {
-            self.router.ensure_slot(&m.id);
-            let _ = self.router.fence(&m.id);
+        let discovered = self.register_discovered();
+        let enabled: Vec<&Discovered> = discovered.iter().filter(|d| self.plugins.is_enabled(&d.manifest.id, d.source)).collect();
+        for d in &enabled {
+            let _ = self.router.fence(&d.manifest.id);
         }
         // Services first, then UI.
-        let mut order: Vec<&(Manifest, PathBuf)> = discovered.iter().collect();
-        order.sort_by_key(|(m, _)| if m.kind == "service" { 0 } else { 1 });
+        let mut order = enabled;
+        order.sort_by_key(|d| if d.manifest.kind == "service" { 0 } else { 1 });
         let mut waits = Vec::new();
-        for (m, _) in order {
+        for d in order {
+            if let Some(rx) = self.load_plugin(d) {
+                waits.push(rx);
+            }
+        }
+        for rx in waits {
+            let _ = rx.recv_timeout(Duration::from_secs(35));
+        }
+        self.ui.send(UiMsg::ModulesChanged);
+        self.rerender_all_ui();
+    }
+
+    /// Record every discovered plugin (manifest, source, router slot). Disabled plugins get a slot
+    /// whose error explains why calls fail.
+    fn register_discovered(&self) -> Vec<Discovered> {
+        let discovered = self.discover_all();
+        {
+            let mut m = self.manifests.lock();
+            let mut s = self.sources.lock();
+            for d in &discovered {
+                m.insert(d.manifest.id.clone(), (d.manifest.clone(), d.dir.clone()));
+                s.insert(d.manifest.id.clone(), d.source);
+            }
+        }
+        for d in &discovered {
+            self.router.ensure_slot(&d.manifest.id);
+            if !self.plugins.is_enabled(&d.manifest.id, d.source) && self.router.active(&d.manifest.id).is_none() {
+                self.router.set_last_error(&d.manifest.id, Some(DISABLED.into()));
+            }
+        }
+        discovered
+    }
+
+    fn seed_path(&self, d: &Discovered) -> Option<PathBuf> {
+        match d.source {
+            Source::Builtin => Some(self.cfg.seed_dir().join(format!("{}.mjs", d.manifest.id))),
+            Source::User => plugins::user_seed(&d.dir, &d.manifest),
+        }
+    }
+
+    /// Load one (fenced) plugin at its active version, importing a changed seed first. Activation
+    /// runs asynchronously; the returned channel fires when it finished.
+    fn load_plugin(&self, d: &Discovered) -> Option<crossbeam_channel::Receiver<()>> {
+        let m = &d.manifest;
+        {
             let id = m.id.clone();
-            let seed = self.cfg.seed_dir().join(format!("{id}.mjs"));
-            // Import a changed seed build (developer `npm run modules:build`).
-            if let Ok(code) = std::fs::read_to_string(&seed) {
+            // Import a changed seed build (developer `npm run modules:build`, or a user plugin's dist).
+            if let Some(code) = self.seed_path(d).and_then(|p| std::fs::read_to_string(p).ok()) {
                 let hash = sha256_hex(code.as_bytes());
                 let mut store = self.artifacts.lock();
                 let known = store.has_hash(&id, &hash);
                 let rec_seed = store.get(&id).and_then(|r| r.seed_hash.clone());
                 if rec_seed.as_deref() != Some(hash.as_str()) && !self.cfg.safe_mode {
                     let v = match known {
-                        Some(v) => v,
-                        None => match store.put(&id, &code, m, "seed") {
-                            Ok(vr) => vr.version,
+                        Some(v) => Some(v),
+                        None => match store.put(&id, &code, m, if d.source == Source::User { "plugin" } else { "seed" }) {
+                            Ok(vr) => Some(vr.version),
                             Err(e) => {
                                 log::error!("cannot store seed artifact for {id}: {e}");
-                                continue;
+                                None
                             }
                         },
                     };
-                    let rec = store.record(&id);
-                    if let Some(a) = rec.active {
-                        if a != v {
-                            rec.previous.push(a);
+                    if let Some(v) = v {
+                        let rec = store.record(&id);
+                        if let Some(a) = rec.active {
+                            if a != v {
+                                rec.previous.push(a);
+                            }
                         }
+                        rec.active = Some(v);
+                        rec.seed_hash = Some(hash);
+                        store.save();
                     }
-                    rec.active = Some(v);
-                    rec.seed_hash = Some(hash);
-                    store.save();
                 }
             }
             let (active, lkg) = {
@@ -271,12 +367,13 @@ impl Kernel {
                 }
             }
             let Some(gen) = loaded else {
-                let msg = if errors.is_empty() { format!("{id}: no artifact (run `npm run modules:build`)") } else { errors.join("; ") };
+                let hint = if d.source == Source::User { "build the plugin into dist/<id>.mjs" } else { "run `npm run modules:build`" };
+                let msg = if errors.is_empty() { format!("{id}: no artifact ({hint})") } else { errors.join("; ") };
                 log::error!("module {id} unavailable: {msg}");
                 self.router.set_last_error(&id, Some(msg.clone()));
                 self.boot_report.lock().push(json!({"module": id, "ok": false, "error": msg}));
                 self.router.cutover_and_unfence(&id, None);
-                continue;
+                return None;
             };
             if !errors.is_empty() {
                 self.router.set_last_error(&id, Some(format!("fell back to last-known-good: {}", errors.join("; "))));
@@ -291,17 +388,257 @@ impl Kernel {
                 k.finish_boot_activation(&g2, r);
                 let _ = tx.send(());
             })), Duration::from_secs(30));
-            waits.push(rx);
+            Some(rx)
         }
-        for rx in waits {
-            let _ = rx.recv_timeout(Duration::from_secs(35));
+    }
+
+    // ---- plugin lifecycle -------------------------------------------------------------------------
+
+    /// Enable and load a plugin. New capabilities/call targets need a trusted approval first.
+    pub fn enable_plugin(&self, requester: Option<&Generation>, id: &str) -> HResult<Value> {
+        let d = self.discover_all().into_iter().find(|d| d.manifest.id == id).ok_or_else(|| HostError::not_found(format!("no plugin '{id}'")))?;
+        let escalation = self.grants.escalation(&d.manifest);
+        if !escalation.is_empty() {
+            let req = requester.ok_or_else(|| HostError::denied("enabling this plugin needs an approval requester"))?;
+            let detail = format!(
+                "Plugin: {} ({id}, {} {})\nSource folder: {}\n\nIt asks for:\n  {}\n\n`call:<module>` entries let it call that module's methods. Only allow plugins you trust.",
+                d.manifest.display_name(), d.source.name(), d.manifest.kind, d.dir.display(), escalation.join("\n  "));
+            self.require_approval(req, "plugins.enable", &format!("Enable plugin '{}' with these permissions?", d.manifest.display_name()), &detail)?;
+            self.grants.record_approval(id, &escalation);
         }
-        self.ui.send(UiMsg::ModulesChanged);
-        for (m, _) in &discovered {
-            if m.kind == "ui" {
-                self.request_render(&m.id);
+        self.plugins.set_enabled(id, true);
+        let discovered = self.register_discovered();
+        let Some(d) = discovered.iter().find(|x| x.manifest.id == id) else { return Err(HostError::not_found(id.to_string())) };
+        if self.router.active(id).is_none() {
+            self.router.set_last_error(id, None);
+            self.router.fence(id)?;
+            if let Some(rx) = self.load_plugin(d) {
+                let _ = rx.recv_timeout(Duration::from_secs(35));
             }
         }
+        self.after_plugin_change(id);
+        if let Some(r) = requester {
+            self.audit.record(&r.module_id, r.gen_id, "plugins.enable", id, "ok", None);
+        }
+        let err = self.router.last_error(id);
+        Ok(json!({"id": id, "enabled": true, "active": self.router.active(id).is_some(), "error": err}))
+    }
+
+    /// Plugins that would lose something they need if `id` were disabled.
+    pub fn dependents_of(&self, id: &str) -> Vec<String> {
+        let manifests: Vec<Manifest> = self.manifests.lock().values().map(|(m, _)| m.clone()).collect();
+        let target = manifests.iter().find(|m| m.id == id).cloned();
+        let mut out = Vec::new();
+        for m in &manifests {
+            if m.id == id || !self.plugin_enabled(&m.id) {
+                continue;
+            }
+            let needs_module = m.dependencies.iter().any(|d| d == id);
+            let needs_contract = target.as_ref().map(|t| m.requires.iter().any(|c| {
+                t.provides.contains(c) && self.providers(c).iter().all(|p| p == id)
+            })).unwrap_or(false);
+            if needs_module || needs_contract {
+                out.push(m.id.clone());
+            }
+        }
+        out.sort();
+        out
+    }
+
+    /// Disable and unload a plugin (and, with `cascade`, everything that depends on it).
+    /// Kernel-owned resources the plugin held are released.
+    pub fn disable_plugin(&self, requester: Option<&Generation>, id: &str, cascade: bool) -> HResult<Value> {
+        if self.plugin_source(id).is_none() {
+            return Err(HostError::not_found(format!("no plugin '{id}'")));
+        }
+        if requester.map(|r| r.module_id == id).unwrap_or(false) {
+            return Err(HostError::invalid("a plugin cannot disable itself"));
+        }
+        let mut dependents: Vec<String> = Vec::new();
+        let mut work = vec![id.to_string()];
+        while let Some(cur) = work.pop() {
+            for d in self.dependents_of(&cur) {
+                if d != id && !dependents.contains(&d) {
+                    dependents.push(d.clone());
+                    work.push(d);
+                }
+            }
+        }
+        if !dependents.is_empty() && !cascade {
+            return Err(HostError::new("EDEPENDENTS", format!("plugins that depend on '{id}': {}", dependents.join(", "))));
+        }
+        let mut disabled = vec![];
+        for dep in dependents.iter().chain(std::iter::once(&id.to_string())) {
+            self.plugins.set_enabled(dep, false);
+            self.unload_plugin(dep);
+            disabled.push(dep.clone());
+        }
+        self.after_plugin_change(id);
+        if let Some(r) = requester {
+            self.audit.record(&r.module_id, r.gen_id, "plugins.disable", &disabled.join(","), "ok", None);
+        }
+        Ok(json!({"disabled": disabled}))
+    }
+
+    fn unload_plugin(&self, id: &str) {
+        let lock = self.swap_lock(id);
+        let _g = lock.lock();
+        if self.router.fence(id).is_err() {
+            return;
+        }
+        let old = self.router.clear_active(id);
+        self.router.set_last_error(id, Some(DISABLED.into()));
+        self.router.cutover_and_unfence(id, None);
+        if let Some(o) = old {
+            o.set_status(GenStatus::Draining);
+            self.release_stream_subs_of_gen(o.gen_id);
+            let _ = self.router.invoke_gen_blocking(&o, json!({"kind": "deactivate"}), Duration::from_secs(3));
+            self.router.retire(&o);
+        }
+        for h in self.handles.handles_owned_by(id) {
+            self.release_handle(&h);
+        }
+    }
+
+    /// Kernel-side release of one resource (PTYs and processes are terminated).
+    fn release_handle(&self, h: &str) {
+        match self.handles.kind_of(h) {
+            Some("pty") => {
+                if let Some(p) = self.handles.get_kernel::<crate::host::pty::PtySession>(h, "pty") {
+                    p.kill();
+                }
+            }
+            Some("process") => {
+                if let Some(p) = self.handles.get_kernel::<crate::host::process::ProcessRes>(h, "process") {
+                    p.close_stdin();
+                    let _ = p.terminate(Some("TERM"));
+                }
+            }
+            _ => {}
+        }
+        let _ = self.handles.remove(h, "*kernel*");
+    }
+
+    fn after_plugin_change(&self, id: &str) {
+        self.router.emit(KERNEL_TOPIC_MODULES, &json!({"module": id, "plugins": true}));
+        self.ui.send(UiMsg::ModulesChanged);
+        self.rerender_all_ui();
+    }
+
+    pub fn set_root_plugin(&self, id: Option<&str>) -> HResult<()> {
+        if let Some(id) = id {
+            let provides = self.manifests.lock().get(id).map(|(m, _)| m.provides.iter().any(|c| c == plugins::ROOT_CONTRACT)).unwrap_or(false);
+            if !provides {
+                return Err(HostError::invalid(format!("'{id}' does not provide {}", plugins::ROOT_CONTRACT)));
+            }
+        }
+        self.plugins.set_root(id.map(str::to_owned));
+        self.after_plugin_change(id.unwrap_or(""));
+        Ok(())
+    }
+
+    /// Copy a plugin folder into the kernel-owned plugins dir (disabled until enabled).
+    pub fn install_plugin(&self, requester: &Generation, from: &str) -> HResult<Value> {
+        let src = std::fs::canonicalize(from).map_err(|e| HostError::new("ENOENT", format!("{from}: {e}")))?;
+        let m = plugins::read_manifest(&src).map_err(|e| HostError::invalid(format!("not a plugin folder: {e}")))?;
+        if self.plugin_source(&m.id) == Some(Source::Builtin) {
+            return Err(HostError::invalid(format!("'{}' is a built-in plugin id", m.id)));
+        }
+        let dst = self.cfg.plugins_dir().join(&m.id);
+        let replacing = dst.exists();
+        let detail = format!(
+            "Install plugin '{}' ({}, {})\nfrom {}\n{}\nRequested capabilities: {}\nCalls: {}\n\nInstalled plugins stay disabled until you enable them.",
+            m.display_name(), m.id, m.kind, src.display(),
+            if replacing { "This REPLACES the installed copy." } else { "" },
+            if m.capabilities.is_empty() { "none".into() } else { m.capabilities.join(", ") },
+            if m.calls.is_empty() { "none".into() } else { m.calls.join(", ") });
+        self.require_approval(requester, "plugins.install", &format!("Install plugin '{}'?", m.display_name()), &detail)?;
+        if replacing {
+            self.unload_plugin(&m.id);
+            std::fs::remove_dir_all(&dst)?;
+        }
+        plugins::copy_plugin_dir(&src, &dst)?;
+        self.register_discovered();
+        let id = m.id.clone();
+        let was_enabled = self.plugin_enabled(&id);
+        if replacing && was_enabled {
+            // Reload the new copy.
+            if let Some(d) = self.discover_all().into_iter().find(|d| d.manifest.id == id) {
+                if self.router.fence(&id).is_ok() {
+                    if let Some(rx) = self.load_plugin(&d) {
+                        let _ = rx.recv_timeout(Duration::from_secs(35));
+                    }
+                }
+            }
+        }
+        self.audit.record(&requester.module_id, requester.gen_id, "plugins.install", &id, "ok", Some("native-user"));
+        self.after_plugin_change(&id);
+        Ok(json!({"id": id, "enabled": was_enabled, "dir": dst.to_string_lossy()}))
+    }
+
+    pub fn uninstall_plugin(&self, requester: &Generation, id: &str) -> HResult<Value> {
+        if self.plugin_source(id) != Some(Source::User) {
+            return Err(HostError::invalid("only user-installed plugins can be uninstalled; disable built-ins instead"));
+        }
+        let dependents = self.dependents_of(id);
+        let detail = format!("Remove plugin '{id}' and its approvals.{}", if dependents.is_empty() { String::new() } else { format!("\nThese plugins will be disabled: {}", dependents.join(", ")) });
+        self.require_approval(requester, "plugins.uninstall", &format!("Uninstall plugin '{id}'?"), &detail)?;
+        for dep in &dependents {
+            self.plugins.set_enabled(dep, false);
+            self.unload_plugin(dep);
+        }
+        self.unload_plugin(id);
+        let dir = self.cfg.plugins_dir().join(id);
+        if dir.starts_with(self.cfg.plugins_dir()) && dir.exists() {
+            std::fs::remove_dir_all(&dir)?;
+        }
+        self.plugins.forget(id);
+        self.grants.forget(id);
+        self.manifests.lock().remove(id);
+        self.sources.lock().remove(id);
+        self.router.set_last_error(id, Some("uninstalled".into()));
+        self.audit.record(&requester.module_id, requester.gen_id, "plugins.uninstall", id, "ok", Some("native-user"));
+        self.after_plugin_change(id);
+        Ok(json!({"id": id, "uninstalled": true, "disabled": dependents}))
+    }
+
+    /// Pick up plugin folders added or edited on disk; enabled new plugins are loaded.
+    pub fn rescan_plugins(&self) -> Value {
+        let before: Vec<String> = self.sources.lock().keys().cloned().collect();
+        let discovered = self.register_discovered();
+        let mut added = Vec::new();
+        for d in &discovered {
+            if before.contains(&d.manifest.id) {
+                continue;
+            }
+            added.push(d.manifest.id.clone());
+            if self.plugins.is_enabled(&d.manifest.id, d.source) && self.router.active(&d.manifest.id).is_none() && self.router.fence(&d.manifest.id).is_ok() {
+                if let Some(rx) = self.load_plugin(d) {
+                    let _ = rx.recv_timeout(Duration::from_secs(35));
+                }
+            }
+        }
+        self.after_plugin_change("");
+        json!({"added": added})
+    }
+
+    pub fn plugins_json(&self) -> Value {
+        let manifests: Vec<(Manifest, PathBuf)> = self.manifests.lock().values().cloned().collect();
+        let mut out: Vec<Value> = manifests.iter().map(|(m, dir)| {
+            let id = &m.id;
+            let source = self.plugin_source(id).unwrap_or(Source::Builtin);
+            let active = self.router.active(id);
+            json!({
+                "id": id, "name": m.display_name(), "kind": m.kind, "description": m.description, "source": source.name(),
+                "enabled": self.plugins.is_enabled(id, source), "active": active.as_ref().map(|g| g.label()),
+                "provides": m.provides, "requires": m.requires, "dependencies": m.dependencies, "runsOn": m.placement(),
+                "capabilities": m.capabilities, "calls": m.calls, "pendingApprovals": self.grants.escalation(m),
+                "contributes": m.contributes, "lastError": self.router.last_error(id),
+                "dir": if source == Source::User { Value::String(dir.to_string_lossy().into_owned()) } else { Value::Null },
+            })
+        }).collect();
+        out.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
+        json!({"plugins": out, "root": self.root_module(), "rootOverride": self.plugins.root_override()})
     }
 
     fn finish_boot_activation(&self, gen: &Arc<Generation>, r: HResult<Value>) {
@@ -622,7 +959,7 @@ impl Kernel {
 
     pub fn rerender_all_ui(&self) {
         let ids: Vec<String> = self.manifests.lock().values().filter(|(m, _)| m.kind == "ui").map(|(m, _)| m.id.clone()).collect();
-        for id in ids {
+        for id in ids.into_iter().filter(|id| self.router.active(id).is_some() || self.router.is_fenced(id)) {
             self.request_render(&id);
         }
     }

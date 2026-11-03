@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "id": "workspace-layout",
   "kind": "ui",
   "entry": "src/index.ts",
@@ -12,5 +12,8 @@
   ],
   "capabilities": [],
   "stateVersion": 1,
-  "description": "Main window composition."
+  "description": "Main window composition.",
+  "provides": [
+    "shell.root"
+  ]
 }

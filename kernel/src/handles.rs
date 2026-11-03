@@ -106,6 +106,10 @@ impl HandleRegistry {
         v
     }
 
+    pub fn handles_owned_by(&self, owner: &str) -> Vec<String> {
+        self.map.lock().iter().filter(|(_, e)| e.owner == owner).map(|(h, _)| h.clone()).collect()
+    }
+
     pub fn handles_of_kind(&self, kind: &str) -> Vec<String> {
         self.map.lock().iter().filter(|(_, e)| e.kind == kind).map(|(h, _)| h.clone()).collect()
     }

@@ -221,7 +221,8 @@ test('chat renders at most 20 cards, pages older messages and returns to latest 
   const ctx = { state: { get: () => ({ id: 'ws' }), watch() {} }, events: { on() {}, emit() {} }, ui: { invalidate() {} }, modules: { async call(_, method, args) { calls.push({ method, args }); if (method === 'view') return view; throw new Error(method); } } };
   await mod.activate(ctx);
   const walk = n => [n, ...(n.children || []).flatMap(walk)];
-  const transcript = () => walk(mod.render()).find(n => n.type === 'chatTranscript');
+  const transcriptNode = () => walk(mod.render()).find(n => n.type === 'transcript');
+  const transcript = () => { const t = transcriptNode(); return { ...t, messages: t.children.filter(c => c.key !== '__older') }; };
   assert.equal(calls[0].args.messageLimit, 20);
   assert.equal(transcript().messages.length, 20);
   assert.equal(transcript().messages[0].key, 'm181');
@@ -248,7 +249,8 @@ test('scroll history grows in batches, stays bounded to 60 and collapses to 20 a
   const ctx = { state: { get: () => ({ id: 'ws' }), watch() {} }, events: { on() {}, emit() {} }, ui: { invalidate() {} }, modules: { async call(_, method) { if (method === 'view') return view; throw new Error(method); } } };
   await mod.activate(ctx);
   const walk = n => [n, ...(n.children || []).flatMap(walk)];
-  const transcript = () => walk(mod.render()).find(n => n.type === 'chatTranscript');
+  const transcriptNode = () => walk(mod.render()).find(n => n.type === 'transcript');
+  const transcript = () => { const t = transcriptNode(); return { ...t, messages: t.children.filter(c => c.key !== '__older') }; };
   const event = action => mod.onEvent(ctx, { action, inputs: {} });
   await event('revealOlder');
   assert.equal(transcript().messages.length, 40);

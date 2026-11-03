@@ -74,7 +74,7 @@ impl Config {
             None => None,
         };
         let cfg = Config { repo_root, data_dir, initial_root, safe_mode, dev_watch, headless, headless_script };
-        for d in ["sqlite", "artifacts", "logs", "ssh", "shared"] {
+        for d in ["sqlite", "artifacts", "logs", "ssh", "shared", "plugins"] {
             std::fs::create_dir_all(cfg.data_dir.join(d))?;
         }
         Ok(cfg)
@@ -89,6 +89,10 @@ impl Config {
     pub fn sqlite_dir(&self) -> PathBuf { self.data_dir.join("sqlite") }
     pub fn ssh_dir(&self) -> PathBuf { self.data_dir.join("ssh") }
     pub fn shared_dir(&self) -> PathBuf { self.data_dir.join("shared") }
+    /// User-installed plugins: `<data>/plugins/<id>/manifest.json` (+ prebuilt artifact).
+    pub fn plugins_dir(&self) -> PathBuf { self.data_dir.join("plugins") }
+    /// Kernel-owned plugin preferences (enabled state, root override).
+    pub fn plugin_registry_file(&self) -> PathBuf { self.data_dir.join("plugins.json") }
 
     /// esbuild native binary used by the `build` scope grant (developer tool, not needed at runtime).
     pub fn build_tool(&self) -> Option<PathBuf> {
@@ -108,6 +112,8 @@ impl Config {
             self.ssh_dir(),
             self.registry_file(),
             self.approved_grants_file(),
+            self.plugins_dir(),
+            self.plugin_registry_file(),
         ]
     }
 }

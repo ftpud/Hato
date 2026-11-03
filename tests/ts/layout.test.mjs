@@ -8,6 +8,8 @@ import { fileURLToPath } from "node:url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const r = await esbuild.build({ entryPoints: [path.join(root, "modules/ui/workspace-layout/src/model.ts")], bundle: true, format: "esm", platform: "neutral", write: false });
 const M = await import("data:text/javascript;base64," + Buffer.from(r.outputFiles[0].text).toString("base64"));
+import { builtinPanelDefs, pluginsHost } from "./plugin-fixture.mjs";
+M.setPanels(builtinPanelDefs());
 const all = (l) => [...l.columns.flatMap((c) => c.panels), ...l.bottom.panels, ...Object.keys(l.floating), ...Object.keys(l.detached), ...l.hidden].sort();
 const sum = (xs) => xs.reduce((a, b) => a + b, 0);
 
@@ -37,7 +39,7 @@ test("float / detach / hide / back to bottom keep a single location", () => {
   l = M.moveTo(l, "ai", "detached");
   assert.ok(l.detached.ai && !l.floating.ai);
   l = M.moveTo(l, "ai", "hidden");
-  assert.deepEqual(l.hidden, ["git", "ai"]); // git is hidden by default
+  assert.deepEqual(l.hidden, ["git", "remote", "ai"]); // git and remote are hidden by default
   l = M.moveTo(l, "ai", "bottom");
   assert.deepEqual(l.bottom.panels, ["terminal", "ai"]);
   assert.deepEqual(all(l), Object.keys(M.PANELS).sort());
@@ -88,7 +90,7 @@ test("collapsed panes use full-name restore buttons without reserving columns or
   const layout = M.defaultLayout();
   layout.collapsed = { projects: true, files: true, viewer: true };
   const originalSizes = layout.columns.map(c => c.size);
-  const ctx = { modules: { async call(_, method) { if (method === 'list') return []; if (method === 'updates') return { modules: [], available: [], errors: [] }; } }, state: { get() { return null; }, set() {}, watch() {} }, events: { on() {} }, ui: { invalidate() {} }, log: { warn() {} } };
+  const ctx = { host: { plugins: pluginsHost() }, modules: { async call(_, method) { if (method === 'list') return []; if (method === 'updates') return { modules: [], available: [], errors: [] }; } }, state: { get() { return null; }, set() {}, watch() {} }, events: { on() { return () => {}; } }, ui: { invalidate() {} }, log: { warn() {} } };
   const walk = node => [node, ...(node.children || []).flatMap(walk)];
   await mod.activate(ctx, { layout });
   let nodes = walk(mod.render());
@@ -112,7 +114,7 @@ test("collapsed panes use full-name restore buttons without reserving columns or
 test('new default-hidden panels stay hidden in older saved layouts instead of docking', () => {
   const saved = { v: 1, columns: [{ panels: ['projects', 'files', 'viewer', 'ai'], size: 1, sizes: [0.25, 0.25, 0.25, 0.25] }], bottom: { panels: ['terminal'], sizes: [1], collapsed: false }, hidden: [] };
   const l = M.repair(saved);
-  assert.deepEqual(l.hidden, ['git']);
+  assert.deepEqual(l.hidden, ['git', 'remote']);
   assert.ok(!l.columns.some((c) => c.panels.includes('git')));
   const shown = M.dropPanel(l, 'git', 'files', 'bottom');
   assert.deepEqual(shown.columns[0].panels.slice(0, 3), ['projects', 'files', 'git']);

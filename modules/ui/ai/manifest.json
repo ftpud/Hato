@@ -1,11 +1,33 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "id": "ai",
   "kind": "ui",
   "entry": "src/index.ts",
   "moduleApiVersion": 1,
-  "dependencies": ["ai-sessions","acp","workspace"],
+  "dependencies": [
+    "ai-sessions",
+    "acp",
+    "workspace"
+  ],
   "capabilities": [],
   "stateVersion": 1,
-  "description": "ACP agent chat panel."
+  "description": "ACP agent chat panel.",
+  "contributes": {
+    "panels": [
+      {
+        "id": "ai",
+        "title": "AI / ACP",
+        "dock": {
+          "column": 3,
+          "size": 0.28
+        },
+        "activity": {
+          "side": "left",
+          "order": 10,
+          "icon": "ai",
+          "title": "AI Chat"
+        }
+      }
+    ]
+  }
 }

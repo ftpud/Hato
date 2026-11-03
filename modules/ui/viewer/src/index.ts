@@ -8,6 +8,7 @@ import { exportSettings } from "../../../../sdk/settings";
 import { errMsg } from "../../../../sdk/runtime";
 import { resolveWorkspaceLink } from "../../../../sdk/links";
 import { diffTabPath } from "../../../../sdk/git";
+import { uiIcons } from "../../../../sdk/ui-icons";
 
 let showMetadata = true;
 let renderMarkdown = true;
@@ -103,7 +104,7 @@ const mod: AppModule = {
     const kids: UiNode[] = [
       { type: "row", key: "tabs", gap: 3, wrap: true, children: tabs.map((path): UiNode => ({ type: "row", key: path, gap: 0, style: fileTabStyle(ws?.view?.previewPath === path), children: [
         { type: "button", key: "select", iconSvg: fileIcons.file, text: tabLabel(path), tooltip: diffTabPath(path) ? `Changes in ${diffTabPath(path)}` : path, action: `select:${path}`, small: true, variant: "ghost", style: tabButtonStyle(ws?.view?.previewPath === path) },
-        { type: "button", key: "close", text: "", icon: "x", tooltip: `Close ${path}`, action: `close:${path}`, small: true, variant: "ghost", style: tabButtonStyle(ws?.view?.previewPath === path) },
+        { type: "button", key: "close", text: "", iconSvg: uiIcons["x"], tooltip: `Close ${path}`, action: `close:${path}`, small: true, variant: "ghost", style: tabButtonStyle(ws?.view?.previewPath === path) },
       ] })) },
 
     ];

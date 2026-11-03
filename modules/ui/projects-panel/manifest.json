@@ -1,11 +1,34 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "id": "projects-panel",
   "kind": "ui",
   "entry": "src/index.ts",
   "moduleApiVersion": 1,
-  "dependencies": ["projects","workspace","git-tasks"],
-  "capabilities": ["ui.dialog"],
+  "dependencies": [
+    "projects",
+    "workspace",
+    "git-tasks"
+  ],
+  "capabilities": [
+    "ui.dialog"
+  ],
   "stateVersion": 1,
-  "description": "Left tree of projects and tasks."
+  "description": "Left tree of projects and tasks.",
+  "contributes": {
+    "panels": [
+      {
+        "id": "projects",
+        "title": "Projects",
+        "dock": {
+          "column": 0,
+          "size": 0.17
+        },
+        "activity": {
+          "side": "right",
+          "order": 10,
+          "icon": "projects"
+        }
+      }
+    ]
+  }
 }

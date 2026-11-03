@@ -37,9 +37,19 @@ export interface SpawnRequest {
   envRemove?: string[];
   /** Remote only: run through the user's login shell so PATH from profile files applies. */
   loginShell?: boolean;
+  /** Keep the process in the target machine's daemon (needs `remote.daemon` and `daemon.ensure`):
+   *  it survives disconnects/app restarts, output is buffered while detached, and spawning the
+   *  same key again reattaches instead of starting a new process. Keys are per module. */
+  persist?: { key: string };
 }
 export interface RunResult { code: number | null; signal: number | null; stdout: string; stderr: string; truncated: boolean }
-export interface PtyRequest { target?: ExecutionTarget; cwd: string; shell?: string; columns: number; rows: number; env?: Record<string, string> }
+export interface PtyRequest { target?: ExecutionTarget; cwd: string; shell?: string; columns: number; rows: number; env?: Record<string, string>;
+  /** Keep the shell in the target machine's daemon; opening the same key again reattaches. */ persist?: { key: string } }
+
+export type DaemonTarget = { kind: "local" } | { kind: "ssh"; connection: Handle };
+export interface DaemonStatus { machineId: string; bin: string; dir: string; status: any }
+export interface DaemonResources { ptys: { key: string; cwd: string; exit: string | null; attached: boolean; title?: string }[];
+  procs: { key: string; pid: number; command: string; exit: any; attached: boolean; bufferedBytes: number; droppedBytes: number }[] }
 
 export interface SshProfileSpec { profileId: string; host: string; port: number; user: string; identityFile?: string | null }
 export interface SqlStatement { sql: string; params?: Json[] }
@@ -57,6 +67,9 @@ export interface NativeHost {
     release(grant: Handle): Promise<void>;
   };
   fs: {
+    /** OS notifications as a process stream: stdout lines `ready` / `changed`.
+     * Release with resources.release. SSH requires remote.daemon and a matching daemon build. */
+    watch(grant: Handle, path: string, opts?: { recursive?: boolean }): Promise<{ handle: Handle }>;
     stat(grant: Handle, path: string): Promise<FileStat>;
     list(grant: Handle, path: string): Promise<{ path: string; entries: FileEntry[] }>;
     realpath(grant: Handle, path: string): Promise<string>;
@@ -120,6 +133,36 @@ export interface NativeHost {
     discard(stageId: string): Promise<void>;
     sourceInfo(): Promise<{ repoRoot: string; modulesRoot: string; buildTool: string | null }>;
   };
+  /** Remote runtime (`hato daemon`): holds terminals/processes across disconnects and hosts
+   *  plugins on the workspace machine. Requires the `remote.daemon` capability. */
+  daemon: {
+    /** Install (upload) if needed and start the daemon on that machine. */
+    ensure(target?: DaemonTarget): Promise<DaemonStatus>;
+    status(target?: DaemonTarget): Promise<DaemonStatus | null>;
+    /** hello/status, resources.list (own resources only), pty.kill/proc.kill/proc.closeStdin {key},
+     *  plugins.list, plugins.push {id} (locally installed + approved plugins only),
+     *  plugins.enable/disable {id}, modules.call {target, method, args}. */
+    request<T = any>(target: DaemonTarget | undefined, op: string, args?: object): Promise<T>;
+  };
+  /** Every module is a plugin. Listing is open to all modules; mutations need `plugins.manage`
+   *  and anything that widens trust (install, new capabilities/calls) needs a native approval. */
+  plugins: {
+    list(): Promise<{ plugins: PluginInfo[]; root: string | null; rootOverride: string | null }>;
+    /** Enabled plugins implementing a contract (e.g. "shell.root"). */
+    providers(contract: string): Promise<string[]>;
+    /** Enabled plugins that would break if `id` were disabled. */
+    dependents(id: string): Promise<string[]>;
+    enable(id: string): Promise<{ id: string; enabled: true; active: boolean; error: string | null }>;
+    /** Fails with EDEPENDENTS unless `cascade` (then dependents are disabled too). */
+    disable(id: string, opts?: { cascade?: boolean }): Promise<{ disabled: string[] }>;
+    /** Pin the window root to a plugin providing "shell.root" (null = automatic). */
+    setRoot(id: string | null): Promise<void>;
+    /** Copy a local plugin folder into the kernel-owned plugins dir (stays disabled). */
+    install(path: string): Promise<{ id: string; enabled: boolean; dir: string }>;
+    uninstall(id: string): Promise<{ id: string; uninstalled: true; disabled: string[] }>;
+    /** Pick up plugin folders added on disk. */
+    rescan(): Promise<{ added: string[] }>;
+  };
   approvals: {
     request(req: { title: string; detail?: string; options?: ApprovalOption[]; operation?: string; timeoutMs?: number }): Promise<{ optionId: string | null; expired?: boolean }>;
   };
@@ -143,6 +186,24 @@ export interface ModuleStatus {
   versions: { version: number; sha256: string; created: string; origin: string; status: string; note: string }[];
   generations: { generation: number; version: number; status: string; inflight: number; errors: number; subscriptions: number }[];
   lastError: string | null; fenced: boolean;
+}
+
+export interface PluginInfo {
+  id: string; name: string; kind: "service" | "ui"; description: string;
+  /** "builtin" ships with the app; "user" lives in the data dir's plugins folder. */
+  source: "builtin" | "user";
+  enabled: boolean;
+  /** Active generation label, e.g. "ai@0003". */
+  active: string | null;
+  provides: string[]; requires: string[]; dependencies: string[];
+  runsOn: "ui" | "workspace" | "either";
+  capabilities: string[]; calls: string[];
+  /** Capabilities / `call:<id>` entries enabling would have to approve. */
+  pendingApprovals: string[];
+  /** Module-interpreted contributions from the manifest (see sdk/plugins.ts). */
+  contributes: any;
+  lastError: string | null;
+  dir: string | null;
 }
 
 export interface ModuleContext {
@@ -183,11 +244,29 @@ export interface UiEvent {
   inputs: Record<string, string>;
 }
 
-/** Semantic token names resolve against the module-defined theme. */
-export interface UiStyle { background?: string; color?: string; borderColor?: string; borderBottom?: number; radius?: number; fontWeight?: number }
-interface Base { style?: UiStyle; surface?: "sidebar" | "sidebar-button" | "chat" | "chat-toolbar" | "chat-composer" | "chat-settings" | "chat-picker" | "chat-control" | "chat-primary" | "chat-result"; key: string; grow?: boolean; width?: number; height?: number; /** Cap height (px); the node may shrink below it and should scroll. */ maxHeight?: number; minWidth?: number; padding?: number; gap?: number; bg?: "panel" | "muted" | "accent" | "none"; border?: boolean; borderSide?: "left" | "right"; tooltip?: string }
+/** A color: `#rrggbb` / `#rrggbbaa`, a token from the theme node's palette (e.g. "surface"), or a
+ *  semantic name: background, text, muted, raised, panel, border, primary, primaryText, selection,
+ *  hover, danger, warning, success, info, transparent. */
+export type UiColor = string;
+/** Generic presentation applied by the renderer to boxes, buttons and text. Numbers are px and are
+ *  clamped natively. There are no named presets: share styles as data (see sdk/chat-style.ts). */
+export interface UiStyle {
+  background?: UiColor; color?: UiColor; borderColor?: UiColor;
+  borderWidth?: number; borderTop?: number; borderBottom?: number; borderLeft?: number; borderRight?: number;
+  radius?: number; padding?: number; paddingX?: number; paddingY?: number; gap?: number;
+  width?: number; height?: number; minHeight?: number; maxWidth?: number; fullWidth?: boolean; noShrink?: boolean; wrap?: boolean;
+  fontWeight?: number; fontSize?: number; lineHeight?: number; font?: "ui" | "mono"; italic?: boolean;
+  justify?: "start" | "center" | "end" | "between"; shadow?: "sm" | "md" | "lg"; opacity?: number;
+  /** "relative" makes this box the positioning parent of popovers inside it. */ position?: "relative";
+}
+interface Base { style?: UiStyle; key: string; grow?: boolean; width?: number; height?: number; /** Cap height (px); the node may shrink below it and should scroll. */ maxHeight?: number; minWidth?: number; padding?: number; gap?: number; bg?: "panel" | "muted" | "accent" | "none"; border?: boolean; borderSide?: "left" | "right"; tooltip?: string }
 export type UiNode =
-  | (Base & { type: "theme"; palette: { light: Record<string, string>; dark: Record<string, string> }; typography?: { fontFamily?: string; monoFontFamily?: string; fontSize?: number; monoFontSize?: number; fontWeight?: number } })
+  /** Window-wide theme (normally from the root plugin). `mode` is the appearance preference;
+   *  `terminal` overrides the 16 ANSI colors; `chrome` configures kernel chrome such as toasts. */
+  | (Base & { type: "theme"; palette: { light: Record<string, string>; dark: Record<string, string> }; mode?: "light" | "dark";
+      typography?: { fontFamily?: string; monoFontFamily?: string; fontSize?: number; monoFontSize?: number; fontWeight?: number };
+      terminal?: { light?: string[]; dark?: string[] };
+      chrome?: { toasts?: { position?: "bottom-right" | "bottom-left" | "top-right" | "top-left"; width?: number; durationMs?: number; max?: number } } })
   | (Base & { type: "titleBar"; children: UiNode[] })
   | (Base & { type: "row" | "column"; children: UiNode[]; align?: "start" | "center" | "end" | "stretch"; wrap?: boolean; scroll?: boolean })
   | (Base & { type: "split"; direction: "horizontal" | "vertical"; sizes?: number[]; children: UiNode[];
@@ -205,34 +284,39 @@ export type UiNode =
   | (Base & { type: "scroll"; children: UiNode[] })
   | (Base & { type: "tabs"; tabs: { key: string; label: string }[]; active: string; action: string; children: UiNode[] })
   | (Base & { type: "slot"; module: string })
-  | (Base & { type: "label"; text: string; size?: "xs" | "sm" | "md" | "lg"; weight?: "normal" | "medium" | "semibold" | "bold"; color?: "default" | "muted" | "accent" | "danger" | "success" | "warning"; mono?: boolean; wrap?: boolean })
-  | (Base & { type: "button"; text: string; /** Inline SVG drawing, bundled and hot reloaded with the module. Takes precedence over icon. */ iconSvg?: string; iconSize?: number; icon?: "terminal" | "git-branch" | "files" | "paperclip" | "send" | "sliders-horizontal" | "message-square" | "graduation-cap" | "plus" | "x" | "refresh" | "collapse" | "locate" | "folder"; action: string; variant?: "primary" | "ghost" | "danger" | "default"; disabled?: boolean; value?: Json; small?: boolean })
-  | (Base & { type: "textInput"; placeholder?: string; value?: string; submitAction?: string; changeAction?: string; search?: boolean; pasteImageAction?: string; secret?: boolean; multiline?: boolean; rows?: number; disabled?: boolean })
-  | (Base & { type: "select"; options: { value: string; label: string; disabled?: boolean }[]; value: string | null; action: string; disabled?: boolean; placeholder?: string; label?: string; disabledReason?: string })
-  | (Base & { type: "usageMeter"; value: number | null })
-  | (Base & { type: "choice"; text: string; description?: string; selected?: boolean; action: string; value: string })
-  | (Base & { type: "switch"; label: string; checked: boolean; action: string; disabled?: boolean })
-  | (Base & { type: "popover"; children: UiNode[]; closeAction: string })
+  | (Base & { type: "label"; text: string; size?: "xs" | "sm" | "md" | "lg"; weight?: "normal" | "medium" | "semibold" | "bold"; /** "default" or any UiColor. */ color?: UiColor; mono?: boolean; wrap?: boolean; /** Let the user select and copy the text. */ selectable?: boolean })
+  | (Base & { type: "button"; text: string; /** Inline SVG drawing, bundled and hot reloaded with the module (see sdk/ui-icons.ts). */ iconSvg?: string; iconSize?: number; action: string; variant?: "primary" | "ghost" | "danger" | "default"; disabled?: boolean; value?: Json; small?: boolean;
+      /** Copied to the clipboard natively on click (no round trip); `action` may be "". */ copyText?: string })
+  | (Base & { type: "textInput"; placeholder?: string; value?: string; submitAction?: string; changeAction?: string; /** Inline SVG shown before single-line input text. */ prefixSvg?: string; pasteImageAction?: string; /** Limits for pasted pictures. */ maxFiles?: number; maxBytes?: number; secret?: boolean; multiline?: boolean; rows?: number; rowHeight?: number; disabled?: boolean })
+  | (Base & { type: "select"; options: { value: string; label: string; disabled?: boolean }[]; value: string | null; action: string; disabled?: boolean; placeholder?: string; label?: string; disabledReason?: string; /** Style of the dropdown button itself (`style` styles its wrapper). */ buttonStyle?: UiStyle })
+  | (Base & { type: "choice"; text: string; description?: string; selected?: boolean; action: string; value: string; /** Glyph shown when selected (default ✓). */ mark?: string })
+  | (Base & { type: "switch"; label: string; checked: boolean; action: string; disabled?: boolean; /** Track color when on. */ accent?: UiColor })
+  | (Base & { type: "popover"; children: UiNode[]; closeAction: string; top?: number; left?: number; right?: number; /** Height as a fraction of the parent (0.1–1). */ heightFraction?: number; maxHeight?: number })
   | (Base & { type: "toggle"; label: string; checked: boolean; action: string; disabled?: boolean })
-  | (Base & { type: "tree"; appearance?: "files" | "projects"; rows: TreeRow[]; selectAction: string; expandAction: string; /** Fired with the row key on double click (after the first click's selectAction). */ activateAction?: string })
+  | (Base & { type: "tree"; rows: TreeRow[]; selectAction: string; expandAction: string; /** Fired with the row key on double click (after the first click's selectAction). */ activateAction?: string;
+      /** Fixed row height (px); omit for content height. */ rowHeight?: number; /** Indent per depth level (px). */ indent?: number; rowGap?: number; iconSize?: number })
   /** Native diff view of a unified patch (e.g. `git diff` output) held in a document handle. */
   | (Base & { type: "diff"; document: Handle | null; mode?: "split" | "unified"; header?: boolean; placeholder?: string; emptyText?: string })
-  | (Base & { type: "fileList"; entries: { key: string; name: string; kind: string; size?: number; selected?: boolean }[]; action: string })
   | (Base & { type: "status"; text: string; level?: "info" | "warn" | "error" | "success" })
   | (Base & { type: "progress"; value?: number; indeterminate?: boolean; label?: string })
-  | (Base & { type: "markdown"; document: Handle; /** Non-web link clicks fire this action with the raw href as `value`; http(s)/mailto open natively. */ linkAction?: string })
+  /** Markdown from a document handle (scrolls) or inline `text`; `inline` renders without its own scroll area. */
+  | (Base & { type: "markdown"; document?: Handle; text?: string; inline?: boolean; lineHeight?: number; /** rem */ paragraphGap?: number; /** Non-web link clicks fire this action with the raw href as `value`; http(s)/mailto open natively. */ linkAction?: string })
   | (Base & { type: "codeViewer"; document: Handle | null; placeholder?: string })
   | (Base & { type: "terminal"; pty: Handle | null; placeholder?: string })
-  | (Base & { type: "imagePicker"; action: string; disabled?: boolean })
+  /** Native picture file dialog; fires `action` with attachments (or {error}). */
+  | (Base & { type: "imagePicker"; action: string; disabled?: boolean; text?: string; iconSvg?: string; iconSize?: number; dialogTitle?: string; maxFiles?: number; maxBytes?: number })
   | (Base & { type: "image"; image: ImageAttachment })
-  | (Base & { type: "chatTranscript"; messages: ChatMessage[]; conversationId?: string; hasOlder?: boolean; loadingOlder?: boolean; historyError?: string | null; loadOlderAction?: string; bottomAction?: string; preserveScrollOnChange?: boolean; scrollReset?: number; agentLabel?: string; /** Same as markdown `linkAction`, for rendered message bodies. */ linkAction?: string })
-  | (Base & { type: "appearanceControl" })
+  /** Follow-to-bottom list with native scroll anchoring. `children` are ordinary nodes (one per
+   *  item, keyed). Scrolling near the top fires `loadOlderAction` (when `hasOlder`); reaching the
+   *  bottom fires `bottomAction`. A new `followKey` re-enters follow mode; `scrollKey` separates
+   *  scroll state (e.g. per conversation). See sdk/chat-transcript.ts. */
+  | (Base & { type: "transcript"; children: UiNode[]; scrollKey?: string; followKey?: string; hasOlder?: boolean; loadingOlder?: boolean; loadOlderAction?: string; bottomAction?: string; preserveScrollOnChange?: boolean; scrollReset?: number })
   | (Base & { type: "approvalPanel" })
   | (Base & { type: "divider" })
   | (Base & { type: "spacer" })
-  | (Base & { type: "modal"; title: string; children: UiNode[]; closeAction?: string });
+  | (Base & { type: "modal"; title: string; children: UiNode[]; closeAction?: string; /** Card width (px). */ width?: number });
 
-export interface TreeRow { /** Shows an animated activity indicator after the label. */ busy?: boolean; iconSvg?: string; iconColor?: "muted" | "accent" | "warning" | "success"; connector?: "branch" | "last"; key: string; label: string; depth: number; expandable: boolean; expanded: boolean; selected: boolean; badge?: string; detail?: string; icon?: "folder" | "git" | "remote" | "task" | "file" | "warning" | "code" | "config" | "text" | "image" | "archive" | "link" }
+export interface TreeRow { /** Shows an animated activity indicator after the label. */ busy?: boolean; iconSvg?: string; iconColor?: UiColor; connector?: "branch" | "last"; key: string; label: string; depth: number; expandable: boolean; expanded: boolean; selected: boolean; /** Shown as-is after the label. */ badge?: string; detail?: string; weight?: "medium" | "semibold" | "bold"; /** Module-side classification (not rendered). */ icon?: string }
 export interface ImageAttachment { name: string; mimeType: string; data: string }
 export interface ChatMessage { images?: ImageAttachment[]; key: string; role: "user" | "assistant" | "thought" | "tool" | "system" | "error" | "plan"; text: string; title?: string; status?: string }
 

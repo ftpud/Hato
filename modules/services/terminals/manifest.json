@@ -4,8 +4,15 @@
   "kind": "service",
   "entry": "src/index.ts",
   "moduleApiVersion": 1,
-  "dependencies": ["workspace"],
-  "capabilities": ["pty.scope","ssh.connect"],
+  "dependencies": [
+    "workspace",
+    "persistence"
+  ],
+  "capabilities": [
+    "pty.scope",
+    "ssh.connect",
+    "remote.daemon"
+  ],
   "stateVersion": 1,
   "description": "Maps (workspace, key) to persistent native PTY handles, local or over SSH."
 }

@@ -1,11 +1,28 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "id": "terminal-panel",
   "kind": "ui",
   "entry": "src/index.ts",
   "moduleApiVersion": 1,
-  "dependencies": ["terminals","workspace"],
+  "dependencies": [
+    "terminals",
+    "workspace"
+  ],
   "capabilities": [],
   "stateVersion": 1,
-  "description": "Native terminal bound to the workspace PTY."
+  "description": "Native terminal bound to the workspace PTY.",
+  "contributes": {
+    "panels": [
+      {
+        "id": "terminal",
+        "title": "Terminal",
+        "dock": "bottom",
+        "activity": {
+          "side": "left",
+          "order": 20,
+          "icon": "terminal"
+        }
+      }
+    ]
+  }
 }

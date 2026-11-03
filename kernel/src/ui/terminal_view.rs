@@ -157,7 +157,8 @@ struct Frame {
 
 impl Render for TerminalView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let palette = if cx.theme().mode.is_dark() { &PALETTE } else { &LIGHT_PALETTE };
+        let module_palette = super::theme::terminal_palette(cx);
+        let palette = match &module_palette { Some(p) => p, None if cx.theme().mode.is_dark() => &PALETTE, None => &LIGHT_PALETTE };
         let default_fg = cx.theme().foreground;
         let default_bg = cx.theme().background;
         self.session.dirty.store(false, Ordering::SeqCst);

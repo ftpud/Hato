@@ -13,19 +13,91 @@ fn palette_color(palette: &Value, name: &str) -> Option<Hsla> {
     u32::from_str_radix(text, 16).ok().map(|hex| rgb(hex).into())
 }
 
-pub fn token(cx: &App, name: &str, fallback: Hsla) -> Hsla {
-    if !cx.has_global::<ModulePalette>() { return fallback; }
-    let mode = if cx.theme().mode.is_dark() { "dark" } else { "light" };
-    palette_color(&cx.global::<ModulePalette>().0["palette"][mode], name).unwrap_or(fallback)
+/// `#rrggbb` or `#rrggbbaa`.
+pub fn hex_color(text: &str) -> Option<Hsla> {
+    let h = text.strip_prefix('#')?;
+    match h.len() {
+        6 => u32::from_str_radix(h, 16).ok().map(|hex| rgb(hex).into()),
+        8 => u32::from_str_radix(h, 16).ok().map(|hex| gpui_kit::rgba(hex).into()),
+        _ => None,
+    }
 }
 
-pub fn configure(cx: &mut App, palette: &Value, typography: &Value) {
+/// Theme colors every module can name without defining a palette entry.
+fn semantic(cx: &App, name: &str) -> Option<Hsla> {
+    let t = cx.theme();
+    Some(match name {
+        "background" => t.background,
+        "foreground" | "text" => t.foreground,
+        "muted" => t.muted_foreground,
+        "raised" => t.muted,
+        "panel" => t.title_bar,
+        "border" => t.border,
+        "primary" | "accent" => t.primary,
+        "primaryText" => t.primary_foreground,
+        "selection" => t.list_active,
+        "hover" => t.list_hover,
+        "danger" => t.danger,
+        "warning" => t.warning,
+        "success" => t.success,
+        "info" => t.info,
+        "transparent" => gpui_kit::transparent_black(),
+        _ => return None,
+    })
+}
+
+/// Resolve a module color: `#hex`, a palette token from the module theme, or a semantic name.
+pub fn color(cx: &App, spec: &str, fallback: Hsla) -> Hsla {
+    if spec.starts_with('#') {
+        return hex_color(spec).unwrap_or(fallback);
+    }
+    let alias = if spec == "accent" { "primary" } else { spec };
+    if cx.has_global::<ModulePalette>() {
+        let mode = if cx.theme().mode.is_dark() { "dark" } else { "light" };
+        if let Some(c) = palette_color(&cx.global::<ModulePalette>().0["palette"][mode], alias) {
+            return c;
+        }
+    }
+    semantic(cx, alias).unwrap_or(fallback)
+}
+
+/// Optional module-supplied 16-color terminal palette for the current mode.
+pub fn terminal_palette(cx: &App) -> Option<[u32; 16]> {
+    if !cx.has_global::<ModulePalette>() { return None; }
+    let mode = if cx.theme().mode.is_dark() { "dark" } else { "light" };
+    let arr = cx.global::<ModulePalette>().0["terminal"][mode].as_array()?.clone();
+    if arr.len() != 16 { return None; }
+    let mut out = [0u32; 16];
+    for (i, v) in arr.iter().enumerate() {
+        out[i] = u32::from_str_radix(v.as_str()?.strip_prefix('#')?, 16).ok()?;
+    }
+    Some(out)
+}
+
+/// Shell chrome preferences supplied by the root module's theme node (`chrome`).
+pub fn chrome(cx: &App) -> Value {
+    if cx.has_global::<ModulePalette>() { cx.global::<ModulePalette>().0["chrome"].clone() } else { Value::Null }
+}
+
+
+/// Apply a module theme node. `mode` ("light"/"dark") is the module's appearance preference; the
+/// kernel caches the last applied mode in `appearance` only to avoid a flash at the next start.
+pub fn configure(cx: &mut App, node: &Value, data_dir: &std::path::Path) {
+    let palette = &node["palette"];
     if !palette.is_object() { return; }
-    let config = serde_json::json!({ "palette": palette, "typography": typography });
-    if cx.has_global::<ModulePalette>() && cx.global::<ModulePalette>().0 == config { return; }
+    let config = serde_json::json!({ "palette": palette, "typography": node["typography"], "terminal": node["terminal"], "chrome": node["chrome"] });
+    let wanted_dark = match node["mode"].as_str() { Some("dark") => Some(true), Some("light") => Some(false), _ => None };
     let dark = cx.theme().mode.is_dark();
+    let same = cx.has_global::<ModulePalette>() && cx.global::<ModulePalette>().0 == config;
+    if same && wanted_dark.map(|d| d == dark).unwrap_or(true) { return; }
     cx.set_global(ModulePalette(config));
-    apply(cx, dark);
+    let next = wanted_dark.unwrap_or(dark);
+    apply(cx, next);
+    if next != dark {
+        if let Err(err) = std::fs::write(data_dir.join("appearance"), if next { "dark" } else { "light" }) {
+            log::warn!("cannot cache appearance: {err}");
+        }
+    }
 }
 
 pub fn font_weight(cx: &App) -> FontWeight {

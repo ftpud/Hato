@@ -2,6 +2,7 @@
 import type { AppModule, ModuleContext, UiNode } from "../../../../sdk/types";
 import { debounce, errMsg } from "../../../../sdk/runtime";
 import { directories, treeRows, type Entry } from "./model";
+import { uiIcons } from "../../../../sdk/ui-icons";
 let ws: any = null;
 let dirs = new Map<string, Entry[]>();
 let expanded = new Set<string>();
@@ -62,6 +63,11 @@ const mod: AppModule = {
     searchSoon = debounce(() => { void search(ctx); }, 160);
     ws = ctx.state.get("workspace.selected") || null;
     ctx.state.watch("workspace.selected", (next: any) => { const changed = ws?.id !== next?.id; ws = next; if (changed) void reset(ctx); else ctx.ui.invalidate(); });
+    ctx.events.on("files.changed", (event: any) => {
+      if (event.workspaceId !== ws?.id) return;
+      // Keep expansion, query and selection when replacing stale directory listings.
+      void reset(ctx, { expanded: [...expanded], query });
+    });
     await reset(ctx, prev?.workspaceId === ws?.id ? prev : null);
   },
   snapshot: () => ({ workspaceId: ws?.id || null, expanded: [...expanded], query }),
@@ -72,23 +78,23 @@ const mod: AppModule = {
     const count = filtering ? searching ? "Searching workspace…" : `${results?.matchCount || 0} ${(results?.matchCount || 0) === 1 ? "match" : "matches"}${results?.partial ? " · partial results" : ""}` : `${loaded} items loaded`;
     const children: UiNode[] = [
       { type: "row", key: "filter-bar", gap: 4, children: [
-        { type: "textInput", key: "file-filter", search: true, placeholder: "Filter files", value: query, changeAction: "filter", grow: true, disabled: !ws },
-        ...(query ? [{ type: "button", key: "clear", text: "", icon: "x", action: "clearFilter", small: true, variant: "ghost", tooltip: "Clear filter" } as UiNode] : []),
+        { type: "textInput", key: "file-filter", prefixSvg: uiIcons.search, placeholder: "Filter files", value: query, changeAction: "filter", grow: true, disabled: !ws },
+        ...(query ? [{ type: "button", key: "clear", text: "", iconSvg: uiIcons["x"], action: "clearFilter", small: true, variant: "ghost", tooltip: "Clear filter" } as UiNode] : []),
       ] },
     ];
     if (!ws) children.push({ type: "label", key: "none", text: "Select a project or task.", color: "muted", padding: 8 });
     else {
       children.push({ type: "row", key: "tools", gap: 4, children: [
         { type: "label", key: "count", text: count, size: "xs", color: "muted", grow: true, tooltip: filtering ? "Search covers workspace paths, excluding .git object storage. Very large workspaces show partial results." : "Folders load as you expand them; filtering searches the workspace." },
-        { type: "button", key: "reveal", text: "", icon: "locate", action: "reveal", small: true, variant: "ghost", disabled: !ws.view?.previewPath, tooltip: "Reveal selected file" },
-        { type: "button", key: "collapse", text: "", icon: "collapse", action: "collapseAll", small: true, variant: "ghost", tooltip: "Collapse all folders" },
-        { type: "button", key: "refresh", text: "", icon: "refresh", action: "refresh", small: true, variant: "ghost", tooltip: "Refresh files" },
+        { type: "button", key: "reveal", text: "", iconSvg: uiIcons["locate"], action: "reveal", small: true, variant: "ghost", disabled: !ws.view?.previewPath, tooltip: "Reveal selected file" },
+        { type: "button", key: "collapse", text: "", iconSvg: uiIcons["collapse"], action: "collapseAll", small: true, variant: "ghost", tooltip: "Collapse all folders" },
+        { type: "button", key: "refresh", text: "", iconSvg: uiIcons["refresh"], action: "refresh", small: true, variant: "ghost", tooltip: "Refresh files" },
       ] });
       if (error) children.push({ type: "status", key: "err", text: error, level: "error" });
       if (pending.size && !dirs.has(".")) children.push({ type: "progress", key: "loading", indeterminate: true });
       if (filtering && !searching && !rows.length && !error) children.push({ type: "label", key: "empty", text: "No matching files.", color: "muted", padding: 12 });
       if (!filtering && !pending.size && !loaded) children.push({ type: "label", key: "empty", text: "This folder is empty.", color: "muted", padding: 12 });
-      children.push({ type: "tree", key: "files", appearance: "files", rows: rows.map((row) => pending.has(row.key) ? { ...row, badge: "…" } : row), selectAction: "open", expandAction: "expand", grow: true });
+      children.push({ type: "tree", key: "files", rowHeight: 21, rowGap: 0, rows: rows.map((row) => pending.has(row.key) ? { ...row, badge: "…" } : row), selectAction: "open", expandAction: "expand", grow: true });
     }
     return { type: "column", key: "explorer-root", gap: 4, padding: 8, grow: true, children };
   },

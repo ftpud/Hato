@@ -1,7 +1,10 @@
 // ai: ACP chat panel. Layout and control handlers only; conversation state lives in ai-sessions,
 // protocol in acp, and approval authority in the kernel's native chrome.
 import { CHAT_MESSAGE_LIMIT, CHAT_HISTORY_LIMIT, messageWindow } from "../../../../sdk/chat-window";
-import { contextUsage } from "../../../../sdk/context-usage";
+import { contextUsage, usagePieSvg } from "../../../../sdk/context-usage";
+import { chatStyle } from "../../../../sdk/chat-style";
+import { followKey, transcriptItems } from "../../../../sdk/chat-transcript";
+import { uiIcons } from "../../../../sdk/ui-icons";
 import { imageAttachments } from "../../../../sdk/images";
 import type { AppModule, ModuleContext, UiNode, ImageAttachment } from "../../../../sdk/types";
 import { debounce, errMsg } from "../../../../sdk/runtime";
@@ -172,15 +175,15 @@ const mod: AppModule = {
     const modelOption = (live?.configOptions || []).find((o: any) => o.category === "model");
     const advertised = (modelOption?.options || []).flatMap((o: any) => o.options || [o]);
     const modelDetails = (id: string) => advertised.find((o: any) => String(o.value) === id) || live?.models?.availableModels?.find((o: any) => o.modelId === id);
-    const iconButton = (key: string, icon: "sliders-horizontal" | "message-square" | "plus" | "x", action: string, tooltip: string): UiNode => ({ type: "button", key, text: "", icon, action, tooltip, surface: "chat-control", disabled: !ws });
-    const header: UiNode = { type: "row", key: "hdr", surface: "chat-toolbar", padding: 8, gap: 6, align: "center", children: [
+    const iconButton = (key: string, icon: "sliders-horizontal" | "message-square" | "plus" | "x", action: string, tooltip: string): UiNode => ({ type: "button", key, text: "", iconSvg: uiIcons[icon], action, tooltip, style: chatStyle.iconControl, disabled: !ws });
+    const header: UiNode = { type: "row", key: "hdr", style: chatStyle.toolbar, padding: 8, gap: 6, align: "center", children: [
       { type: "column", key: "provider-field", grow: true, minWidth: 100, gap: 0, children: [
-        { type: "select", key: "agent", surface: "chat-control", tooltip: "Provider", options: (view?.profiles || []).map((p: any) => ({ value: p.id, label: p.name.replace(/\s*\([^)]*\)$/, "") })), value: conv?.acpProfileId || null, action: "setProfile", disabled: !conv, placeholder: "Choose provider", grow: true },
+        { type: "select", key: "agent", buttonStyle: chatStyle.fieldControl, tooltip: "Provider", options: (view?.profiles || []).map((p: any) => ({ value: p.id, label: p.name.replace(/\s*\([^)]*\)$/, "") })), value: conv?.acpProfileId || null, action: "setProfile", disabled: !conv, placeholder: "Choose provider", grow: true },
       ] },
       { type: "column", key: "model-field", grow: true, minWidth: 100, gap: 0, children: [
-        { type: "button", key: "cfg-model", surface: "chat-control", text: modelName + "  ⌄", action: "toggleModels", disabled: model.disabled, tooltip: "Choose model", grow: true },
+        { type: "button", key: "cfg-model", style: { ...chatStyle.control, fullWidth: true }, text: modelName + "  ⌄", action: "toggleModels", disabled: model.disabled, tooltip: "Choose model", grow: true },
       ] },
-      { type: "switch", key: "auto", surface: "chat-control", label: "Auto", checked: conv?.approvalPolicy === "autopilot", action: "toggleAuto", disabled: !conv, tooltip: "Automatically approve agent tool permissions. Module changes still require native approval." },
+      { type: "switch", key: "auto", style: { radius: 8, color: "muted" }, label: "Auto", checked: conv?.approvalPolicy === "autopilot", action: "toggleAuto", disabled: !conv, tooltip: "Automatically approve agent tool permissions. Module changes still require native approval." },
       iconButton("settings-toggle", "sliders-horizontal", "toggleSettings", "Agent settings"),
       iconButton("new", "plus", "newChat", "New chat"),
       iconButton("history-toggle", "message-square", "toggleHistory", "Chat history"),
@@ -192,8 +195,8 @@ const mod: AppModule = {
     if (live?.error && !connected) kids.push({ type: "status", key: "liveerr", text: live.error, level: "error" });
     if (adaptersOpen && ws) kids.push(adapterWindow());
     if (historyOpen && view) kids.push({ type: "modal", key: "history", title: "Chat history", closeAction: "toggleHistory", children: [
-      { type: "button", key: "new-chat", text: "New chat", icon: "plus", action: "newChat", surface: "chat-control" },
-      ...view.conversations.map((c: any): UiNode => ({ type: "button", key: c.id, text: (c.id === view.activeId ? "✓ " : "") + c.title, action: "selectConv", value: c.id, surface: "chat-result" })),
+      { type: "button", key: "new-chat", text: "New chat", iconSvg: uiIcons.plus, action: "newChat", style: chatStyle.control },
+      ...view.conversations.map((c: any): UiNode => ({ type: "button", key: c.id, text: (c.id === view.activeId ? "✓ " : "") + c.title, action: "selectConv", value: c.id, variant: "ghost", style: chatStyle.result })),
     ] });
     if (conv) {
       if (settingsOpen) {
@@ -209,18 +212,18 @@ const mod: AppModule = {
           const option = (live?.configOptions || []).find((o: any) => "cfg-" + o.id === field.key);
           if (field.type === "select") {
             fields.push({ type: "label", key: field.key + "-label", text: field.label || "Option", color: "muted" });
-            fields.push({ ...field, label: undefined, surface: "chat-control" });
+            fields.push({ ...field, label: undefined, buttonStyle: chatStyle.fieldControl } as UiNode);
           } else fields.push(field);
           if (option?.description) fields.push({ type: "label", key: field.key + "-hint", text: option.description, size: "sm", color: "muted", wrap: true });
         }
-        fields.push({ type: "select", key: "policy", label: "Approval policy", options: POLICIES, value: conv.approvalPolicy, action: "setPolicy", surface: "chat-control" });
+        fields.push({ type: "select", key: "policy", label: "Approval policy", options: POLICIES, value: conv.approvalPolicy, action: "setPolicy", buttonStyle: chatStyle.fieldControl });
         if (profile?.provider === "claude") fields.push({ type: "toggle", key: "claude-sub", label: "Use Claude subscription", checked: view.auth?.claudeSubscription !== false, action: "toggleClaudeSub", tooltip: "Uses your Claude login instead of the shell API key. Applies on reconnect." });
         fields.push({ type: "label", key: "loc", text: `${live?.machineId || view.workspace.machineId} · ${view.workspace.root}`, size: "xs", color: "muted", wrap: true });
         fields.push({ type: "row", key: "connection", gap: 8, children: [
-          { type: "button", key: "connect", text: connected ? "Disconnect" : "Connect", action: connected ? "disconnect" : "connect", surface: "chat-control" },
-          { type: "button", key: "adapters", text: "Manage agents…", action: "openAdapters", surface: "chat-control" },
+          { type: "button", key: "connect", text: connected ? "Disconnect" : "Connect", action: connected ? "disconnect" : "connect", style: chatStyle.control },
+          { type: "button", key: "adapters", text: "Manage agents…", action: "openAdapters", style: chatStyle.control },
         ] });
-        kids.push({ type: "column", key: "settings", surface: "chat-settings", grow: true, scroll: true, gap: 10, padding: 12, children: fields });
+        kids.push({ type: "column", key: "settings", style: chatStyle.settings, grow: true, scroll: true, gap: 10, padding: 12, children: fields });
       } else {
         const history = visibleHistory(active);
         if (history.hasOlder || historyBefore.length || historyLimit > CHAT_MESSAGE_LIMIT) kids.push({ type: "row", key: "message-history", gap: 6, children: [
@@ -230,36 +233,41 @@ const mod: AppModule = {
           ...(historyBefore.length || historyLimit > CHAT_MESSAGE_LIMIT ? [{ type: "button", key: "latest-messages", text: "Latest", action: "latestMessages", small: true, variant: "ghost", disabled: pagingHistory } as UiNode] : []),
         ] });
         if (active.historyError) kids.push({ type: "status", key: "history-error", text: active.historyError, level: "error" });
-        kids.push({ type: "chatTranscript", key: "transcript", conversationId: conv.id, messages: history.messages,
-          hasOlder: history.hasOlder, loadingOlder: pagingHistory || !!active.historyLoading, historyError: active.historyError,
-          loadOlderAction: "revealOlder", bottomAction: history.hasNewer ? "revealNewer" : historyLimit > CHAT_MESSAGE_LIMIT ? "collapseHistory" : undefined,
-          preserveScrollOnChange: preserveHistoryScroll, scrollReset: historyScrollReset, agentLabel: providerName + (model.value ? " · " + modelName : ""), linkAction: "openLink", grow: true });
+        const loadingOlder = pagingHistory || !!active.historyLoading;
+        kids.push({ type: "transcript", key: "transcript", scrollKey: conv.id, followKey: followKey(history.messages),
+          hasOlder: history.hasOlder, loadingOlder, loadOlderAction: "revealOlder",
+          bottomAction: history.hasNewer ? "revealNewer" : historyLimit > CHAT_MESSAGE_LIMIT ? "collapseHistory" : undefined,
+          preserveScrollOnChange: preserveHistoryScroll, scrollReset: historyScrollReset, grow: true,
+          children: transcriptItems(history.messages, { agentLabel: providerName + (model.value ? " · " + modelName : ""), linkAction: "openLink",
+            hasOlder: history.hasOlder, loadingOlder, historyError: active.historyError, loadOlderAction: "revealOlder" }) });
         const composer: UiNode[] = [];
         if (attachments.length) composer.push({ type: "row", key: "attachments", gap: 8, children: attachments.map((image, index): UiNode => ({ type: "column", key: "attachment-" + index, gap: 4, children: [
           { type: "image", key: "preview", image, width: 80, height: 64 },
           { type: "button", key: "remove", text: "× " + image.name, action: "removeImage", value: index, small: true, tooltip: "Remove picture" },
         ] })) });
-        composer.push({ type: "textInput", key: "prompt", surface: "chat-control", pasteImageAction: "attachImages", placeholder: active.busy ? "Steer " + providerName + "…" : "Ask " + providerName + "…", multiline: true, rows: 2, submitAction: "send", value: draft });
+        composer.push({ type: "textInput", key: "prompt", style: chatStyle.textarea, pasteImageAction: "attachImages", maxFiles: 4, maxBytes: 5 * 1024 * 1024, placeholder: active.busy ? "Steer " + providerName + "…" : "Ask " + providerName + "…", multiline: true, rows: 2, submitAction: "send", value: draft });
         if (mcpOpen) composer.push({ type: "column", key: "mcp-picker", gap: 8, padding: 12, border: true, children: [
           { type: "label", key: "title", text: "MCP servers", weight: "bold", size: "sm" },
           ...(view.mcpServers || [{ id: "internal", name: "Hato" }]).map((server: any): UiNode => ({ type: "toggle", key: "mcp-" + server.id, label: server.name, tooltip: server.description, checked: (conv.mcpSelection || []).includes(server.id), action: "toggleMcp:" + server.id })),
           { type: "button", key: "apply", text: "Reconnect to apply", action: "reconnect", small: true, disabled: active.busy },
         ] });
-        if (skillsOpen) kids.push({ type: "column", key: "skills-picker", scroll: true, maxHeight: 220, padding: 12, gap: 8, border: true, children: skills.length ? skills.map((skill): UiNode => ({ type: "button", key: skill.path, text: skill.name + (skill.description ? " · " + skill.description : ""), tooltip: skill.path, action: "useSkill", value: skill.path, surface: "chat-result" })) : [{ type: "label", key: "none", text: skillState?.loading ? "Loading workspace skills…" : skillState?.error ? "Could not load workspace skills: " + skillState.error : "No workspace skills in .agents/skills.", color: "muted", wrap: true }] });
+        if (skillsOpen) kids.push({ type: "column", key: "skills-picker", scroll: true, maxHeight: 220, padding: 12, gap: 8, border: true, children: skills.length ? skills.map((skill): UiNode => ({ type: "button", key: skill.path, text: skill.name + (skill.description ? " · " + skill.description : ""), tooltip: skill.path, action: "useSkill", value: skill.path, variant: "ghost", style: chatStyle.result })) : [{ type: "label", key: "none", text: skillState?.loading ? "Loading workspace skills…" : skillState?.error ? "Could not load workspace skills: " + skillState.error : "No workspace skills in .agents/skills.", color: "muted", wrap: true }] });
         composer.push({ type: "row", key: "act", gap: 6, children: [
-          { type: "imagePicker", key: "attach", action: "attachImages", surface: "chat-control", disabled: busy === "send" },
-          { type: "button", key: "mcp-toggle", text: "MCP", action: "toggleMcpPicker", surface: "chat-control", tooltip: "MCP servers" },
-          { type: "button", key: "skills-toggle", text: "Skills " + skills.length, icon: "graduation-cap", action: "toggleSkills", surface: "chat-control" },
+          { type: "imagePicker", key: "attach", action: "attachImages", iconSvg: uiIcons.paperclip, style: chatStyle.attach, maxFiles: 4, maxBytes: 5 * 1024 * 1024,
+            dialogTitle: "Attach pictures", tooltip: "Attach pictures (PNG, JPEG, WebP or GIF)", disabled: busy === "send" },
+          { type: "button", key: "mcp-toggle", text: "MCP", action: "toggleMcpPicker", style: chatStyle.control, tooltip: "MCP servers" },
+          { type: "button", key: "skills-toggle", text: "Skills " + skills.length, iconSvg: uiIcons["graduation-cap"], action: "toggleSkills", style: chatStyle.control },
           { type: "label", key: "chat-status", grow: true, text: active.steering ? "Steering…" : active.busy ? "Working…" : connected ? "" : live?.status || conv.status || "Offline", size: "xs", color: "muted", tooltip: `${providerName} · ${live?.status || conv.status || "offline"}` },
-          { type: "usageMeter", key: "context-usage", value: context.value, tooltip: context.tooltip },
-          ...(active.busy ? [{ type: "button", key: "cancel", text: "Stop", action: "cancel", surface: "chat-control" } as UiNode] : []),
-          { type: "button", key: "send", text: "", icon: "send", action: "send", surface: "chat-primary", variant: "primary", width: 32, height: 32, disabled: busy === "send", tooltip: active.busy ? "Steer agent" : "Send message" },
+          { type: "button", key: "context-usage", text: context.value === null ? "—" : `${Math.round(context.value * 100)}%`, iconSvg: usagePieSvg(context.value), iconSize: 18,
+            action: "", variant: "ghost", small: true, tooltip: context.tooltip, style: { height: 32, paddingX: 4, gap: 4, noShrink: true, color: "muted" } },
+          ...(active.busy ? [{ type: "button", key: "cancel", text: "Stop", action: "cancel", style: chatStyle.control } as UiNode] : []),
+          { type: "button", key: "send", text: "", iconSvg: uiIcons.send, action: "send", style: chatStyle.iconPrimary, variant: "primary", disabled: busy === "send", tooltip: active.busy ? "Steer agent" : "Send message" },
         ] });
-        kids.push({ type: "column", key: "composer", surface: "chat-composer", gap: 6, padding: 8, children: composer });
+        kids.push({ type: "column", key: "composer", style: chatStyle.composer, gap: 6, padding: 8, children: composer });
       }
       if (modelsOpen) {
         const filtered = model.options.filter((o) => `${o.label} ${modelDetails(o.value)?.description || ""}`.toLowerCase().includes(modelQuery.toLowerCase()));
-        kids.push({ type: "popover", key: "model-picker", closeAction: "toggleModels", surface: "chat-picker", children: [
+        kids.push({ type: "popover", key: "model-picker", closeAction: "toggleModels", style: chatStyle.picker, children: [
           { type: "row", key: "search-row", gap: 8, padding: 10, children: [
             { type: "textInput", key: "model-search", value: modelQuery, placeholder: "Search models", changeAction: "searchModels", grow: true },
             iconButton("close", "x", "toggleModels", "Close models"),
@@ -274,9 +282,9 @@ const mod: AppModule = {
     } else if (ws && view) kids.push({ type: "column", key: "empty", padding: 24, gap: 12, grow: true, children: [
       { type: "label", key: "title", text: "Start a conversation", size: "lg", weight: "bold" },
       { type: "label", key: "hint", text: "Ask your agent to build, explore or fix something in this workspace.", wrap: true, color: "muted" },
-      { type: "button", key: "start", text: "New chat", icon: "plus", action: "newChat", surface: "chat-primary", variant: "primary" },
+      { type: "button", key: "start", text: "New chat", iconSvg: uiIcons.plus, action: "newChat", style: chatStyle.primary, variant: "primary" },
     ] });
-    return { type: "column", key: "ai-root", surface: "chat", gap: 0, grow: true, children: kids };
+    return { type: "column", key: "ai-root", style: chatStyle.root, gap: 0, grow: true, children: kids };
   },
   async onEvent(ctx, ev) {
     const conv = view && view.active ? view.active.conversation : null;

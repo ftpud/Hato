@@ -4,8 +4,17 @@
   "kind": "service",
   "entry": "src/index.ts",
   "moduleApiVersion": 1,
-  "dependencies": ["workspace"],
-  "capabilities": ["process.scope", "ssh.connect", "ui.document"],
+  "dependencies": [
+    "workspace",
+    "files"
+  ],
+  "capabilities": [
+    "process.scope",
+    "ssh.connect",
+    "ui.document",
+    "fs.scope",
+    "remote.daemon"
+  ],
   "stateVersion": 1,
   "description": "Working-tree Git status and per-file diffs for the selected workspace."
 }

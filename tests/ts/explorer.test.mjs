@@ -26,7 +26,7 @@ test('file tree opens files in the viewer and filters workspace results while re
   const { default: mod } = await load('modules/ui/explorer/src/index.ts');
   const selected = { id: 'ws', name: 'Workspace', view: { previewPath: null } };
   const calls = [];
-  const ctx = { state: { get: () => selected, watch() {} }, ui: { invalidate() {} }, modules: { async call(module, method, args) {
+  const ctx = { events: { on() {} }, state: { get: () => selected, watch() {} }, ui: { invalidate() {} }, modules: { async call(module, method, args) {
     calls.push({ module, method, args });
     if (method === 'list') return { entries: args.relativeDir === '.' ? [entry('src', 'dir'), entry('README.md'), entry('.git', 'dir')] : [entry('src/index.ts')] };
     if (method === 'view.patch') return;
@@ -57,7 +57,7 @@ test('file tree opens files in the viewer and filters workspace results while re
 test('old workspace searches cannot overwrite a newly selected workspace', async () => {
   const { default: mod } = await load('modules/ui/explorer/src/index.ts');
   let selected = { id: 'one', view: {} }, watcher, resolveSearch;
-  const ctx = { state: { get: () => selected, watch: (_, callback) => { watcher = callback; } }, ui: { invalidate() {} }, modules: { async call(_, method, args) {
+  const ctx = { events: { on() {} }, state: { get: () => selected, watch: (_, callback) => { watcher = callback; } }, ui: { invalidate() {} }, modules: { async call(_, method, args) {
     if (method === 'list') return { entries: [entry(args.workspaceId + '.txt')] };
     if (method === 'search') return new Promise(resolve => { resolveSearch = resolve; });
   } } };

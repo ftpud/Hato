@@ -6,8 +6,7 @@ pub mod interact;
 pub mod terminal_view;
 mod theme;
 mod images;
-mod chat_style;
-mod file_icons;
+mod style;
 mod transcript_scroll;
 
 use crate::bridge::{UiBridge, UiMsg};
@@ -90,7 +89,8 @@ impl Shell {
             cx.background_executor().timer(Duration::from_millis(1000)).await;
             if this.update(cx, |this, cx| {
                 let before = this.toasts.len();
-                this.toasts.retain(|t| t.2.elapsed() < Duration::from_secs(8));
+                let ms = theme::chrome(cx)["toasts"]["durationMs"].as_u64().unwrap_or(8000).clamp(1000, 120_000);
+                this.toasts.retain(|t| t.2.elapsed() < Duration::from_millis(ms));
                 if before != this.toasts.len() {
                     cx.notify();
                 }
@@ -144,7 +144,8 @@ impl Shell {
             }
             UiMsg::Toast { level, text } => {
                 self.toasts.push((level, text, Instant::now()));
-                if self.toasts.len() > 5 {
+                let max = theme::chrome(cx)["toasts"]["max"].as_u64().unwrap_or(5).clamp(1, 20) as usize;
+                while self.toasts.len() > max {
                     self.toasts.remove(0);
                 }
                 cx.notify();
@@ -190,6 +191,10 @@ impl Shell {
     fn render_slot(&mut self, module: &str, depth: usize, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         if depth > 6 {
             return div().child("slot nesting too deep").into_any_element();
+        }
+        if !self.kernel.plugin_enabled(module) {
+            // Disabled plugins leave their slot empty; the layout decides whether to show it at all.
+            return div().into_any_element();
         }
         if let Some(err) = self.render_errors.get(module).cloned() {
             if self.trees.get(module).is_none() {
@@ -279,25 +284,7 @@ impl Shell {
             Some("right") => d.border_r_1().border_color(cx.theme().border),
             _ => d,
         };
-        let p = chat_style::Palette::new(cx);
-        d = match n["surface"].as_str() {
-            Some("sidebar") => d,
-            Some("chat") => d.relative().bg(p.base).text_color(p.text).text_sm().font_family(cx.theme().font_family.clone()).rounded(px(10.0)).border_1().border_color(p.border),
-            Some("chat-toolbar") => d.bg(p.panel).border_b_1().border_color(p.border).flex_wrap(),
-            Some("chat-composer") => d.bg(p.base).border_t_1().border_color(p.border),
-            Some("chat-settings") => d.bg(p.base).text_color(p.muted),
-            Some("chat-picker") => d.bg(p.base).text_color(p.text).border_1().border_color(p.border).rounded(px(12.0)),
-            Some("chat-control") => d.rounded(px(8.0)).text_color(p.text),
-            _ => d,
-        };
-        let style = &n["style"];
-        if let Some(token) = style["background"].as_str() { d = d.bg(theme::token(cx, token, cx.theme().background)); }
-        if let Some(token) = style["color"].as_str() { d = d.text_color(theme::token(cx, token, cx.theme().foreground)); }
-        if let Some(width) = style["borderBottom"].as_f64() { d = d.border_b(px(width.clamp(0.0, 4.0) as f32)); }
-        if let Some(token) = style["borderColor"].as_str() { d = d.border_color(theme::token(cx, token, cx.theme().border)); }
-        if let Some(radius) = style["radius"].as_f64() { d = d.rounded(px(radius.clamp(0.0, 32.0) as f32)); }
-        if let Some(weight) = style["fontWeight"].as_f64() { d = d.font_weight(FontWeight(weight.clamp(100.0, 900.0) as f32)); }
-        d
+        style::apply(d, &n["style"], cx)
     }
 
     fn children(&mut self, module: &str, n: &Value, path: &str, depth: usize, window: &mut Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
@@ -318,7 +305,7 @@ impl Shell {
         let b = |k: &str| n.get(k).and_then(|v| v.as_bool()).unwrap_or(false);
         let theme_muted = cx.theme().muted_foreground;
         match ty {
-            "theme" => { theme::configure(cx, &n["palette"], &n["typography"]); div().into_any_element() }
+            "theme" => { theme::configure(cx, n, &self.kernel.cfg.data_dir); div().into_any_element() }
             "row" | "column" => {
                 let mut d = if ty == "row" { h_flex() } else { v_flex() };
                 if ty == "row" {
@@ -400,6 +387,7 @@ impl Shell {
                 d = match n.get("size").and_then(|v| v.as_str()) {
                     Some("xs") => d.text_xs(),
                     Some("sm") => d.text_sm(),
+                    Some("md") => d.text_base(),
                     Some("lg") => d.text_lg(),
                     _ => d.text_sm(),
                 };
@@ -410,21 +398,23 @@ impl Shell {
                     Some("normal") => d.font_weight(FontWeight::NORMAL),
                     _ => d,
                 };
-                d = match n.get("color").and_then(|v| v.as_str()) {
-                    Some("muted") => d.text_color(theme_muted),
-                    Some("accent") => d.text_color(cx.theme().primary),
-                    Some("danger") => d.text_color(cx.theme().danger),
-                    Some("success") => d.text_color(cx.theme().success),
-                    Some("warning") => d.text_color(cx.theme().warning),
-                    _ => d,
-                };
+                if let Some(c) = n.get("color").and_then(|v| v.as_str()).filter(|c| *c != "default") {
+                    d = d.text_color(theme::color(cx, c, cx.theme().foreground));
+                }
                 if b("mono") {
                     d = d.font_family(cx.theme().mono_font_family.clone());
                 }
                 if !b("wrap") {
                     d = d.overflow_hidden().whitespace_nowrap().text_ellipsis();
+                } else {
+                    d = d.min_w_0();
                 }
-                self.apply_base(d, n, cx).child(text).into_any_element()
+                let d = self.apply_base(d, n, cx);
+                if b("selectable") {
+                    d.child(SelectableText::new(sid(module, &path), text)).into_any_element()
+                } else {
+                    d.child(text).into_any_element()
+                }
             }
             "button" => {
                 let k = self.kernel.clone();
@@ -434,7 +424,6 @@ impl Shell {
                 let inputs = self.module_inputs(module);
                 let key2 = key.to_string();
                 let text = s("text");
-                let icon_only = text.is_empty() && (n["iconSvg"].as_str().is_some() || n["icon"].as_str().is_some());
                 let mut btn = Button::new(sid(module, &path)).disabled(b("disabled"));
                 if !text.is_empty() { btn = btn.label(text); }
                 btn = match n.get("variant").and_then(|v| v.as_str()) {
@@ -446,35 +435,12 @@ impl Shell {
                 if b("small") {
                     btn = btn.small();
                 }
-                let icon_size = px(n["iconSize"].as_f64().unwrap_or(16.0).clamp(12.0, 32.0) as f32);
+                let icon_size = px(n["iconSize"].as_f64().unwrap_or(16.0).clamp(10.0, 48.0) as f32);
                 if let Some(svg) = n["iconSvg"].as_str() {
                     btn = btn.icon(gpui_component::Icon::default().data(svg.as_bytes()).with_size(icon_size));
-                } else if let Some(icon) = n["icon"].as_str() {
-                    btn = btn.icon(chat_style::icon(icon).with_size(icon_size));
                 }
-                let p = chat_style::Palette::new(cx);
-                if n["surface"].as_str() == Some("sidebar-button") {
-                    let selected = n["variant"].as_str() == Some("primary");
-                    btn = btn.ghost().p_0().flex_shrink_0().rounded(px(10.0)).border_0()
-                        .bg(if selected { p.user } else { p.base })
-                        // Button registers its own hover style; registering another panics in GPUI.
-                        .text_color(if selected { p.accent } else { p.muted });
-                } else if n["surface"].as_str() == Some("chat-control") {
-                    btn = btn.h(px(32.0)).text_sm().rounded(px(8.0)).bg(p.base).border_color(p.border).text_color(p.text);
-                    if icon_only { btn = btn.w(px(32.0)).p_0().flex_shrink_0(); }
-                    else { btn = btn.px_3().gap(px(8.0)); }
-                    if n["grow"].as_bool().unwrap_or(false) { btn = btn.w_full(); }
-                } else if n["surface"].as_str() == Some("chat-primary") {
-                    btn = btn.h(px(32.0)).text_sm().rounded(px(8.0)).bg(p.accent).text_color(white()).flex_shrink_0();
-                    if icon_only { btn = btn.w(px(32.0)).p_0(); } else { btn = btn.px_3(); }
-                } else if n["surface"].as_str() == Some("chat-result") {
-                    btn = btn.w_full().h(px(34.0)).text_color(p.text).justify_start();
-                }
-                let style = &n["style"];
-                if let Some(token) = style["background"].as_str() { btn = btn.bg(theme::token(cx, token, cx.theme().background)); }
-                if let Some(token) = style["color"].as_str() { btn = btn.text_color(theme::token(cx, token, cx.theme().foreground)); }
-                if let Some(radius) = style["radius"].as_f64() { btn = btn.rounded(px(radius.clamp(0.0, 32.0) as f32)); }
-                if let Some(weight) = style["fontWeight"].as_f64() { btn = btn.font_weight(FontWeight(weight.clamp(100.0, 900.0) as f32)); }
+                // Button registers its own hover style; style::apply never adds hover styles (GPUI panics on a second one).
+                btn = style::apply(btn, &n["style"], cx);
                 if let Some(width) = n["width"].as_f64() { btn = btn.w(px(width as f32)); }
                 if let Some(height) = n["height"].as_f64() { btn = btn.h(px(height as f32)); }
                 if b("grow") { btn = btn.w_full().min_w_0(); }
@@ -482,7 +448,15 @@ impl Shell {
                 if let Some(t) = n.get("tooltip").and_then(|t| t.as_str()) {
                     btn = btn.tooltip(t.to_string());
                 }
-                btn.on_click(move |_, _, cx| Self::fire(&k, &m, &inputs, &action, &key2, None, value.clone(), cx)).into_any_element()
+                let copy = n["copyText"].as_str().map(str::to_owned);
+                btn.on_click(move |_, _, cx| {
+                    if let Some(text) = &copy {
+                        cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
+                    }
+                    if !action.is_empty() {
+                        Self::fire(&k, &m, &inputs, &action, &key2, None, value.clone(), cx);
+                    }
+                }).into_any_element()
             }
             "imagePicker" => {
                 let k = self.kernel.clone();
@@ -490,14 +464,21 @@ impl Shell {
                 let action = s("action");
                 let key2 = key.to_string();
                 let inputs = self.module_inputs(module);
-                Button::new(sid(module, &path)).icon(chat_style::icon("paperclip").with_size(px(16.0))).h(px(32.0)).w(px(32.0)).p_0().flex_shrink_0().rounded(px(8.0)).bg(chat_style::Palette::new(cx).panel).border_color(chat_style::Palette::new(cx).border).disabled(b("disabled"))
-                    .tooltip("Attach pictures (PNG, JPEG, WebP or GIF)")
+                let limits = images::Limits::from_node(n);
+                                let prompt: SharedString = n["dialogTitle"].as_str().unwrap_or("Choose pictures").to_string().into();
+                let mut btn = Button::new(sid(module, &path)).disabled(b("disabled"));
+                if let Some(svg) = n["iconSvg"].as_str() {
+                    btn = btn.icon(gpui_component::Icon::default().data(svg.as_bytes()).with_size(px(n["iconSize"].as_f64().unwrap_or(16.0).clamp(10.0, 48.0) as f32)));
+                }
+                if let Some(t) = n["text"].as_str().filter(|t| !t.is_empty()) { btn = btn.label(t.to_string()); }
+                if let Some(t) = n["tooltip"].as_str() { btn = btn.tooltip(t.to_string()); }
+                style::apply(btn, &n["style"], cx)
                     .on_click(move |_, _, cx| {
-                        let rx = cx.prompt_for_paths(PathPromptOptions { files: true, directories: false, multiple: true, prompt: Some("Attach pictures".into()) });
+                        let rx = cx.prompt_for_paths(PathPromptOptions { files: true, directories: false, multiple: limits.max_files > 1, prompt: Some(prompt.clone()) });
                         let (k, m, action, key2, inputs) = (k.clone(), m.clone(), action.clone(), key2.clone(), inputs.clone());
                         cx.spawn(async move |cx| {
                             if let Some(paths) = rx.await.ok().and_then(|r| r.ok()).flatten() {
-                                let value = cx.background_executor().spawn(async move { images::files(&paths) }).await;
+                                let value = cx.background_executor().spawn(async move { images::files(&paths, limits) }).await;
                                 let _ = cx.update(|cx| Self::fire(&k, &m, &inputs, &action, &key2, None, value, cx));
                             }
                         }).detach();
@@ -560,20 +541,31 @@ impl Shell {
                     slot.applied = value.clone();
                 }
                 let el = match &slot.input {
-                    AnyInput::Line(e) => Input::new(e).small().bg(theme::token(cx, "field", cx.theme().background)).when(b("search"), |input| input.prefix(chat_style::icon("search").with_size(px(16.0)))).disabled(b("disabled")).into_any_element(),
-                    AnyInput::Area(e) => Textarea::new(e).text_sm().font_family(cx.theme().font_family.clone()).bg(if n["surface"].as_str() == Some("chat-control") { chat_style::Palette::new(cx).panel } else { cx.theme().background }).disabled(b("disabled")).h(px(n.get("rows").and_then(|r| r.as_f64()).unwrap_or(3.0) as f32 * 20.0 + 12.0)).into_any_element(),
+                    AnyInput::Line(e) => {
+                        let bg = n["style"]["background"].as_str().map(|c| theme::color(cx, c, cx.theme().background)).unwrap_or_else(|| theme::color(cx, "field", cx.theme().background));
+                        Input::new(e).small().bg(bg)
+                            .when_some(n["prefixSvg"].as_str(), |input, svg| input.prefix(gpui_component::Icon::default().data(svg.as_bytes()).with_size(px(16.0))))
+                            .disabled(b("disabled")).into_any_element()
+                    }
+                    AnyInput::Area(e) => {
+                        let bg = n["style"]["background"].as_str().map(|c| theme::color(cx, c, cx.theme().background)).unwrap_or(cx.theme().background);
+                        let row_h = n["rowHeight"].as_f64().unwrap_or(20.0).clamp(12.0, 48.0) as f32;
+                        Textarea::new(e).text_sm().font_family(cx.theme().font_family.clone()).bg(bg).disabled(b("disabled"))
+                            .h(px(n.get("rows").and_then(|r| r.as_f64()).unwrap_or(3.0).clamp(1.0, 40.0) as f32 * row_h + 12.0)).into_any_element()
+                    }
                 };
                 let k = self.kernel.clone();
                 let m = module.to_string();
                 let inputs = self.module_inputs(module);
                 let key2 = key.to_string();
                 let paste = n.get("pasteImageAction").and_then(|v| v.as_str()).map(str::to_owned);
+                let paste_limits = images::Limits::from_node(n);
                 let (k2, m2, inputs2, key3, paste2) = (k.clone(), m.clone(), inputs.clone(), key2.clone(), paste.clone());
                 self.apply_base(div(), n, cx)
                     .capture_key_down(move |ev, window, cx| {
                         if (ev.keystroke.modifiers.control || ev.keystroke.modifiers.platform) && ev.keystroke.key == "v" {
                             if let Some(action) = &paste {
-                                if let Some(value) = cx.read_from_clipboard().and_then(images::clipboard) {
+                                if let Some(value) = cx.read_from_clipboard().and_then(|c| images::clipboard(c, paste_limits)) {
                                     Self::fire(&k, &m, &inputs, action, &key2, None, value, cx);
                                     cx.stop_propagation(); window.prevent_default();
                                 }
@@ -582,7 +574,7 @@ impl Shell {
                     })
                     .capture_action(move |_: &gpui_component::input::Paste, _, cx| {
                         if let Some(action) = &paste2 {
-                            if let Some(value) = cx.read_from_clipboard().and_then(images::clipboard) {
+                            if let Some(value) = cx.read_from_clipboard().and_then(|c| images::clipboard(c, paste_limits)) {
                                 Self::fire(&k2, &m2, &inputs2, action, &key3, None, value, cx);
                                 cx.stop_propagation();
                             }
@@ -602,10 +594,7 @@ impl Shell {
                 let inputs = self.module_inputs(module);
                 let key2 = key.to_string();
                 let mut btn = Button::new(sid(module, &path)).label(format!("{label}{current} ▾")).small().disabled(disabled);
-                if n["surface"].as_str() == Some("chat-control") {
-                    let p = chat_style::Palette::new(cx);
-                    btn = btn.w_full().h(px(36.0)).rounded(px(8.0)).bg(p.base).border_color(p.border).text_color(p.text).justify_between();
-                }
+                btn = style::apply(btn, &n["buttonStyle"], cx);
                 if let Some(r) = reason.clone().filter(|_| disabled) {
                     btn = btn.tooltip(r);
                 }
@@ -630,16 +619,7 @@ impl Shell {
                 };
                 self.apply_base(div(), n, cx).child(el).into_any_element()
             }
-            "usageMeter" => {
-                let value = n["value"].as_f64().filter(|v| v.is_finite()).map(|v| v.clamp(0.0, 1.0));
-                let label = value.map(|v| format!("{:.0}%", v * 100.0)).unwrap_or_else(|| "—".into());
-                Button::new(sid(module, &path)).ghost().small().h(px(32.0)).px_1().gap_1().flex_shrink_0()
-                    .icon(chat_style::usage_pie(value, cx.theme().mode.is_dark())).label(label)
-                    .text_color(chat_style::Palette::new(cx).muted).tooltip(s("tooltip"))
-                    .into_any_element()
-            }
             "choice" => {
-                let p = chat_style::Palette::new(cx);
                 let k = self.kernel.clone();
                 let m = module.to_string();
                 let inputs = self.module_inputs(module);
@@ -647,13 +627,17 @@ impl Shell {
                 let key2 = key.to_string();
                 let value = n["value"].clone();
                 let selected = b("selected");
+                let (text_c, muted_c, accent_c) = (theme::color(cx, "text", cx.theme().foreground), theme::color(cx, "muted", theme_muted), theme::color(cx, "primary", cx.theme().primary));
+                let (sel_bg, base_bg, border_c) = (theme::color(cx, "selection", cx.theme().list_active), theme::color(cx, "surface", cx.theme().background), theme::color(cx, "border", cx.theme().border));
                 let mut content = v_flex().gap(px(4.0)).flex_1().min_w_0()
                     .child(div().text_sm().font_weight(FontWeight::MEDIUM).overflow_hidden().whitespace_nowrap().text_ellipsis().child(s("text")));
-                if !s("description").is_empty() { content = content.child(div().text_xs().text_color(p.muted).child(s("description"))); }
-                Button::new(sid(module, &path)).ghost().w_full().h_auto().px_3().py_2().rounded(px(7.0)).justify_start().text_color(p.text)
-                    .bg(if selected { p.user } else { p.base }).border_1().border_color(if selected { p.border } else { p.base })
+                if !s("description").is_empty() { content = content.child(div().text_xs().text_color(muted_c).child(s("description"))); }
+                let mark = n["mark"].as_str().unwrap_or("✓").to_string();
+                let btn = Button::new(sid(module, &path)).ghost().w_full().h_auto().px_3().py_2().rounded(px(7.0)).justify_start().text_color(text_c)
+                    .bg(if selected { sel_bg } else { base_bg }).border_1().border_color(if selected { border_c } else { base_bg })
                     .child(h_flex().gap_3().w_full().min_w_0().child(content)
-                        .child(div().w(px(18.0)).flex_shrink_0().text_color(p.accent).child(if selected { "✓" } else { "" })))
+                        .child(div().w(px(18.0)).flex_shrink_0().text_color(accent_c).child(if selected { mark } else { String::new() })));
+                style::apply(btn, &n["style"], cx)
                     .on_click(move |_, _, cx| Self::fire(&k, &m, &inputs, &action, &key2, None, value.clone(), cx))
                     .into_any_element()
             }
@@ -663,9 +647,9 @@ impl Shell {
                 let action = s("action");
                 let inputs = self.module_inputs(module);
                 let key2 = key.to_string();
-                h_flex().gap_2().h(px(32.0)).text_sm().text_color(chat_style::Palette::new(cx).muted)
+                self.apply_base(h_flex().gap_2().h(px(32.0)).text_sm().text_color(theme::color(cx, "muted", theme_muted)), n, cx)
                     .child(s("label"))
-                    .child(gpui_component::switch::Switch::new(sid(module, &path)).checked(b("checked")).disabled(b("disabled")).color(chat_style::Palette::new(cx).accent)
+                    .child(gpui_component::switch::Switch::new(sid(module, &path)).checked(b("checked")).disabled(b("disabled")).color(theme::color(cx, n["accent"].as_str().unwrap_or("primary"), cx.theme().primary))
                         .tooltip(s("tooltip"))
                         .on_change(move |v, _, cx| Self::fire(&k, &m, &inputs, &action, &key2, None, json!(*v), cx)))
                     .into_any_element()
@@ -679,7 +663,12 @@ impl Shell {
                 let key2 = key.to_string();
                 div().absolute().inset_0().occlude()
                     .on_mouse_down(MouseButton::Left, move |_, _, cx| Self::fire(&k, &m, &inputs, &action, &key2, None, Value::Null, cx))
-                    .child(self.apply_base(v_flex(), n, cx).absolute().top(px(52.0)).left(px(8.0)).right(px(8.0)).h(relative(0.55)).max_h(px(420.0)).shadow_lg().overflow_hidden().occlude()
+                    .child(self.apply_base(v_flex(), n, cx).absolute()
+                        .top(px(n["top"].as_f64().unwrap_or(52.0).clamp(0.0, 4096.0) as f32))
+                        .left(px(n["left"].as_f64().unwrap_or(8.0).clamp(0.0, 4096.0) as f32))
+                        .right(px(n["right"].as_f64().unwrap_or(8.0).clamp(0.0, 4096.0) as f32))
+                        .h(relative(n["heightFraction"].as_f64().unwrap_or(0.55).clamp(0.1, 1.0) as f32))
+                        .max_h(px(n["maxHeight"].as_f64().unwrap_or(420.0).clamp(40.0, 4096.0) as f32)).shadow_lg().overflow_hidden().occlude()
                         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation()).children(kids))
                     .into_any_element()
             }
@@ -694,27 +683,18 @@ impl Shell {
                     .on_click(move |v, _, cx| Self::fire(&k, &m, &inputs, &action, &key2, None, json!(*v), cx))
                     .into_any_element()
             }
-            "appearanceControl" => {
-                let appearance_path = self.kernel.cfg.data_dir.join("appearance");
-                gpui_component::switch::Switch::new(sid(module, &path))
-                    .label("Cool dark mode").checked(cx.theme().mode.is_dark())
-                    .tooltip("Off: cool light · On: cool dark")
-                    .on_change(move |dark, _, cx| {
-                        theme::apply(cx, *dark);
-                        if let Err(err) = std::fs::write(&appearance_path, if *dark { "dark" } else { "light" }) {
-                            log::warn!("cannot save appearance preference: {err}");
-                        }
-                    }).into_any_element()
-            }
             "tree" => {
-                let file_tree = n["appearance"].as_str() == Some("files");
-                let project_tree = n["appearance"].as_str() == Some("projects");
                 let rows = n.get("rows").and_then(|r| r.as_array()).cloned().unwrap_or_default();
                 let sel_action = s("selectAction");
                 let exp_action = s("expandAction");
                 let act_action = s("activateAction");
                 let inputs = self.module_inputs(module);
-                let mut list = v_flex().w_full().min_w_0().gap(px(if file_tree || project_tree { 0.0 } else { 1.0 }));
+                // Geometry is module data; defaults match a compact list.
+                let row_h = n["rowHeight"].as_f64().map(|h| h.clamp(12.0, 96.0) as f32);
+                let indent = n["indent"].as_f64().unwrap_or(14.0).clamp(0.0, 64.0) as f32;
+                let row_gap = n["rowGap"].as_f64().unwrap_or(1.0).clamp(0.0, 16.0) as f32;
+                let icon_size = n["iconSize"].as_f64().unwrap_or(16.0).clamp(8.0, 48.0) as f32;
+                let mut list = v_flex().w_full().min_w_0().gap(px(row_gap));
                 for r in rows.iter().take(5000) {
                     let rk = r["key"].as_str().unwrap_or("").to_string();
                     let depth_ = r["depth"].as_u64().unwrap_or(0) as f32;
@@ -722,14 +702,6 @@ impl Shell {
                     let expandable = r["expandable"].as_bool().unwrap_or(false);
                     let expanded = r["expanded"].as_bool().unwrap_or(false);
                     let busy = r["busy"].as_bool().unwrap_or(false);
-                    let icon = match r["icon"].as_str() {
-                        Some("git") => "⎇",
-                        Some("remote") => "⇄",
-                        Some("task") => "◦",
-                        Some("warning") => "⚠",
-                        Some("file") => "·",
-                        _ => "▪",
-                    };
                     let chevron = {
                         let k = self.kernel.clone();
                         let m = module.to_string();
@@ -748,7 +720,7 @@ impl Shell {
                     let key2 = key.to_string();
                     let rk2 = rk.clone();
                     let act = act_action.clone();
-                    let mut row = h_flex().id(sid(module, &format!("{path}/row/{rk}"))).w_full().min_w_0().overflow_hidden().pl(px(4.0 + depth_ * 14.0)).pr_1().py(px(3.0)).gap_1().rounded(px(3.0)).cursor_pointer()
+                    let mut row = h_flex().id(sid(module, &format!("{path}/row/{rk}"))).w_full().min_w_0().overflow_hidden().pl(px(4.0 + depth_ * indent)).pr_1().py(px(3.0)).gap_1().rounded(px(4.0)).cursor_pointer()
                         .hover(|s| s.bg(cx.theme().list_hover))
                         .on_click(move |ev, _, cx| {
                             // A double click fires the first click as a selection, then the activation.
@@ -756,29 +728,23 @@ impl Shell {
                             if ev.click_count() >= 2 && act.is_empty() { return; }
                             Self::fire(&k, &m, &inputs2, action, &key2, Some(rk2.clone()), Value::Null, cx)
                         });
-                    if file_tree { row = row.h(px(21.0)).flex_shrink_0().py_0().gap(px(6.0)).rounded(px(5.0)); }
-                    if project_tree { row = row.h(px(42.0)).flex_shrink_0().py_0().gap(px(6.0)).rounded(px(5.0)); }
+                    if let Some(h) = row_h { row = row.h(px(h)).flex_shrink_0().py_0().gap(px(6.0)); }
                     if selected {
                         row = row.bg(cx.theme().list_active);
                     }
+                    let weight = match r["weight"].as_str() { Some("semibold") => Some(FontWeight::SEMIBOLD), Some("bold") => Some(FontWeight::BOLD), Some("medium") => Some(FontWeight::MEDIUM), _ => None };
                     let label = v_flex().flex_1().min_w_0()
-                        .child(h_flex().w_full().min_w_0().gap_1().child(div().flex_1().min_w_0().text_sm().when(project_tree && depth_ == 0.0, |d| d.font_weight(FontWeight::SEMIBOLD)).overflow_hidden().whitespace_nowrap().text_ellipsis().child(r["label"].as_str().unwrap_or("").to_string()))
-                            .when(busy, |d| d.child(div().flex_none().child(Spinner::new().xsmall().color(theme::token(cx, "primary", cx.theme().primary)))))
-                            .child(div().text_xs().text_color(theme_muted).whitespace_nowrap().child(r["badge"].as_str().map(|b| if project_tree { b.to_string() } else { format!("[{b}]") }).unwrap_or_default())))
+                        .child(h_flex().w_full().min_w_0().gap_1().child(div().flex_1().min_w_0().text_sm().when_some(weight, |d, w| d.font_weight(w)).overflow_hidden().whitespace_nowrap().text_ellipsis().child(r["label"].as_str().unwrap_or("").to_string()))
+                            .when(busy, |d| d.child(div().flex_none().child(Spinner::new().xsmall().color(theme::color(cx, "primary", cx.theme().primary)))))
+                            .child(div().text_xs().text_color(theme_muted).whitespace_nowrap().child(r["badge"].as_str().unwrap_or("").to_string())))
                         .when_some(r["detail"].as_str(), |d, detail| d.child(div().text_xs().text_color(theme_muted).overflow_hidden().whitespace_nowrap().text_ellipsis().child(detail.to_string())));
-                    let icon_element = if let Some(svg) = r["iconSvg"].as_str() {
-                        let color = match r["iconColor"].as_str() {
-                            Some("accent") => theme::token(cx, "primary", cx.theme().primary),
-                            Some("warning") => theme::token(cx, "warning", cx.theme().warning),
-                            Some("success") => theme::token(cx, "success", cx.theme().success),
-                            _ => theme_muted,
-                        };
-                        gpui_component::Icon::default().data(svg.as_bytes()).with_size(px(16.0)).text_color(color).into_any_element()
-                    } else if project_tree {
-                        let name = match r["icon"].as_str() { Some("task") | Some("git") => "git-branch", Some("remote") => "terminal", Some("warning") => "warning", _ => "folder" };
-                        chat_style::icon(name).with_size(px(18.0)).text_color(theme_muted).into_any_element()
-                    } else if file_tree { file_icons::icon(r["icon"].as_str().unwrap_or("file"), expanded, cx).into_any_element() }
-                        else { div().w(px(12.0)).text_xs().flex_none().child(icon).into_any_element() };
+                    let icon_element = match r["iconSvg"].as_str() {
+                        Some(svg) => {
+                            let color = r["iconColor"].as_str().map(|c| theme::color(cx, c, theme_muted)).unwrap_or(theme_muted);
+                            gpui_component::Icon::default().data(svg.as_bytes()).with_size(px(icon_size)).text_color(color).into_any_element()
+                        }
+                        None => div().w(px(4.0)).flex_none().into_any_element(),
+                    };
                     let leading = if let Some(connector) = r["connector"].as_str().filter(|c| *c == "branch" || *c == "last") {
                         let stem = div().absolute().left(px(3.0)).top_0().w(px(1.0)).bg(theme_muted.opacity(0.55));
                         div().relative().w(px(16.0)).h_full().flex_none()
@@ -786,36 +752,6 @@ impl Shell {
                             .child(div().absolute().left(px(3.0)).top(relative(0.5)).w(px(13.0)).h(px(1.0)).bg(theme_muted.opacity(0.55))).into_any_element()
                     } else { chevron.into_any_element() };
                     row = row.child(leading).child(div().flex_shrink_0().child(icon_element)).child(label);
-                    list = list.child(row);
-                }
-                self.apply_base(v_flex(), n, cx).min_h_0().min_w_0().overflow_hidden().child(div().id(sid(module, &path)).flex_1().min_h_0().w_full().overflow_y_scroll().child(list)).into_any_element()
-            }
-            "fileList" => {
-                let entries = n.get("entries").and_then(|r| r.as_array()).cloned().unwrap_or_default();
-                let action = s("action");
-                let inputs = self.module_inputs(module);
-                let mut list = v_flex();
-                for e in entries.iter().take(5000) {
-                    let ek = e["key"].as_str().unwrap_or("").to_string();
-                    let is_dir = e["kind"].as_str() == Some("dir");
-                    let k = self.kernel.clone();
-                    let m = module.to_string();
-                    let a = action.clone();
-                    let inputs = inputs.clone();
-                    let key2 = key.to_string();
-                    let ek2 = ek.clone();
-                    let mut row = h_flex().id(sid(module, &format!("{path}/f/{ek}"))).gap_2().px_1().py(px(2.0)).rounded(px(3.0)).cursor_pointer().hover(|s| s.bg(cx.theme().list_hover))
-                        .on_click(move |_, _, cx| Self::fire(&k, &m, &inputs, &a, &key2, Some(ek2.clone()), Value::Null, cx))
-                        .child(div().w(px(14.0)).text_xs().text_color(theme_muted).child(if is_dir { "▸" } else { "·" }))
-                        .child(div().flex_1().min_w_0().text_sm().overflow_hidden().whitespace_nowrap().text_ellipsis().child(e["name"].as_str().unwrap_or("").to_string()));
-                    if !is_dir {
-                        if let Some(sz) = e["size"].as_u64() {
-                            row = row.child(div().text_xs().text_color(theme_muted).child(human(sz)));
-                        }
-                    }
-                    if e["selected"].as_bool().unwrap_or(false) {
-                        row = row.bg(cx.theme().list_active);
-                    }
                     list = list.child(row);
                 }
                 self.apply_base(v_flex(), n, cx).min_h_0().min_w_0().overflow_hidden().child(div().id(sid(module, &path)).flex_1().min_h_0().w_full().overflow_y_scroll().child(list)).into_any_element()
@@ -838,9 +774,22 @@ impl Shell {
                 self.apply_base(v_flex(), n, cx).gap_1().child(bar).when(!label.is_empty(), |d| d.child(div().text_xs().text_color(theme_muted).child(label))).into_any_element()
             }
             "markdown" => {
-                let document = n["document"].as_str().and_then(|h| self.kernel.handles.get_kernel::<Document>(h, "document"));
-                let text = document.map(|d| d.text.clone()).unwrap_or_default();
-                let view = self.markdown_links(TextView::markdown(sid(module, &format!("{path}/content/{}", s("document"))), text), module, key, &s("linkAction"));
+                // Inline text (e.g. a chat message) or a kernel document handle (large files).
+                let inline = n["text"].as_str().map(str::to_owned);
+                let text = match &inline {
+                    Some(t) => t.clone(),
+                    None => n["document"].as_str().and_then(|h| self.kernel.handles.get_kernel::<Document>(h, "document")).map(|d| d.text.clone()).unwrap_or_default(),
+                };
+                let content_id = if inline.is_some() { format!("{path}/inline") } else { format!("{path}/content/{}", s("document")) };
+                let mut view = self.markdown_links(TextView::markdown(sid(module, &content_id), text), module, key, &s("linkAction"));
+                if let Some(gap) = n["paragraphGap"].as_f64() {
+                    view = view.style(TextViewStyle::default().paragraph_gap(rems(gap.clamp(0.0, 4.0) as f32)));
+                }
+                if b("inline") {
+                    let lh = n["lineHeight"].as_f64().unwrap_or(18.0).clamp(10.0, 64.0) as f32;
+                    return self.apply_base(div(), n, cx).w_full().min_w_0().overflow_hidden()
+                        .child(view.selectable(true).line_height(px(lh)).w_full().min_w_0().overflow_hidden().text_sm()).into_any_element();
+                }
                 self.apply_base(v_flex(), n, cx).min_w_0().min_h_0().overflow_hidden()
                     .child(div().id(sid(module, &path)).flex_1().min_h_0().w_full().overflow_y_scroll()
                         .child(div().w_full().min_w_0().p_3().text_color(cx.theme().foreground)
@@ -909,9 +858,13 @@ impl Shell {
                 };
                 self.apply_base(div(), n, cx).flex().flex_col().size_full().min_w_0().min_h_0().overflow_hidden().child(body).into_any_element()
             }
-            "chatTranscript" => {
-                let msgs = n.get("messages").and_then(|m| m.as_array()).cloned().unwrap_or_default();
-                let scroll_key = format!("{module}::{path}/{}", n["conversationId"].as_str().unwrap_or("default"));
+            "transcript" => {
+                // Generic follow-to-bottom list with history paging and scroll anchoring. Items are
+                // module nodes (`children`); `followKey` changing re-enters follow mode (e.g. the
+                // last user message), `scrollKey` separates scroll state (e.g. per conversation).
+                let items: Vec<Value> = n.get("children").and_then(|m| m.as_array()).cloned().unwrap_or_default();
+                let msgs = &items;
+                let scroll_key = format!("{module}::{path}/{}", n["scrollKey"].as_str().unwrap_or("default"));
                 let state = self.scrolls.entry(scroll_key).or_default();
                 let first_message = msgs.first().and_then(|message| message["key"].as_str()).map(str::to_owned);
                 let last_message = msgs.last().and_then(|message| message["key"].as_str()).map(str::to_owned);
@@ -934,7 +887,7 @@ impl Shell {
                 if state.last_message != last_message { state.bottom_requested.set(false); }
                 state.first_message = first_message;
                 state.last_message = last_message;
-                let last_user = msgs.iter().rev().find(|message| message["role"] == "user").and_then(|message| message["key"].as_str()).map(str::to_owned);
+                let last_user = n["followKey"].as_str().map(str::to_owned);
                 let reset = n["scrollReset"].as_u64();
                 let requested_reset = reset != state.scroll_reset && state.scroll_reset.is_some();
                 if requested_reset || (!preserving && !prepended && state.last_user != last_user) {
@@ -1013,69 +966,14 @@ impl Shell {
                         window.refresh();
                     }
                 }).absolute().inset_0();
-                let p = chat_style::Palette::new(cx);
-                let mut list = v_flex().w_full().min_w_0().flex_shrink_0().overflow_hidden().gap(px(6.0)).p(px(8.0)).font_family(cx.theme().font_family.clone()).text_sm().text_color(p.text);
-                if has_older {
-                    let kernel = self.kernel.clone();
-                    let owner = module.to_string();
-                    let action = s("loadOlderAction");
-                    let event_key = key.to_string();
-                    let failed = n["historyError"].as_str();
-                    list = list.child(Button::new(sid(module, &format!("{path}/older"))).ghost().small().w_full()
-                        .label(if loading_older { "Loading older messages…" } else if failed.is_some() { "Retry loading older messages" } else { "Load older messages" })
-                        .disabled(loading_older || action.is_empty()).tooltip(failed.unwrap_or("Load the previous message batch").to_string())
-                        .on_click(move |_, _, cx| Self::fire(&kernel, &owner, &[], &action, &event_key, None, Value::Null, cx)));
-                }
-                for m in msgs.iter() {
-                    let role = m["role"].as_str().unwrap_or("system");
-                    let text = m["text"].as_str().unwrap_or("").to_string();
-                    let message_path = format!("{path}/{}", m["key"].as_str().unwrap_or("message"));
-                    if role == "thought" {
-                        let thought = v_flex().w_full().min_w_0().overflow_hidden().gap(px(2.0)).border_l_2().border_color(p.border).px_3().py_1().text_sm().text_color(p.muted)
-                            .child(div().text_xs().child("REASONING"))
-                            .child(self.markdown_links(TextView::markdown(sid(module, &format!("{message_path}/reasoning")), text), module, key, &s("linkAction")).style(TextViewStyle::default().paragraph_gap(rems(0.3))).selectable(true).line_height(px(18.0)).w_full().min_w_0().overflow_hidden().text_sm());
-                        list = list.child(Self::measured_message(thought.into_any_element(), m["key"].as_str().unwrap_or("message"), message_positions.clone()));
-                        continue;
-                    }
-                    if role == "tool" {
-                        let title = m["title"].as_str().unwrap_or("Tool");
-                        let status = m["status"].as_str().unwrap_or("");
-                        let summary = chat_style::single_line(title);
-                        let copied = if text.is_empty() { title.to_owned() } else { format!("{title}\n{text}") };
-                        let tool = h_flex().w_full().min_w_0().h(px(28.0)).flex_shrink_0().overflow_hidden().gap_2().px_3()
-                            .rounded(px(7.0)).border_1().border_color(p.border).text_color(p.muted).text_sm()
-                            .child(div().flex_shrink_0().text_xs().child("TOOLS"))
-                            .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(summary))
-                            .when(!status.is_empty(), |d| d.child(div().max_w(px(72.0)).overflow_hidden().whitespace_nowrap().text_ellipsis().text_xs().child(chat_style::single_line(status))))
-                            .child(Button::new(sid(module, &format!("{message_path}/copy-tool"))).icon(chat_style::icon("copy").with_size(px(14.0))).ghost().small().w(px(22.0)).h(px(22.0)).p_0().flex_shrink_0().tooltip("Copy tool output")
-                                .on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(copied.clone()))));
-                        list = list.child(Self::measured_message(tool.into_any_element(), m["key"].as_str().unwrap_or("message"), message_positions.clone()));
-                        continue;
-                    }
-                    let label = match role { "user" => "YOU", "assistant" => n["agentLabel"].as_str().unwrap_or("AGENT"), "plan" => "PLAN", "error" => "ERROR", _ => "SYSTEM" };
-                    let edge = match role { "user" => p.accent, "assistant" => p.agent, "error" => cx.theme().danger, _ => p.border };
-                    let copied = text.clone();
-                    let copy_id = format!("{path}/copy/{}", m["key"].as_str().unwrap_or("message"));
-                    let mut card = v_flex().w_full().min_w_0().flex_shrink_0().rounded(px(9.0)).relative().border_1().border_color(p.border).overflow_hidden()
-                        .child(h_flex().w_full().min_w_0().overflow_hidden().gap_2().px_3().py(px(2.0)).bg(p.base).border_b_1().border_color(p.border)
-                            .child(div().flex_1().min_w_0().text_xs().text_color(p.muted).overflow_hidden().whitespace_nowrap().text_ellipsis().child(label.to_uppercase()))
-                            .child(Button::new(sid(module, &copy_id)).icon(chat_style::icon("copy").with_size(px(14.0))).ghost().small().w(px(26.0)).h(px(22.0)).p_0().tooltip("Copy message")
-                                .on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(copied.clone())))));
-                    let mut body = v_flex().w_full().min_w_0().overflow_hidden().gap_1().px_3().py(px(4.0)).line_height(px(18.0)).bg(if role == "user" { p.user } else { p.answer }).text_color(p.text);
-                    if !text.is_empty() {
-                        if role == "assistant" || role == "plan" {
-                            body = body.child(self.markdown_links(TextView::markdown(sid(module, &format!("{message_path}/body")), text), module, key, &s("linkAction")).style(TextViewStyle::default().paragraph_gap(rems(0.3))).selectable(true).line_height(px(18.0)).w_full().min_w_0().overflow_hidden().text_sm().text_color(p.text));
-                        } else {
-                            body = body.child(div().w_full().min_w_0().overflow_hidden().text_sm().line_height(px(18.0)).child(SelectableText::new(sid(module, &format!("{message_path}/body")), text)));
-                        }
-                    }
-                    if let Some(pictures) = m["images"].as_array() {
-                        for picture in pictures {
-                            if let Some(image) = images::preview(picture) { body = body.child(img(image).w(px(200.0)).max_w_full().h(px(140.0)).object_fit(ObjectFit::Contain)); }
-                        }
-                    }
-                    card = card.child(body).child(div().absolute().top_0().bottom_0().left_0().w(px(2.0)).bg(edge));
-                    list = list.child(Self::measured_message(card.into_any_element(), m["key"].as_str().unwrap_or("message"), message_positions.clone()));
+                let gap = n["gap"].as_f64().unwrap_or(6.0).clamp(0.0, 64.0) as f32;
+                let pad = n["padding"].as_f64().unwrap_or(8.0).clamp(0.0, 64.0) as f32;
+                let mut list = v_flex().w_full().min_w_0().flex_shrink_0().overflow_hidden().gap(px(gap)).p(px(pad));
+                // Items are ordinary module nodes; the renderer only measures them for scroll anchoring.
+                for item in items.iter() {
+                    let item_key = item["key"].as_str().unwrap_or("item").to_string();
+                    let el = self.node(module, item, &path, depth, window, cx);
+                    list = list.child(Self::measured_message(el, &item_key, message_positions.clone()));
                 }
                 // The transcript must take only the space its parent gives it and scroll internally;
                 // flex_1 + min_h_0 (rather than a percentage height) keeps it bounded when messages grow.
@@ -1132,8 +1030,8 @@ impl Shell {
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
             .on_scroll(|_, _, cx| cx.stop_propagation())
-            .child(v_flex().id(sid(module, &format!("{path}/card"))).occlude().w(px(640.0)).max_w(relative(0.95)).max_h(relative(0.85)).overflow_y_scroll().gap_2().p_4().rounded(px(8.0))
-                .bg(cx.theme().background).border_1().border_color(cx.theme().border).shadow_lg()
+            .child(style::apply(v_flex().id(sid(module, &format!("{path}/card"))).occlude().w(px(n["width"].as_f64().unwrap_or(640.0).clamp(200.0, 4096.0) as f32)).max_w(relative(0.95)).max_h(relative(0.85)).overflow_y_scroll().gap_2().p_4().rounded(px(8.0))
+                .bg(cx.theme().background).border_1().border_color(cx.theme().border).shadow_lg(), &n["style"], cx)
                 .child(h_flex().child(div().flex_1().font_weight(FontWeight::BOLD).child(title))
                     .when_some(close, |d, a| d.child(Button::new(sid(module, &format!("{path}/close"))).label("✕").ghost().small()
                         .on_click(move |_, _, cx| Self::fire(&k, &m, &inputs, &a, "close", None, Value::Null, cx)))))
@@ -1174,42 +1072,56 @@ impl Shell {
         let mut list = v_flex().gap_1();
         for m in mods.as_array().cloned().unwrap_or_default() {
             let id = m["id"].as_str().unwrap_or("").to_string();
-            let label = m["active"]["label"].as_str().map(|s| s.to_string()).unwrap_or_else(|| format!("{id} (inactive)"));
+            let enabled = self.kernel.plugin_enabled(&id);
+            let label = m["active"]["label"].as_str().map(|s| s.to_string()).unwrap_or_else(|| format!("{id} ({})", if enabled { "inactive" } else { "disabled" }));
             let err = m["lastError"].as_str().unwrap_or("").to_string();
             let k = self.kernel.clone();
             let id2 = id.clone();
-            list = list.child(h_flex().gap_2().child(div().w(px(220.0)).text_sm().font_family(cx.theme().mono_font_family.clone()).child(label))
-                .child(div().flex_1().text_xs().text_color(if err.is_empty() { cx.theme().muted_foreground } else { cx.theme().danger }).child(if err.is_empty() { "ok".to_string() } else { err }))
-                .child(Button::new(SharedString::from(format!("safe::rb::{id}"))).label("Roll back").small().on_click(move |_, _, _| {
+            let mut row = h_flex().gap_2().child(div().w(px(220.0)).text_sm().font_family(cx.theme().mono_font_family.clone()).child(label))
+                .child(div().flex_1().text_xs().text_color(if err.is_empty() || !enabled { cx.theme().muted_foreground } else { cx.theme().danger }).child(if err.is_empty() { "ok".to_string() } else { err }));
+            if enabled {
+                row = row.child(Button::new(SharedString::from(format!("safe::rb::{id}"))).label("Roll back").small().on_click(move |_, _, _| {
                     let k = k.clone();
                     let id = id2.clone();
                     std::thread::spawn(move || {
                         let r = k.rollback(None, &id, None, false);
                         k.ui.send(UiMsg::Toast { level: if r.is_ok() { "info" } else { "error" }.into(), text: format!("rollback {id}: {}", r.map(|_| "ok".to_string()).unwrap_or_else(|e| e.to_string())) });
                     });
-                })));
+                }));
+            } else if self.kernel.grants.escalation(&self.kernel.manifests.lock().get(&id).map(|(m, _)| m.clone()).unwrap_or_default()).is_empty() {
+                // Kernel chrome may re-enable a plugin that needs no new permissions (e.g. a
+                // disabled built-in root); widening trust still requires the in-app approval path.
+                row = row.child(Button::new(SharedString::from(format!("safe::en::{id}"))).label("Enable").small().on_click(move |_, _, _| {
+                    let k = k.clone();
+                    let id = id2.clone();
+                    std::thread::spawn(move || {
+                        let r = k.enable_plugin(None, &id);
+                        k.ui.send(UiMsg::Toast { level: if r.is_ok() { "info" } else { "error" }.into(), text: format!("enable {id}: {}", r.map(|_| "ok".to_string()).unwrap_or_else(|e| e.to_string())) });
+                        k.rerender_all_ui();
+                    });
+                }));
+            }
+            list = list.child(row);
         }
         let k = self.kernel.clone();
         v_flex().size_full().p_4().gap_3()
             .child(div().text_lg().font_weight(FontWeight::BOLD).child("Hato — safe mode"))
-            .child(div().text_sm().text_color(cx.theme().muted_foreground).child("The workspace-layout UI module is unavailable. The kernel keeps running; terminals and agent processes are preserved. Roll back modules below (native action, no approval prompt needed because this is kernel chrome)."))
+            .child(div().text_sm().text_color(cx.theme().muted_foreground).child("No enabled plugin providing the window root (shell.root) is available. The kernel keeps running; terminals and agent processes are preserved. Roll back or enable plugins below (native action, no approval prompt needed because this is kernel chrome)."))
             .child(Button::new("safe::rerender").label("Retry rendering").on_click(move |_, _, _| k.rerender_all_ui()))
             .child(div().id("safe-list").flex_1().overflow_y_scroll().child(list))
             .into_any_element()
     }
 }
 
-fn human(n: u64) -> String {
-    if n < 1024 { format!("{n} B") } else if n < 1024 * 1024 { format!("{:.1} KB", n as f64 / 1024.0) } else { format!("{:.1} MB", n as f64 / 1048576.0) }
-}
 
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.modals.clear();
         self.begin_frame();
-        let layout_ok = self.trees.contains_key("workspace-layout") || self.kernel.router.active("workspace-layout").is_some();
-        let body = if layout_ok && !self.show_safe_mode {
-            self.render_slot("workspace-layout", 0, window, cx)
+        let root = self.kernel.root_module();
+        let layout_ok = root.as_ref().map(|r| self.trees.contains_key(r) || self.kernel.router.active(r).is_some()).unwrap_or(false);
+        let body = if let (true, false, Some(root)) = (layout_ok, self.show_safe_mode, root) {
+            self.render_slot(&root, 0, window, cx)
         } else {
             v_flex().size_full().child(TitleBar::new().child("Hato")).child(self.render_safe_mode(cx)).into_any_element()
         };
@@ -1223,7 +1135,15 @@ impl Render for Shell {
         let modals = std::mem::take(&mut self.modals);
         let modal_els: Vec<AnyElement> = modals.iter().map(|(m, p, n)| self.render_modal(m, p, n, window, cx)).collect();
         let approvals = self.render_approvals(cx);
-        let mut toasts = v_flex().absolute().bottom(px(36.0)).right(px(12.0)).gap_1().w(px(420.0));
+        let chrome = theme::chrome(cx);
+        let toast_w = chrome["toasts"]["width"].as_f64().unwrap_or(420.0).clamp(160.0, 1200.0) as f32;
+        let mut toasts = v_flex().absolute().gap_1().w(px(toast_w));
+        toasts = match chrome["toasts"]["position"].as_str() {
+            Some("top-right") => toasts.top(px(44.0)).right(px(12.0)),
+            Some("top-left") => toasts.top(px(44.0)).left(px(12.0)),
+            Some("bottom-left") => toasts.bottom(px(36.0)).left(px(12.0)),
+            _ => toasts.bottom(px(36.0)).right(px(12.0)),
+        };
         for (level, text, _) in &self.toasts {
             let c = match level.as_str() { "error" => cx.theme().danger, "warn" => cx.theme().warning, _ => cx.theme().info };
             toasts = toasts.child(div().p_2().rounded(px(6.0)).text_xs().bg(cx.theme().background).border_1().border_color(c).text_color(c).child(text.clone()));

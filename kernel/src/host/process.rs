@@ -35,6 +35,10 @@ pub struct ProcessRes {
     pub exit_cv: Condvar,
 }
 
+/// A process held by the daemon on the target machine.
+#[derive(Clone, Debug)]
+pub struct Persist { pub bin: String, pub dir: String, pub key: String }
+
 pub struct SpawnSpec {
     pub target: Target,
     pub ssh: Option<Arc<SshMaster>>,
@@ -45,10 +49,21 @@ pub struct SpawnSpec {
     /// Variables removed from the inherited environment (e.g. to keep an API key away from an agent).
     pub env_remove: Vec<String>,
     pub login_shell: bool,
+    /// Run under the daemon on the target machine: (daemon binary, scoped key). The process then
+    /// survives this connection; spawning the same key again reattaches.
+    pub persist: Option<Persist>,
 }
 
 pub fn spawn(spec: SpawnSpec) -> HResult<Arc<ProcessRes>> {
     let mut cmd = match &spec.target {
+        Target::Local if spec.persist.is_some() => {
+            let p = spec.persist.clone().unwrap();
+            let sh = quoting::remote_command(&spec.cwd, &spec.executable, &spec.args, &spec.env, &spec.env_remove, spec.login_shell)
+                .map_err(HostError::invalid)?;
+            let mut c = Command::new(&p.bin);
+            c.args(["daemon", "proc-attach", "--dir", &p.dir, "--key", &p.key, "--cwd", &spec.cwd, "--sh", &sh]);
+            c
+        }
         Target::Local => {
             let mut c = Command::new(&spec.executable);
             c.args(&spec.args).current_dir(&spec.cwd);
@@ -63,8 +78,11 @@ pub fn spawn(spec: SpawnSpec) -> HResult<Arc<ProcessRes>> {
         Target::Ssh { .. } => {
             let ssh = spec.ssh.as_ref().ok_or_else(|| HostError::new("ENOTCONN", "SSH connection unavailable"))?;
             ssh.ensure_alive()?;
-            let remote = quoting::remote_command(&spec.cwd, &spec.executable, &spec.args, &spec.env, &spec.env_remove, spec.login_shell)
+            let mut remote = quoting::remote_command(&spec.cwd, &spec.executable, &spec.args, &spec.env, &spec.env_remove, spec.login_shell)
                 .map_err(HostError::invalid)?;
+            if let Some(p) = &spec.persist {
+                remote = format!("{} daemon proc-attach --dir {} --key {} --cwd {} --sh {}", quoting::sh_quote(&p.bin), quoting::sh_quote(&p.dir), quoting::sh_quote(&p.key), quoting::sh_quote(&spec.cwd), quoting::sh_quote(&remote));
+            }
             let mut c = ssh.client_command(&["-T"]);
             c.arg("--").arg(remote);
             c

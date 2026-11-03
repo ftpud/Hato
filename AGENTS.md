@@ -25,3 +25,9 @@ When touching application logic or presentation currently hardcoded in Rust, mov
 - Run appropriate Rust checks when native code changes.
 - A module build alone does not activate changes in a running app. Report whether changes were built, staged, activated, or require a restart.
 - Do not require a Rust rebuild or app restart for changes that existing module contracts can already express. When native changes are unavoidable, explain why a rebuild or restart is needed.
+
+## Plugin architecture reference
+
+For plugin builds, activation, lifecycle, permissions and service/UI wiring, consult
+[the Hato plugin skill](.agents/skills/hato-plugins/SKILL.md). Its reference tree links to the
+relevant subsystem guides; load only the branches needed for the task.

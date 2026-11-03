@@ -1,5 +1,6 @@
 // files: workspace-scoped listing and reading through scoped FS grants (local fs or SFTP on the
 // workspace's machine). Returns native document handles for the viewer.
+import { fileWatch } from "../../../../sdk/file-watch";
 import { searchFiles, invalidateSearch } from "./search";
 import { workspaceSkills } from "./skills";
 import type { AppModule, ModuleContext } from "../../../../sdk/types";
@@ -24,6 +25,21 @@ function cleanRel(rel: any): string {
   return parts.length ? parts.join("/") : ".";
 }
 
+let watcher: ReturnType<typeof fileWatch> | null = null;
+let changeTimer: ReturnType<typeof setTimeout> | null = null;
+let selected: WorkspaceDescriptor | null = null;
+let selection = 0;
+async function watchSelected(ctx: ModuleContext) {
+  const mine = ++selection;
+  const ws: any = ctx.state.get("workspace.selected");
+  try {
+    const next = ws?.id ? await desc(ctx, ws.id) : null;
+    if (mine !== selection) return;
+    if (selected?.id === next?.id && selected?.rootAbsolutePath === next?.rootAbsolutePath) return;
+    selected = next;
+    await watcher?.select(next);
+  } catch (e) { ctx.log.warn(`File watcher: ${errMsg(e)}`); }
+}
 let skillsVersion = 0;
 async function publishSkills(ctx: ModuleContext) {
   const version = ++skillsVersion;
@@ -43,9 +59,25 @@ const mod: AppModule = {
   id: "files",
   moduleApiVersion: 1,
   async activate(ctx) {
-    ctx.state.watch("workspace.selected", () => { void publishSkills(ctx); });
+    watcher = fileWatch(ctx, workspaceId => {
+      if (changeTimer) clearTimeout(changeTimer);
+      changeTimer = setTimeout(() => {
+        if (selected?.id !== workspaceId) return;
+        invalidateSearch(selected);
+        docCache.clear();
+        ctx.events.emit("files.changed", { workspaceId });
+        void publishSkills(ctx);
+      }, 200);
+    });
+    ctx.state.watch("workspace.selected", () => { void publishSkills(ctx); void watchSelected(ctx); });
+    await watchSelected(ctx);
     ctx.events.on("ai.skillsRequested", () => { void publishSkills(ctx); });
     await publishSkills(ctx);
+  },
+  async deactivate() {
+    selection++; skillsVersion++;
+    if (changeTimer) clearTimeout(changeTimer);
+    await watcher?.stop(); watcher = null;
   },
   methods: {
     async search(ctx, a) {

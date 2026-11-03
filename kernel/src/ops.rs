@@ -4,6 +4,7 @@
 use crate::approvals::{ApprovalOption, Decision};
 use crate::bridge::UiMsg;
 use crate::grants::{join_relative, normalize_posix, path_within, ScopeGrant, ScopeKind, Target};
+use crate::host::daemon_link;
 use crate::host::db::DbRes;
 use crate::host::fs as hfs;
 use crate::host::net::{NetConn, NetListener};
@@ -12,6 +13,7 @@ use crate::host::pty::{self, PtySession, PtySpec};
 use crate::host::ssh::{SshMaster, SshProfile};
 use crate::host::streams::{ByteStream, Encoding, Subscriber};
 use crate::js::worker::op_result_msg;
+use crate::quoting::sh_quote;
 use crate::kernel::{Kernel, StreamSub};
 use crate::router::{GenStatus, Generation, Reply};
 use crate::util::{arg_opt_str, arg_str, now_ms, random_hex, uuid_v4, HResult, HostError};
@@ -263,6 +265,30 @@ fn dispatch(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: &Value) -> H
         }
 
         // ---------------------------------------------------------------- filesystem
+        "fs.watch" => {
+            let g = grant(k, gen, args)?;
+            if !matches!(g.kind, ScopeKind::Fs | ScopeKind::Source) {
+                return Err(HostError::denied("grant does not allow file access"));
+            }
+            let ssh = ssh_for(k, &g.target);
+            let be = hfs::backend(&g, ssh.clone())?;
+            let real = hfs::resolve(&g, &be, arg_opt_str(args, "path").unwrap_or("."), true)?;
+            if g.target == Target::Local && protected(k, &real) {
+                return Err(HostError::denied("path is inside kernel-protected application state"));
+            }
+            let bin = if let Some(master) = &ssh {
+                gen.caps.require("remote.daemon")?;
+                daemon_link::ensure_ssh(&k.daemons, master, &k.cfg.data_dir, &k.cfg.repo_root)?.bin
+            } else { std::env::current_exe()?.to_string_lossy().into_owned() };
+            let mut argv = vec!["daemon".into(), "watch".into(), "--path".into(), real.clone()];
+            if args.get("recursive").and_then(Value::as_bool) == Some(false) { argv.push("--non-recursive".into()); }
+            let p = process::spawn(SpawnSpec {
+                target: g.target.clone(), ssh, executable: bin, args: argv, cwd: g.root.clone(),
+                env: vec![], env_remove: vec![], login_shell: false, persist: None,
+            })?;
+            let handle = k.handles.insert("process", owner, format!("watch {real}"), p);
+            Ok(json!({"handle": handle}))
+        }
         "fs.stat" | "fs.list" | "fs.read" | "fs.realpath" => {
             let g = grant(k, gen, args)?;
             if !matches!(g.kind, ScopeKind::Fs | ScopeKind::Source) {
@@ -345,7 +371,10 @@ fn dispatch(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: &Value) -> H
         "process.spawn" | "process.run" => {
             let g = grant(k, gen, args)?;
             let req = args.get("request").ok_or_else(|| HostError::invalid("missing request"))?;
-            let spec = spawn_spec(k, &g, req)?;
+            let mut spec = spawn_spec(k, &g, req)?;
+            if op == "process.spawn" {
+                spec.persist = persist_target(k, gen, req, &g.target)?;
+            }
             let p = process::spawn(spec)?;
             if op == "process.run" {
                 let timeout = args.get("timeoutMs").and_then(|t| t.as_u64()).unwrap_or(60_000).min(30 * 60_000);
@@ -394,6 +423,7 @@ fn dispatch(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: &Value) -> H
             let rows = req.get("rows").and_then(|c| c.as_u64()).unwrap_or(30) as u16;
             let shell = req.get("shell").and_then(|c| c.as_str());
             check_target(&g, req)?;
+            let persist = persist_target(k, gen, req, &g.target)?;
             let spec = match &g.target {
                 Target::Local => {
                     let real = std::fs::canonicalize(cwd).map_err(HostError::from)?.to_string_lossy().into_owned();
@@ -401,7 +431,11 @@ fn dispatch(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: &Value) -> H
                         return Err(HostError::denied("terminal cwd outside granted root"));
                     }
                     let sh = shell.map(|s| s.to_string()).or_else(|| std::env::var("SHELL").ok()).unwrap_or_else(|| "/bin/sh".into());
-                    PtySpec { program: sh, args: vec!["-l".into()], cwd: Some(real.clone()), env: env_pairs(req)?, cols, rows, machine_id: "local".into(), display_cwd: real }
+                    match &persist {
+                        Some(p) => PtySpec { program: p.bin.clone(), args: vec!["daemon".into(), "pty-attach".into(), "--dir".into(), p.dir.clone(), "--key".into(), p.key.clone(), "--cwd".into(), real.clone(), "--shell".into(), sh],
+                            cwd: Some(real.clone()), env: env_pairs(req)?, cols, rows, machine_id: "local".into(), display_cwd: real },
+                        None => PtySpec { program: sh, args: vec!["-l".into()], cwd: Some(real.clone()), env: env_pairs(req)?, cols, rows, machine_id: "local".into(), display_cwd: real },
+                    }
                 }
                 Target::Ssh { machine_id, .. } => {
                     let master = k.ssh.by_machine(machine_id).ok_or_else(|| HostError::new("ENOTCONN", "SSH connection unavailable"))?;
@@ -411,7 +445,11 @@ fn dispatch(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: &Value) -> H
                     if !path_within(&g.root, &real) {
                         return Err(HostError::denied("terminal cwd outside granted root"));
                     }
-                    let remote = crate::quoting::remote_shell(&real, shell);
+                    let remote = match &persist {
+                        Some(p) => format!("{} daemon pty-attach --dir {} --key {} --cwd {}{}", sh_quote(&p.bin), sh_quote(&p.dir), sh_quote(&p.key), sh_quote(&real),
+                            shell.map(|s| format!(" --shell {}", sh_quote(s))).unwrap_or_default()),
+                        None => crate::quoting::remote_shell(&real, shell),
+                    };
                     PtySpec { program: "ssh".into(), args: master.pty_argv(&remote), cwd: None, env: vec![], cols, rows, machine_id: machine_id.clone(), display_cwd: real }
                 }
             };
@@ -690,6 +728,88 @@ fn dispatch(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: &Value) -> H
             Ok(Value::Null)
         }
 
+        // ---------------------------------------------------------------- plugins
+        // Listing is plain metadata (layouts need it to discover panels); mutations need
+        // `plugins.manage`, and anything that widens trust also needs a native approval.
+        "plugins.list" => Ok(k.plugins_json()),
+        "plugins.providers" => Ok(json!(k.providers(arg_str(args, "contract")?))),
+        "plugins.dependents" => Ok(json!(k.dependents_of(arg_str(args, "id")?))),
+        "plugins.enable" => {
+            gen.caps.require("plugins.manage")?;
+            k.enable_plugin(Some(gen), arg_str(args, "id")?)
+        }
+        "plugins.disable" => {
+            gen.caps.require("plugins.manage")?;
+            let cascade = args.get("cascade").and_then(|c| c.as_bool()).unwrap_or(false);
+            k.disable_plugin(Some(gen), arg_str(args, "id")?, cascade)
+        }
+        "plugins.setRoot" => {
+            gen.caps.require("plugins.manage")?;
+            k.set_root_plugin(arg_opt_str(args, "id"))?;
+            Ok(Value::Null)
+        }
+        "plugins.install" => {
+            gen.caps.require("plugins.manage")?;
+            k.install_plugin(gen, arg_str(args, "path")?)
+        }
+        "plugins.uninstall" => {
+            gen.caps.require("plugins.manage")?;
+            k.uninstall_plugin(gen, arg_str(args, "id")?)
+        }
+        "plugins.rescan" => {
+            gen.caps.require("plugins.manage")?;
+            Ok(k.rescan_plugins())
+        }
+
+        // ---------------------------------------------------------------- remote runtime
+        "daemon.ensure" => {
+            gen.caps.require("remote.daemon")?;
+            let info = match daemon_target(k, owner, args)? {
+                None => daemon_link::ensure_local(&k.daemons)?,
+                Some(m) => daemon_link::ensure_ssh(&k.daemons, &m, &k.cfg.data_dir, &k.cfg.repo_root)?,
+            };
+            k.audit.record(owner, gen.gen_id, "daemon.ensure", &info.machine_id, "ok", None);
+            Ok(daemon_link::status_json(&info))
+        }
+        "daemon.status" => {
+            gen.caps.require("remote.daemon")?;
+            let machine = daemon_target(k, owner, args)?.map(|m| m.profile.machine_id()).unwrap_or_else(|| "local".into());
+            Ok(k.daemons.get(&machine).map(|i| daemon_link::status_json(&i)).unwrap_or(Value::Null))
+        }
+        "daemon.request" => {
+            gen.caps.require("remote.daemon")?;
+            let master = daemon_target(k, owner, args)?;
+            let machine = master.as_ref().map(|m| m.profile.machine_id()).unwrap_or_else(|| "local".into());
+            let info = k.daemons.get(&machine).ok_or_else(|| HostError::new("EDAEMON", format!("no daemon on {machine}; call daemon.ensure first")))?;
+            let op = arg_str(args, "op")?;
+            if !daemon_link::allowed_op(op) {
+                return Err(HostError::denied(format!("daemon op '{op}' is not available to modules")));
+            }
+            let mut dargs = args.get("args").cloned().unwrap_or(json!({}));
+            // `remote.daemon.admin` (e.g. a remote-runtime manager) sees and stops every module's
+            // resources using full `<module>/<key>` keys; everyone else only their own.
+            let admin = gen.caps.has("remote.daemon.admin");
+            match op {
+                "pty.kill" | "proc.kill" | "proc.closeStdin" => {
+                    let raw = dargs["key"].as_str().unwrap_or("");
+                    let key = if admin && raw.contains('/') { raw.to_string() } else { daemon_link::scoped_key(owner, raw)? };
+                    dargs["key"] = json!(key);
+                }
+                // Only plugins installed and approved on this desktop may be pushed, with exactly
+                // the permissions approved here.
+                "plugins.push" => dargs = push_payload(k, dargs["id"].as_str().unwrap_or(""))?,
+                _ => {}
+            }
+            let r = daemon_link::request(&info, master.as_ref(), &json!({"op": op, "args": dargs}))?;
+            if (op == "resources.list" || op == "hello" || op == "status") && !admin {
+                return Ok(own_resources(r, owner));
+            }
+            if op == "plugins.push" {
+                k.audit.record(owner, gen.gen_id, "daemon.pushPlugin", &format!("{} to {machine}", r["id"].as_str().unwrap_or("?")), "ok", None);
+            }
+            Ok(r)
+        }
+
         // ---------------------------------------------------------------- approvals (module-sourced)
         "approvals.request" => {
             gen.caps.require("approvals.request")?;
@@ -837,7 +957,69 @@ fn spawn_spec(k: &Kernel, g: &ScopeGrant, req: &Value) -> HResult<SpawnSpec> {
         }
     };
     let ssh = ssh_for(k, &g.target);
-    Ok(SpawnSpec { target: g.target.clone(), ssh, executable: exe, args, cwd, env, env_remove, login_shell })
+    Ok(SpawnSpec { target: g.target.clone(), ssh, executable: exe, args, cwd, env, env_remove, login_shell, persist: None })
+}
+
+/// `persist: {key}` on a PTY/process request → (daemon binary, owner-scoped key).
+fn persist_target(k: &Kernel, gen: &Generation, req: &Value, target: &Target) -> HResult<Option<process::Persist>> {
+    let Some(key) = req.get("persist").and_then(|p| p.get("key")).and_then(|k| k.as_str()) else { return Ok(None) };
+    gen.caps.require("remote.daemon")?;
+    let key = daemon_link::scoped_key(&gen.module_id, key)?;
+    let info = match target {
+        Target::Local => match k.daemons.get("local") {
+            Some(i) => i,
+            None => daemon_link::ensure_local(&k.daemons)?,
+        },
+        Target::Ssh { machine_id, .. } => k.daemons.get(machine_id)
+            .ok_or_else(|| HostError::new("EDAEMON", format!("no daemon on {machine_id}; call daemon.ensure first")))?,
+    };
+    Ok(Some(process::Persist { bin: info.bin, dir: info.dir, key }))
+}
+
+/// `target` of a daemon op: absent/local → None, ssh → the connection's master.
+fn daemon_target(k: &Kernel, owner: &str, args: &Value) -> HResult<Option<Arc<SshMaster>>> {
+    let t = args.get("target").cloned().unwrap_or(json!({"kind": "local"}));
+    match t.get("kind").and_then(|x| x.as_str()) {
+        Some("local") | None => Ok(None),
+        Some("ssh") => {
+            let ch = t.get("connection").and_then(|x| x.as_str()).ok_or_else(|| HostError::invalid("ssh target requires a connection handle"))?;
+            let c: Arc<SshConnRef> = k.handles.get(ch, "ssh", owner)?;
+            Ok(Some(c.master.clone()))
+        }
+        _ => Err(HostError::invalid("target.kind must be local or ssh")),
+    }
+}
+
+/// Manifest, code and approvals of a locally installed, fully approved plugin.
+fn push_payload(k: &Kernel, id: &str) -> HResult<Value> {
+    let (m, _) = k.source_manifest(id)?;
+    if m.placement() == "ui" {
+        return Err(HostError::invalid(format!("'{id}' is a UI plugin and runs only in the window")));
+    }
+    let pending = k.grants.escalation(&m);
+    if !pending.is_empty() {
+        return Err(HostError::denied(format!("'{id}' has unapproved permissions ({}); enable it here first", pending.join(", "))));
+    }
+    let active = k.artifacts.lock().get(id).and_then(|r| r.active).ok_or_else(|| HostError::not_found(format!("'{id}' has no built artifact")))?;
+    let (code, _, _) = k.artifacts.lock().load(id, active)?;
+    let approved: Vec<String> = m.capabilities.iter().cloned().chain(m.calls.iter().map(|c| format!("call:{c}"))).collect();
+    Ok(json!({"manifest": m, "code": code, "approved": approved}))
+}
+
+/// Strip other modules' resources from a daemon status reply and unscope keys.
+fn own_resources(mut v: Value, owner: &str) -> Value {
+    let prefix = format!("{owner}/");
+    let res = if v.get("resources").is_some() { &mut v["resources"] } else { &mut v };
+    for kind in ["ptys", "procs"] {
+        if let Some(arr) = res.get_mut(kind).and_then(|a| a.as_array_mut()) {
+            arr.retain(|e| e["key"].as_str().map(|k| k.starts_with(&prefix)).unwrap_or(false));
+            for e in arr.iter_mut() {
+                let k = e["key"].as_str().unwrap_or("").trim_start_matches(&prefix).to_string();
+                e["key"] = json!(k);
+            }
+        }
+    }
+    v
 }
 
 fn request_grant(k: &Arc<Kernel>, gen: &Arc<Generation>, args: &Value) -> HResult<Value> {
