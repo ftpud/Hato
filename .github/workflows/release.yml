@@ -1,0 +1,161 @@
+name: Build signed release
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g. Beta-0.0.1); empty bumps the highest minor version'
+        required: false
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: hato-release
+  cancel-in-progress: false
+jobs:
+  version:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      numeric: ${{ steps.version.outputs.numeric }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: version
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: python3 tools/release/version.py
+  linux:
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: x86_64
+          - runner: ubuntu-24.04-arm
+            arch: aarch64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.arch }}-unknown-linux-musl
+      - run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: linux-${{ matrix.arch }}
+      - name: Build and smoke-test static daemon
+        env:
+          RELEASE_VERSION: ${{ needs.version.outputs.version }}
+          ARCH: ${{ matrix.arch }}
+          NUMERIC_VERSION: ${{ needs.version.outputs.numeric }}
+        run: |
+          python3 tools/release/set-build-version.py
+          cargo build --release --locked --no-default-features --target "$ARCH-unknown-linux-musl"
+          mkdir -p dist
+          cp "target/$ARCH-unknown-linux-musl/release/hato" dist/hatod
+          dist/hatod --help
+          tar -czf "dist/hatod-$RELEASE_VERSION-linux-$ARCH.tar.gz" -C dist hatod
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hatod-linux-${{ matrix.arch }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+  macos:
+    needs: [version, linux]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x64
+    runs-on: ${{ matrix.runner }}
+    env:
+      RELEASE_VERSION: ${{ needs.version.outputs.version }}
+      NUMERIC_VERSION: ${{ needs.version.outputs.numeric }}
+      MACOS_ARCH: ${{ matrix.arch }}
+      MACOSX_DEPLOYMENT_TARGET: '12.0'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: macos-${{ matrix.arch }}
+      - run: npm ci
+      - run: npm test
+      - run: npm run modules:build
+      - run: |
+          python3 tools/release/set-build-version.py
+          cargo build --release --locked
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: hatod-linux-*
+          path: daemon-artifacts
+      - name: Import signing credentials
+        env:
+          CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE_BASE64 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$CERTIFICATE_BASE64"
+          test -n "$APPLE_API_PRIVATE_KEY"
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          password="$(openssl rand -hex 24)"
+          echo "::add-mask::$password"
+          printf '%s' "$CERTIFICATE_BASE64" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          printf '%s' "$APPLE_API_PRIVATE_KEY" > "$RUNNER_TEMP/notary.p8"
+          chmod 600 "$RUNNER_TEMP/certificate.p12" "$RUNNER_TEMP/notary.p8"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          security import "$RUNNER_TEMP/certificate.p12" -k "$keychain" -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$password" "$keychain"
+          security list-keychains -d user -s "$keychain" login.keychain-db
+      - name: Package, sign, and notarize DMG
+        env:
+          SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+          NOTARY_KEY_PATH: ${{ runner.temp }}/notary.p8
+        run: bash tools/release/package-macos.sh
+      - name: Remove signing credentials
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/signing.keychain-db" || true
+          rm -f "$RUNNER_TEMP/certificate.p12" "$RUNNER_TEMP/notary.p8"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-${{ matrix.arch }}
+          path: dist/*.dmg
+          if-no-files-found: error
+  publish:
+    needs: [version, macos, linux]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+          merge-multiple: true
+      - name: Publish release and checksums
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ needs.version.outputs.version }}
+          PRERELEASE: ${{ needs.version.outputs.prerelease }}
+        run: |
+          cd release-artifacts
+          sha256sum *.dmg *.tar.gz > SHA256SUMS
+          flags=()
+          if [ "$PRERELEASE" = true ]; then flags+=(--prerelease); fi
+          gh release create "$RELEASE_VERSION" --target "$GITHUB_SHA" --title "Hato $RELEASE_VERSION" --generate-notes "${flags[@]}" ./*.dmg ./*.tar.gz SHA256SUMS

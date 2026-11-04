@@ -5,3 +5,4 @@
 /.runtime
 /.dev-data
 /runtime-data
+/.release-signing.local.json
