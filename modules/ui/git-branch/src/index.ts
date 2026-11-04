@@ -111,7 +111,7 @@ const mod: AppModule = {
       button("new", "Create a branch", "showCreate", { iconSvg: uiIcons.plus, variant: "ghost", grow: true }),
       { type: "label", key: "esc", text: "esc to close", color: "muted", size: "xs" },
     ] });
-    return { type: "dropdown", key: "branch-menu", text: "⌄", iconSvg: uiIcons["git-branch"], variant: "ghost", action: "toggle", open,
+    return { type: "dropdown", key: "branch-menu", text: `${title}  ⌄`, iconSvg: uiIcons["git-branch"], variant: "ghost", action: "toggle", open,
       disabled: !workspaceId || catalog?.repo === false, menuWidth: 440, maxHeight: 620, tooltip: `Current branch: ${title}${error ? `\n${error}` : ""}`,
       style: { background: "transparent", borderWidth: 0 }, children };
   },

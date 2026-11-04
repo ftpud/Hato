@@ -18,7 +18,7 @@ async function fixture(call) {
 test('branch widget searches local/remote tabs, marks current branch, creates from a ref and checks out', async () => {
   const f = await fixture((method, args) => catalog(args.workspaceId, method === 'createBranch' ? args.name : method === 'checkout' ? 'feature/welcome' : 'main'));
   assert.equal(f.mod.render().type, 'dropdown');
-  assert.equal(f.mod.render().text, '⌄');
+  assert.equal(f.mod.render().text, 'main  ⌄');
   assert.equal(f.mod.render().variant, 'ghost');
   assert.ok(f.mod.render().iconSvg);
   assert.equal(f.mod.render().style?.background, 'transparent');

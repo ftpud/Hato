@@ -9,6 +9,6 @@
   "stateVersion": 1,
   "description": "Current workspace branch and searchable local/remote checkout menu.",
   "contributes": {
-    "barItems": [{ "id": "git-branch", "title": "Git branch", "bar": "top", "width": 56, "order": 10 }]
+    "barItems": [{ "id": "git-branch", "title": "Git branch", "bar": "top", "width": 190, "order": 10 }]
   }
 }
