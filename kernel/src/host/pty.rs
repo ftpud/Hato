@@ -30,11 +30,15 @@ type SharedWriter = Arc<Mutex<Box<dyn Write + Send>>>;
 pub struct Listener {
     writer: SharedWriter,
     title: Arc<Mutex<String>>,
+    /// Reply to terminal queries (DA, cursor position, colors). Off for viewers of a daemon PTY:
+    /// the daemon's own emulator already answers, and replayed history would be answered again,
+    /// arriving at the shell as typed garbage like `6c1R9;3R`.
+    answer_queries: bool,
 }
 impl EventListener for Listener {
     fn send_event(&self, event: Event) {
         match event {
-            Event::PtyWrite(s) => {
+            Event::PtyWrite(s) if self.answer_queries => {
                 let mut w = self.writer.lock();
                 let _ = w.write_all(s.as_bytes());
                 let _ = w.flush();
@@ -72,6 +76,9 @@ pub struct PtySpec {
     pub rows: u16,
     pub machine_id: String,
     pub display_cwd: String,
+    /// False when the program is itself a terminal relay (`hato daemon pty-attach`, locally or
+    /// over SSH) whose far end already answers terminal queries.
+    pub answer_queries: bool,
 }
 
 pub fn open(spec: PtySpec) -> HResult<Arc<PtySession>> {
@@ -96,7 +103,7 @@ pub fn open(spec: PtySpec) -> HResult<Arc<PtySession>> {
     let mut reader = pair.master.try_clone_reader().map_err(|e| HostError::new("EPTY", e.to_string()))?;
     let writer: SharedWriter = Arc::new(Mutex::new(pair.master.take_writer().map_err(|e| HostError::new("EPTY", e.to_string()))?));
     let title = Arc::new(Mutex::new(String::new()));
-    let listener = Listener { writer: writer.clone(), title: title.clone() };
+    let listener = Listener { writer: writer.clone(), title: title.clone(), answer_queries: spec.answer_queries };
     let dims = TermDims { cols: cols as usize, rows: rows as usize };
     let term = Term::new(TermConfig { scrolling_history: 5000, ..TermConfig::default() }, &dims, listener);
     let sess = Arc::new(PtySession {
@@ -213,5 +220,33 @@ impl PtySession {
             }
         }
         lines.into_iter().map(|l| l.into_iter().collect::<String>().trim_end().to_string()).collect::<Vec<_>>().join("\n")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Sink(Arc<Mutex<Vec<u8>>>);
+    impl Write for Sink {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> { self.0.lock().extend_from_slice(b); Ok(b.len()) }
+        fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+    }
+
+    fn replies(answer_queries: bool) -> Vec<u8> {
+        let out = Arc::new(Mutex::new(Vec::new()));
+        let listener = Listener { writer: Arc::new(Mutex::new(Box::new(Sink(out.clone())))), title: Default::default(), answer_queries };
+        let mut term = Term::new(TermConfig::default(), &TermDims { cols: 80, rows: 24 }, listener);
+        // Device attributes and cursor position queries, as zsh prompts send them.
+        Processor::<alacritty_terminal::vte::ansi::StdSyncHandler>::new().advance(&mut term, b"\x1b[c\x1b[6n");
+        let v = out.lock().clone();
+        v
+    }
+
+    #[test]
+    fn relay_viewers_do_not_answer_terminal_queries() {
+        let answered = replies(true);
+        assert!(answered.windows(2).any(|w| w == b"6c") && answered.contains(&b'R'), "shell terminals answer: {answered:?}");
+        assert!(replies(false).is_empty(), "attach viewers must not inject replies into the shell");
     }
 }

@@ -433,8 +433,8 @@ fn dispatch(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: &Value) -> H
                     let sh = shell.map(|s| s.to_string()).or_else(|| std::env::var("SHELL").ok()).unwrap_or_else(|| "/bin/sh".into());
                     match &persist {
                         Some(p) => PtySpec { program: p.bin.clone(), args: vec!["daemon".into(), "pty-attach".into(), "--dir".into(), p.dir.clone(), "--key".into(), p.key.clone(), "--cwd".into(), real.clone(), "--shell".into(), sh],
-                            cwd: Some(real.clone()), env: env_pairs(req)?, cols, rows, machine_id: "local".into(), display_cwd: real },
-                        None => PtySpec { program: sh, args: vec!["-l".into()], cwd: Some(real.clone()), env: env_pairs(req)?, cols, rows, machine_id: "local".into(), display_cwd: real },
+                            cwd: Some(real.clone()), env: env_pairs(req)?, cols, rows, machine_id: "local".into(), display_cwd: real, answer_queries: false },
+                        None => PtySpec { program: sh, args: vec!["-l".into()], cwd: Some(real.clone()), env: env_pairs(req)?, cols, rows, machine_id: "local".into(), display_cwd: real, answer_queries: true },
                     }
                 }
                 Target::Ssh { machine_id, .. } => {
@@ -450,7 +450,7 @@ fn dispatch(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: &Value) -> H
                             shell.map(|s| format!(" --shell {}", sh_quote(s))).unwrap_or_default()),
                         None => crate::quoting::remote_shell(&real, shell),
                     };
-                    PtySpec { program: "ssh".into(), args: master.pty_argv(&remote), cwd: None, env: vec![], cols, rows, machine_id: machine_id.clone(), display_cwd: real }
+                    PtySpec { program: "ssh".into(), args: master.pty_argv(&remote), cwd: None, env: vec![], cols, rows, machine_id: machine_id.clone(), display_cwd: real, answer_queries: persist.is_none() }
                 }
             };
             let sess = pty::open(spec)?;
