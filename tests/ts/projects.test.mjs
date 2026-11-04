@@ -15,7 +15,7 @@ test('project filtering reveals matching tasks under collapsed parents and keeps
   const rows = () => nodes().find(n => n.type === 'tree').rows;
   assert.deepEqual(rows().map(n => n.key), ['project:p:root', 'project:r:root']);
   assert.equal(mod.render().backgroundImage.mimeType, 'image/png');
-  assert.deepEqual(mod.render().backgroundImageStyle, { opacity: 0.12, width: 960, left: -350, top: 0 });
+  assert.deepEqual(mod.render().backgroundImageStyle, { opacity: 0.12, width: 960, left: -350, top: -60 });
   assert.equal(mod.render().style?.opacity, undefined);
   watchers.get('workspace-layout.projectsBackgroundOpacity')(0);
   assert.equal(mod.render().backgroundImage, undefined);
