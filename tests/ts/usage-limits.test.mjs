@@ -35,9 +35,10 @@ test("Claude in-session rate limit events update only the reported window", () =
 
 test("bar item contributions are validated and offered once on their default bar", () => {
   const c = P.collectContributions(builtinPlugins());
-  assert.deepEqual(c.barItems.map(b => [b.id, b.module, b.bar]), [["claude-usage", "claude-usage", "bottom"], ["codex-usage", "codex-usage", "bottom"]]);
+  assert.deepEqual(c.barItems.map(b => [b.id, b.module, b.bar]), [["claude-usage", "claude-usage", "bottom"], ["git-branch", "git-branch", "top"], ["codex-usage", "codex-usage", "bottom"]]);
   M.setContributedBarItems(Object.fromEntries(c.barItems.map(b => [b.id, { title: b.title, slot: b.module, width: b.width, defaultBar: b.bar }])));
   const fresh = M.defaultLayout();
+  assert.deepEqual(fresh.bars.top.items, ["title", "workspace", "git-branch", "toolbarGap", "layoutMenu", "settings"]);
   assert.deepEqual(fresh.bars.bottom.items, ["machine", "toolbarSpace", "claude-usage", "codex-usage", "approvals", "modules"]);
   // A layout saved before the meters existed gets them once; a later removal sticks.
   const old = { ...fresh, bars: { top: fresh.bars.top, bottom: { visible: true, items: ["machine", "modules"] } } }; delete old.barItemsSeen;

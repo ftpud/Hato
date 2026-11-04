@@ -1,6 +1,18 @@
 import { fileIcons } from "../../../../sdk/file-icons";
 import type { TreeRow } from "../../../../sdk/types";
 export interface Entry { name: string; kind: string; relativePath: string; size?: number }
+/** Reconstruct the normal filtered tree from content-matching file paths and their parents. */
+export function matchingFileEntries(files: { relativePath: string }[]): Entry[] {
+  const entries = new Map<string, Entry>();
+  for (const file of files) {
+    const parts = file.relativePath.split("/");
+    for (let i = 1; i <= parts.length; i++) {
+      const relativePath = parts.slice(0, i).join("/");
+      entries.set(relativePath, { relativePath, name: parts[i - 1], kind: i === parts.length ? "file" : "dir" });
+    }
+  }
+  return [...entries.values()];
+}
 export function fileIcon(entry: Entry): TreeRow["icon"] {
   if (entry.kind === "dir") return "folder";
   if (entry.kind === "symlink") return "link";

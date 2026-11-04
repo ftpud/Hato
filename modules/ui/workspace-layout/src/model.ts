@@ -54,7 +54,7 @@ function placeNewBarItems(l: Layout) {
     if (seen.has(id) || l.bars.top.items.includes(id) || l.bars.bottom.items.includes(id)) { seen.add(id); continue; }
     const bar = BAR_ITEMS[id].defaultBar || "bottom";
     const items = l.bars[bar].items;
-    const at = bar === "bottom" ? items.indexOf("approvals") : -1;
+    const at = bar === "bottom" ? items.indexOf("approvals") : items.indexOf("toolbarGap");
     if (at >= 0) items.splice(at, 0, id); else items.push(id);
     seen.add(id);
   }

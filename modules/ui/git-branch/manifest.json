@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 2,
+  "id": "git-branch",
+  "kind": "ui",
+  "entry": "src/index.ts",
+  "moduleApiVersion": 1,
+  "dependencies": ["git"],
+  "capabilities": [],
+  "stateVersion": 1,
+  "description": "Current workspace branch and searchable local/remote checkout menu.",
+  "contributes": {
+    "barItems": [{ "id": "git-branch", "title": "Git branch", "bar": "top", "width": 56, "order": 10 }]
+  }
+}

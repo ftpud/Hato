@@ -1,4 +1,4 @@
-// git: read-only working-tree status and per-file patches for a workspace, run on the
+// git: working-tree status, branches and per-file patches for a workspace, run on the
 // workspace's own machine with argv (never shell strings). Patches are handed to the UI as
 // native document handles rendered by the `diff` node.
 import { fileWatch } from "../../../../sdk/file-watch";
@@ -6,6 +6,7 @@ import type { AppModule, ModuleContext, RunResult } from "../../../../sdk/types"
 import { targetFor, withWorkspace, workspaceGrant, type WorkspaceDescriptor } from "../../../../sdk/runtime";
 import { parseNumstat, parseStatus } from "./status";
 import { unifiedPatch } from "../../../../sdk/text-diff";
+import { listBranches, checkoutBranch, createBranch } from "./branches";
 
 const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 const MAX_PATCH_BYTES = 4 * 1024 * 1024;
@@ -197,6 +198,26 @@ const mod: AppModule = {
     await Promise.all(watchers.map(w => w.stop())); watchers = [];
   },
   methods: {
+    /** Local/remote branches and HEAD, without fetching or changing the repository. */
+    async branches(ctx, a) {
+      const d = await desc(ctx, a.workspaceId);
+      return { workspaceId: d.id, ...await listBranches(args => git(ctx, d, args)) };
+    },
+    /** Git itself refuses overwriting local changes or taking another worktree's branch. */
+    async checkout(ctx, a) {
+      const d = await desc(ctx, a.workspaceId);
+      await checkoutBranch(args => git(ctx, d, args), a.ref);
+      snapshots.delete(d.id);
+      ctx.events.emit("git.changed", { workspaceId: d.id, worktreeChanged: true });
+      return { workspaceId: d.id, ...await listBranches(args => git(ctx, d, args)) };
+    },
+    async createBranch(ctx, a) {
+      const d = await desc(ctx, a.workspaceId);
+      await createBranch(args => git(ctx, d, args), a.name, a.from);
+      snapshots.delete(d.id);
+      ctx.events.emit("git.changed", { workspaceId: d.id, worktreeChanged: true });
+      return { workspaceId: d.id, ...await listBranches(args => git(ctx, d, args)) };
+    },
     /** Changed files in the working tree (staged, unstaged and untracked) with line counts. */
     async status(ctx, a) {
       const d = await desc(ctx, a.workspaceId);

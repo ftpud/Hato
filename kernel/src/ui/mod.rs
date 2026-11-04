@@ -83,6 +83,11 @@ pub struct Shell {
 
 fn sid(module: &str, path: &str) -> SharedString { format!("{module}::{path}").into() }
 
+fn find_ui_node<'a>(node: &'a Value, key: &str) -> Option<&'a Value> {
+    if node["key"].as_str() == Some(key) { return Some(node); }
+    node["children"].as_array()?.iter().find_map(|child| find_ui_node(child, key))
+}
+
 impl Shell {
     fn new(kernel: Arc<Kernel>, mut rx: futures::channel::mpsc::UnboundedReceiver<UiMsg>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         cx.spawn_in(window, async move |this, cx| {
@@ -489,6 +494,41 @@ impl Shell {
                         Self::fire(&k, &m, &inputs, &action, &key2, None, value.clone(), cx);
                     }
                 }).into_any_element()
+            }
+            "dropdown" => {
+                let k = self.kernel.clone();
+                let m = module.to_string();
+                let action = s("action");
+                let key2 = key.to_string();
+                let inputs = self.module_inputs(module);
+                let mut trigger = Button::new(sid(module, &format!("{path}/trigger"))).label(s("text")).small().disabled(b("disabled"));
+                trigger = match n["variant"].as_str() {
+                    Some("ghost") => trigger.ghost(),
+                    Some("primary") => trigger.primary(),
+                    Some("danger") => trigger.danger(),
+                    _ => trigger,
+                };
+                if let Some(tooltip) = n["tooltip"].as_str() { trigger = trigger.tooltip(tooltip.to_string()); }
+                if let Some(svg) = n["iconSvg"].as_str() {
+                    trigger = trigger.icon(gpui_component::Icon::default().data(svg.as_bytes()).with_size(px(16.0)));
+                }
+                trigger = style::apply(trigger, &n["style"], cx);
+                let weak = cx.entity().downgrade();
+                let module = module.to_string();
+                let node = n.clone();
+                let width = n["menuWidth"].as_f64().unwrap_or(440.0).clamp(200.0, 1000.0) as f32;
+                let max_height = n["maxHeight"].as_f64().unwrap_or(520.0).clamp(100.0, 1000.0) as f32;
+                gpui_component::popover::Popover::new(sid(&module, &path)).open(b("open"))
+                    .trigger(trigger)
+                    .on_open_change(move |open, _, cx| Self::fire(&k, &m, &inputs, &action, &key2, None, json!(*open), cx))
+                    .content(move |_, window, cx| {
+                        weak.update(cx, |shell, cx| {
+                            // Resolve the latest module tree: filtering and async results must update an open popup.
+                            let latest = shell.trees.get(&module).and_then(|tree| find_ui_node(tree, node["key"].as_str().unwrap_or("_"))).cloned().unwrap_or_else(|| node.clone());
+                            let kids = shell.children(&module, &latest, &path, depth, window, cx);
+                            v_flex().w(px(width.min((f32::from(window.viewport_size().width) - 24.0).max(160.0)))).max_h(px(max_height)).gap_2().overflow_hidden().children(kids).into_any_element()
+                        }).unwrap_or_else(|_| div().into_any_element())
+                    }).into_any_element()
             }
             "imagePicker" => {
                 let k = self.kernel.clone();

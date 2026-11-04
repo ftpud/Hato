@@ -317,6 +317,9 @@ export type UiNode =
   | (Base & { type: "scroll"; children: UiNode[] })
   | (Base & { type: "tabs"; tabs: { key: string; label: string }[]; active: string; action: string; children: UiNode[] })
   | (Base & { type: "slot"; module: string })
+  /** Button-anchored popup rendered outside clipped toolbars/panels. Escape/outside click send action=false. */
+  | (Base & { type: "dropdown"; text: string; iconSvg?: string; open: boolean; action: string; disabled?: boolean; variant?: "primary" | "ghost" | "danger" | "default";
+      menuWidth?: number; maxHeight?: number; children: UiNode[] })
   | (Base & { type: "label"; text: string; size?: "xs" | "sm" | "md" | "lg"; weight?: "normal" | "medium" | "semibold" | "bold"; /** "default" or any UiColor. */ color?: UiColor; mono?: boolean; wrap?: boolean; /** Let the user select and copy the text. */ selectable?: boolean })
   | (Base & { type: "button"; text: string; /** Inline SVG drawing, bundled and hot reloaded with the module (see sdk/ui-icons.ts). */ iconSvg?: string; iconSize?: number; action: string; variant?: "primary" | "ghost" | "danger" | "default"; disabled?: boolean; value?: Json; small?: boolean;
       /** Copied to the clipboard natively on click (no round trip); `action` may be "". */ copyText?: string })

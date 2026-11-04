@@ -16,5 +16,5 @@
     "remote.daemon"
   ],
   "stateVersion": 1,
-  "description": "Working-tree Git status and per-file diffs for the selected workspace."
+  "description": "Workspace Git status, local/remote branches, safe checkout, branch creation and per-file diffs."
 }

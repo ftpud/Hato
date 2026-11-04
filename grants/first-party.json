@@ -31,6 +31,7 @@
     "settings":         { "kind": "ui", "capabilities": ["modules.read", "plugins.manage", "ui.dialog"], "calls": [] },
     "viewer":           { "kind": "ui", "capabilities": [], "calls": ["files", "workspace", "persistence", "git"] },
     "git-panel":        { "kind": "ui", "capabilities": [], "calls": ["git", "workspace", "persistence"] },
+    "git-branch":       { "kind": "ui", "capabilities": [], "calls": ["git"] },
     "git-changes":      { "kind": "ui", "capabilities": [], "calls": ["git", "persistence"] },
     "remote-panel":     { "kind": "ui", "capabilities": [], "calls": ["remote-runtime", "workspace"] },
     "terminal-panel":   { "kind": "ui", "capabilities": [], "calls": ["terminals", "workspace"] },

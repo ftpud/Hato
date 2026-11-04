@@ -1,9 +1,7 @@
 // Workspace file tree: lazy directory loading, scoped search, and viewer selection.
 import type { AppModule, ModuleContext, UiNode } from "../../../../sdk/types";
 import { debounce, errMsg } from "../../../../sdk/runtime";
-import { directories, fileIcon, treeRows, type Entry } from "./model";
-import { fileIcons } from "../../../../sdk/file-icons";
-import type { TreeRow } from "../../../../sdk/types";
+import { directories, matchingFileEntries, treeRows, type Entry } from "./model";
 import { uiIcons } from "../../../../sdk/ui-icons";
 let ws: any = null;
 let dirs = new Map<string, Entry[]>();
@@ -22,7 +20,6 @@ let contentMode = false;
 /** .gitignored files are hidden unless the user shows them. */
 let showIgnored = false;
 let grep: any = null;
-let grepCollapsed = new Set<string>();
 let grepSoon: () => void = () => {};
 
 async function loadDir(ctx: ModuleContext, path: string, version = epoch) {
@@ -50,20 +47,7 @@ async function search(ctx: ModuleContext, refresh = false) {
   } catch (e) { if (version === searchVersion && ws?.id === workspaceId) { error = errMsg(e); results = null; } }
   finally { if (version === searchVersion) searching = false; ctx.ui.invalidate(); }
 }
-/** Content matches: one expandable row per file, one child row per matching line. */
-function grepRows(): TreeRow[] {
-  const out: TreeRow[] = [];
-  const selected = ws?.view?.previewPath || null;
-  for (const f of grep?.files || []) {
-    const name = f.relativePath.split("/").pop() || f.relativePath;
-    const dir = f.relativePath.slice(0, Math.max(0, f.relativePath.length - name.length - 1));
-    const open = !grepCollapsed.has(f.relativePath);
-    out.push({ key: f.relativePath, label: name, detail: dir || undefined, badge: String(f.matches.length), depth: 0, expandable: true, expanded: open, selected: f.relativePath === selected,
-      iconSvg: fileIcons[fileIcon({ name, kind: "file", relativePath: f.relativePath }) as keyof typeof fileIcons] || fileIcons.file, weight: "medium" });
-    if (open) for (const m of f.matches) out.push({ key: `${f.relativePath}#${m.line}`, label: m.text || " ", badge: String(m.line), depth: 1, expandable: false, expanded: false, selected: false });
-  }
-  return out;
-}
+const filteredEntries = (): Entry[] => contentMode ? matchingFileEntries(grep?.files || []) : results?.entries || [];
 async function reveal(ctx: ModuleContext) {
   const path = ws?.view?.previewPath;
   if (!path) return;
@@ -77,7 +61,7 @@ async function reveal(ctx: ModuleContext) {
 async function reset(ctx: ModuleContext, saved?: any) {
   const version = ++epoch; searchVersion++; ctx.ui.invalidate(); dirs = new Map(); pending = new Set(); filterCollapsed = new Set(); results = null; searching = false; error = null;
   expanded = new Set(saved?.expanded || ws?.view?.ui?.explorerTree?.expanded || []);
-  query = saved?.query || ""; grep = null; grepCollapsed = new Set();
+  query = saved?.query || ""; grep = null;
   if (saved && typeof saved.showIgnored === "boolean") showIgnored = saved.showIgnored;
   if (saved && typeof saved.contentMode === "boolean") contentMode = saved.contentMode;
   await loadDir(ctx, ".");
@@ -104,7 +88,7 @@ const mod: AppModule = {
   render(): UiNode {
     const filtering = !!query.trim();
     const grepping = filtering && contentMode;
-    const rows = grepping ? grepRows() : treeRows(filtering ? directories(results?.entries || []) : dirs, expanded, ws?.view?.previewPath || null, filtering, filterCollapsed);
+    const rows = treeRows(filtering ? directories(filteredEntries()) : dirs, expanded, ws?.view?.previewPath || null, filtering, filterCollapsed);
     const loaded = [...dirs.values()].reduce((count, entries) => count + entries.length, 0);
     const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
     const count = grepping ? searching ? "Searching file contents…" : query.trim().length < 2 ? "Type at least 2 characters" : `${plural(grep?.matchCount || 0, "match", "matches")} in ${plural(grep?.fileCount || 0, "file", "files")}${grep?.truncated ? " · first results" : ""}`
@@ -130,8 +114,7 @@ const mod: AppModule = {
       if (pending.size && !dirs.has(".")) children.push({ type: "progress", key: "loading", indeterminate: true });
       if (filtering && !searching && !rows.length && !error && !(grepping && query.trim().length < 2)) children.push({ type: "label", key: "empty", text: grepping ? "No files contain this text." : "No matching files.", color: "muted", padding: 12 });
       if (!filtering && !pending.size && !loaded) children.push({ type: "label", key: "empty", text: "This folder is empty.", color: "muted", padding: 12 });
-      if (grepping) children.push({ type: "tree", key: "grep", rowHeight: 21, rowGap: 0, rows, selectAction: "openMatch", expandAction: "expandMatch", grow: true });
-      else children.push({ type: "tree", key: "files", rowHeight: 21, rowGap: 0, rows: rows.map((row) => pending.has(row.key) ? { ...row, badge: "…" } : row), selectAction: "open", expandAction: "expand", grow: true });
+      children.push({ type: "tree", key: "files", rowHeight: 21, rowGap: 0, rows: rows.map((row) => pending.has(row.key) ? { ...row, badge: "…" } : row), selectAction: "open", expandAction: "expand", grow: true });
     }
     return { type: "column", key: "explorer-root", gap: 4, padding: 8, grow: true, children };
   },
@@ -141,32 +124,25 @@ const mod: AppModule = {
     const version = epoch;
     try {
       if (ev.action === "filter") {
-        query = String(ev.value || ""); filterCollapsed.clear(); grepCollapsed.clear(); results = null; grep = null; searchVersion++;
+        query = String(ev.value || ""); filterCollapsed.clear(); results = null; grep = null; searchVersion++;
         const go = contentMode ? query.trim().length >= 2 : !!query.trim();
         searching = go; if (go) (contentMode ? grepSoon : searchSoon)();
         ctx.ui.invalidate(); return;
       }
       if (ev.action === "submitFilter") { if (query.trim()) await search(ctx); return; }
       if (ev.action === "clearFilter") { query = ""; results = null; grep = null; searching = false; searchVersion++; ctx.ui.invalidate(); return; }
-      if (ev.action === "toggleContent") { contentMode = !contentMode; results = null; grep = null; grepCollapsed.clear(); searchVersion++; if (query.trim()) await search(ctx); else ctx.ui.invalidate(); return; }
+      if (ev.action === "toggleContent") { contentMode = !contentMode; results = null; grep = null; searchVersion++; if (query.trim()) await search(ctx); else ctx.ui.invalidate(); return; }
       if (ev.action === "toggleIgnored") {
         showIgnored = !showIgnored;
         await ctx.modules.call("workspace", "view.patch", { workspaceId, patch: { ui: { explorerTree: { expanded: [...expanded], showIgnored } } } });
         await reset(ctx, { expanded: [...expanded], query, showIgnored, contentMode });
         return;
       }
-      if (ev.action === "expandMatch" && ev.rowKey) { if (grepCollapsed.has(ev.rowKey)) grepCollapsed.delete(ev.rowKey); else grepCollapsed.add(ev.rowKey); ctx.ui.invalidate(); return; }
-      if (ev.action === "openMatch" && ev.rowKey) {
-        const path = ev.rowKey.includes("#") ? ev.rowKey.slice(0, ev.rowKey.lastIndexOf("#")) : ev.rowKey;
-        if (!ev.rowKey.includes("#") && grep?.files?.some((f: any) => f.relativePath === path) && ws.view?.previewPath === path) { if (grepCollapsed.has(path)) grepCollapsed.delete(path); else grepCollapsed.add(path); ctx.ui.invalidate(); return; }
-        await ctx.modules.call("workspace", "view.patch", { workspaceId, patch: { previewPath: path } });
-        return;
-      }
       if (ev.action === "collapseAll") { expanded.clear(); query = ""; results = null; searchVersion++; searching = false; }
       else if (ev.action === "reveal") { await reveal(ctx); }
       else if (ev.action === "refresh") { const saved = await mod.snapshot!(ctx); await ctx.modules.call("files", "search", { workspaceId, query: "", refresh: true }); if (version !== epoch) return; await reset(ctx, saved); }
       else if (["open", "expand"].includes(ev.action) && ev.rowKey) {
-        const entry = (query.trim() ? results?.entries : [...dirs.values()].flat())?.find((item: Entry) => item.relativePath === ev.rowKey);
+        const entry = (query.trim() ? filteredEntries() : [...dirs.values()].flat()).find((item: Entry) => item.relativePath === ev.rowKey);
         if (!entry) return;
         if (entry.kind === "dir") {
           if (query.trim()) { if (filterCollapsed.has(entry.relativePath)) filterCollapsed.delete(entry.relativePath); else filterCollapsed.add(entry.relativePath); }

@@ -95,6 +95,7 @@ const mod: AppModule = {
     if (loading && !status) children.push({ type: "progress", key: "loading", indeterminate: true });
     if (status?.repo && files.length) {
       children.push({ type: "tree", key: "changes", rows: changeRows(files, selected), selectAction: "diff", activateAction: "open", grow: true,
+        rowHeight: 52, rowGap: 3, iconSize: 18,
         tooltip: "Click to compare with HEAD · double click to open the file" } as UiNode);
     }
     return { type: "column", key: "git-root", gap: 4, padding: 8, grow: true, children };

@@ -33,6 +33,7 @@ adapter on the machine where the agent will run.
 
 ## Panels at a glance
 
+- **Git branch** in the top panel shows the current branch. Search Local/Remote branches, check out a branch, or create one from HEAD or a selected branch. Checkout preserves local edits and respects other worktrees. Move or hide the widget through Layout.
 - **Git changes** lists modified files; click one to open its diff in the viewer.
 - **Latest changes** shows every uncommitted change as one live diff, without tabs.
 

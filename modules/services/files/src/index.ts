@@ -75,6 +75,13 @@ const mod: AppModule = {
   id: "files",
   moduleApiVersion: 1,
   async activate(ctx) {
+    ctx.events.on("git.changed", (event: any) => {
+      if (!event.worktreeChanged || event.workspaceId !== selected?.id || !selected) return;
+      invalidateSearch(selected); invalidateIgnored(selected);
+      docCache.clear();
+      ctx.events.emit("files.changed", { workspaceId: selected.id });
+      void publishSkills(ctx);
+    });
     watcher = fileWatch(ctx, workspaceId => {
       if (changeTimer) clearTimeout(changeTimer);
       changeTimer = setTimeout(() => {
