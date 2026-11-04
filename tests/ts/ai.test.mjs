@@ -373,6 +373,19 @@ test('sessions search and both chat popovers use an opaque semantic background',
 
 test('chat MCP selections preserve other servers and connect configured transports with OAuth', async () => {
   const mod = await load('modules/services/ai-sessions/src/index.ts');
+  const auth = await load('modules/services/mcp-auth/src/index.ts');
+  const server = { id: 'remote', name: 'Remote', transport: 'http', url: 'https://example.com/mcp', auth: { type: 'oauth' } };
+  const authCtx = { modules: { async call(target, method, args) {
+    assert.equal(target, 'persistence');
+    assert.equal(method, 'settings.get');
+    assert.equal(args.key, 'mcp-auth.tokens.v1');
+    return { remote: { resource: server.url, accessToken: 'fresh', expiresAt: Date.now() + 3600000 } };
+  } }, state: { set() {} } };
+  await auth.activate(authCtx);
+  assert.equal(auth.methods.status(authCtx, { servers: [server] }).remote.state, 'signedIn');
+  await assert.rejects(auth.methods.authorization(authCtx, { serverId: server.id, url: server.url }, { caller: 'ai' }), /only issued/);
+  assert.equal(await auth.methods.authorization(authCtx, { serverId: server.id, url: server.url }, { caller: 'persistent-agents' }), 'Bearer fresh');
+  await assert.rejects(auth.methods.authorization(authCtx, { serverId: server.id, url: 'https://other.example/mcp' }, { caller: 'ai-sessions' }), /Sign-in required/);
   let row = { id: 'mcp-chat', workspaceId: 'ws', acpProfileId: 'codex', mcpSelection: ['internal'], config: {} };
   let start;
   const ctx = { modules: { async call(target, method, args) {
@@ -380,11 +393,14 @@ test('chat MCP selections preserve other servers and connect configured transpor
     if (method === 'messages.list') return [];
     if (method === 'conversations.update') { row = { ...row, ...args.fields }; return; }
     if (method === 'settings.get') return [
-      { id: 'remote', name: 'Remote', transport: 'http', url: 'https://example.com/mcp', auth: { type: 'oauth' } },
+      server,
       { id: 'off', name: 'Off', enabled: false },
       { id: 'local', name: 'Local', command: 'node', args: ['server.js'], env: [] },
     ];
-    if (method === 'authorization') { assert.equal(args.serverId, 'remote'); return 'Bearer fresh'; }
+    if (method === 'authorization') {
+      assert.equal(target, 'mcp-auth');
+      return auth.methods.authorization(authCtx, args, { caller: 'ai-sessions' });
+    }
     if (method === 'start') { start = args; return { sessionId: 'provider-session', configOptions: [] }; }
     throw new Error(`${target}.${method}`);
   } } };

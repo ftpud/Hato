@@ -3,7 +3,7 @@
 // 2025-03-26 origin fallback), dynamic client registration (RFC 7591) when no client id is
 // configured, authorization code + PKCE through the system browser and a loopback redirect, resource
 // indicators (RFC 8707) and refresh. Tokens never leave this module except as an Authorization
-// header handed to persistent-agents when it starts an agent session.
+// header handed to the chat or background-agent launcher when it starts a session.
 import type { AppModule, Handle, HttpRequest, HttpResponse, ModuleContext } from "../../../../sdk/types";
 import { errMsg } from "../../../../sdk/runtime";
 import { authServerMetadataUrls, callbackPage, canonicalResource, form, parseCallbackRequest, parseWwwAuthenticate, pkceChallenge, protectedResourceMetadataUrls, withQuery } from "../../../../sdk/mcp-oauth";
@@ -288,7 +288,7 @@ const mod: AppModule = {
     },
     /** `Authorization` header value for starting an agent session (refreshes when close to expiry). */
     async authorization(ctx, a, meta) {
-      if (meta.caller !== "persistent-agents") throw new Error("Tokens are only issued to the agent launcher");
+      if (meta.caller !== "persistent-agents" && meta.caller !== "ai-sessions") throw new Error("Tokens are only issued to chat and background-agent launchers");
       const rec = await fresh(ctx, String(a.serverId), String(a.url));
       return `Bearer ${rec.accessToken}`;
     },
