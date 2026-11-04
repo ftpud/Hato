@@ -40,10 +40,14 @@ notify = { version = "=8.2.1", default-features = false, features = ["macos_fsev
 # HTTPS client for the capability-gated `net.fetch` primitive (OAuth discovery/token exchange).
 ureq = { version = "3", default-features = false, features = ["rustls", "platform-verifier"] }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-app-kit = { version = "=0.2.2", features = ["NSApplication", "NSImage"], optional = true }
+objc2-foundation = { version = "=0.2.2", features = ["NSData", "NSThread"], optional = true }
+
 [features]
 # The desktop window. Build the headless remote daemon with `--no-default-features`.
 default = ["gui"]
-gui = ["dep:gpui-kit", "dep:gpui-component", "dep:image"]
+gui = ["dep:gpui-kit", "dep:gpui-component", "dep:image", "dep:objc2-app-kit", "dep:objc2-foundation"]
 
 [dev-dependencies]
 tempfile = "3"

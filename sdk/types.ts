@@ -282,6 +282,7 @@ export type UiNode =
   /** Window-wide theme (normally from the root plugin). `mode` is the appearance preference;
    *  `terminal` overrides the 16 ANSI colors; `chrome` configures kernel chrome such as toasts. */
   | (Base & { type: "theme"; controls?: { listRowHeight?: number; stripedRows?: boolean; rowDividers?: boolean }; palette: { light: Record<string, string>; dark: Record<string, string> }; mode?: "light" | "dark";
+      /** Runtime application icon (macOS Dock and app switcher), including unbundled source launches. */ applicationIcon?: ImageAttachment;
       typography?: { fontFamily?: string; monoFontFamily?: string; fontSize?: number; monoFontSize?: number; fontWeight?: number };
       terminal?: { light?: string[]; dark?: string[] };
       chrome?: { toasts?: { position?: "bottom-right" | "bottom-left" | "top-right" | "top-left"; width?: number; durationMs?: number; max?: number } } })

@@ -96,6 +96,40 @@ pub fn preview(value: &Value) -> Option<Arc<Image>> {
     Some(Arc::new(Image::from_bytes(format, bytes)))
 }
 
+/// The module supplies the artwork; AppKit owns the process's Dock/app-switcher icon.
+/// Keep this separate from bundle metadata so unbundled development launches work too.
+pub fn application_icon(cx: &mut gpui_kit::App, value: &Value) {
+    #[cfg(target_os = "macos")]
+    {
+        use objc2_app_kit::{NSApplication, NSImage};
+        use objc2_foundation::{MainThreadMarker, NSData};
+
+        #[derive(Default)]
+        struct AppliedIcon(Option<String>);
+        impl gpui_kit::Global for AppliedIcon {}
+
+        let data = value["data"].as_str();
+        let previous = cx.try_global::<AppliedIcon>().and_then(|icon| icon.0.as_deref());
+        if data == previous { return; }
+        let Some(main_thread) = MainThreadMarker::new() else { return; };
+        let app = NSApplication::sharedApplication(main_thread);
+        if let Some(data) = data {
+            if data.len() > (MAX_BYTES + 2) / 3 * 4 { return; }
+            let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(data) else { return; };
+            if format(&bytes).is_none() { return; }
+            let Some(image) = NSImage::initWithData(main_thread.alloc(), &NSData::with_bytes(&bytes)) else { return; };
+            // SAFETY: called on the main thread with a valid, retained NSImage.
+            unsafe { app.setApplicationIconImage(Some(&image)); }
+        } else {
+            // SAFETY: main-thread AppKit call; nil restores the bundle's default icon.
+            unsafe { app.setApplicationIconImage(None); }
+        }
+        cx.set_global(AppliedIcon(data.map(str::to_owned)));
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = (cx, value);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

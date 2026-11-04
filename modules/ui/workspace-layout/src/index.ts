@@ -11,6 +11,7 @@ import { exportSettings } from "../../../../sdk/settings";
 import { fontOptions, typography } from "../../../../sdk/typography";
 import { animePalette, animeTerminal } from "./anime";
 import { animeWallpaper } from "./anime-wallpaper";
+import { applicationIcon } from "./application-icon";
 import { colorScheme } from "../../../../sdk/color-scheme";
 import { debounce, errMsg } from "../../../../sdk/runtime";
 import { BAR_ITEMS, PANELS, setContributedBarItems, defaultLayout, dropPanel, homeOf, locate, moveBarItem, moveTo, panelSignature, removeBarItem, repair, setPanels, type BarId, type Layout, type PanelDef } from "./model";
@@ -575,7 +576,7 @@ const mod: AppModule = {
     resetLayout: (ctx) => { set(ctx, defaultLayout()); return layout; },
   },
   render(): UiNode {
-    const kids: UiNode[] = [{ type: "theme", key: "color-scheme", controls: { listRowHeight: listRowHeight(tableStyle), stripedRows: tableStyle.stripes, rowDividers: tableStyle.dividers }, palette: appearanceTheme === "anime" ? animePalette(panelOpacity) : colorScheme, ...(appearanceTheme === "anime" ? { terminal: { light: animeTerminal, dark: animeTerminal } } : {}), typography: typography(fontFamily, fontSize, fontWeight), ...(mode === "system" ? {} : { mode }) }];
+    const kids: UiNode[] = [{ type: "theme", key: "color-scheme", applicationIcon, controls: { listRowHeight: listRowHeight(tableStyle), stripedRows: tableStyle.stripes, rowDividers: tableStyle.dividers }, palette: appearanceTheme === "anime" ? animePalette(panelOpacity) : colorScheme, ...(appearanceTheme === "anime" ? { terminal: { light: animeTerminal, dark: animeTerminal } } : {}), typography: typography(fontFamily, fontSize, fontWeight), ...(mode === "system" ? {} : { mode }) }];
     const top = barNode("top");
     if (top) kids.push(top);
     if (!["top", "bottom"].some((b) => layout.bars[b as BarId].visible && layout.bars[b as BarId].items.includes("layoutMenu"))) {

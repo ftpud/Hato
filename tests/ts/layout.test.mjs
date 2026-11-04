@@ -3,6 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import * as esbuild from "esbuild";
 import path from "node:path";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
@@ -136,6 +137,8 @@ test('anime appearance restores preferences and switches without changing panel 
   await mod.activate(ctx);
   const original = JSON.stringify(mod.methods.getLayout());
   let tree = mod.render();
+  assert.equal(tree.children[0].applicationIcon.mimeType, 'image/png');
+  assert.deepEqual(Buffer.from(tree.children[0].applicationIcon.data, 'base64'), readFileSync(path.join(root, 'assets/hato-icon.png')));
   assert.equal(tree.backgroundImage.mimeType, 'image/png');
   assert.equal(tree.children[0].palette.dark.panel, '#191c3866');
   const edit = async (key, value) => {

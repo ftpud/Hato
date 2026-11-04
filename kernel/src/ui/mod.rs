@@ -333,7 +333,7 @@ impl Shell {
         let b = |k: &str| n.get(k).and_then(|v| v.as_bool()).unwrap_or(false);
         let theme_muted = cx.theme().muted_foreground;
         match ty {
-            "theme" => { self.control_style = n["controls"].clone(); theme::configure(cx, n, &self.kernel.cfg.data_dir); div().into_any_element() }
+            "theme" => { self.control_style = n["controls"].clone(); images::application_icon(cx, &n["applicationIcon"]); theme::configure(cx, n, &self.kernel.cfg.data_dir); div().into_any_element() }
             "row" | "column" => {
                 let mut d = if ty == "row" { h_flex() } else { v_flex() };
                 if ty == "row" {

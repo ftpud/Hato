@@ -18,6 +18,8 @@ npm run modules:build
 cargo run -- --root .
 ```
 
+Source launches use the same Dock and app-switcher icon as the packaged macOS app.
+
 AI providers are optional and installed separately. To use one, install and authenticate its ACP
 adapter on the machine where the agent will run.
 
