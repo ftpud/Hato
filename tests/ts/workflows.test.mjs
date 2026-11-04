@@ -122,7 +122,7 @@ async function runtime(respond = async () => 'ok') {
     return r.id;
   };
   const finished = id => until(async () => { const r = await m('run', { id }); return ['succeeded', 'failed', 'cancelled'].includes(r.status) && r; });
-  return { mod, m, start, finished, agents, events, db };
+  return { mod, m, start, finished, agents, events, db, env };
 }
 const B = (id, type, extra = {}) => ({ id, type, label: id, prompt: '', position: { x: 0, y: 0 }, ...extra });
 const out = (run, id) => run.blocks.find(b => b.blockId === id);
@@ -544,4 +544,68 @@ test('Meeting shake requires a specific message and delivers it to the selected 
   assert.equal(run.status, 'succeeded', run.error);
   assert.equal(out(run, 'peer').input, message);
   assert.ok(out(run, 'room').log.some(entry => entry.kind === 'tool' && entry.text.includes(message)));
+});
+
+
+test('workflow MCP blocks send provider HTTP configs instead of an empty local command', async () => {
+  const { start, finished, agents, env } = await runtime();
+  env.mcpServers = [{ id: 'github', name: 'GitHub', transport: 'http', command: '', args: [], env: [], url: 'https://example.com/mcp', auth: { type: 'oauth' } }];
+  env.mcpConfigs = { github: { type: 'http', name: 'GitHub', url: 'https://example.com/mcp', headers: [{ name: 'Authorization', value: 'Bearer fixture-token' }] } };
+  const id = await start({ id: 'http-mcp', name: 'HTTP MCP', blocks: [B('chat', 'chatbox'), B('github', 'mcp', { mcp: { serverId: 'github' } })], edges: [{ id: 'edge', from: 'chat', to: 'github' }] }, 'List repositories');
+  assert.equal((await finished(id)).status, 'succeeded');
+  const config = [...agents.sessions.values()][0].spec.mcps.find(m => m.id === 'github');
+  assert.equal(config.type, 'http');
+  assert.equal(config.url, 'https://example.com/mcp');
+  assert.equal(config.headers[0].value, 'Bearer fixture-token');
+  assert.equal(config.command, undefined);
+  assert.equal(config.auth, undefined);
+});
+
+test('workflow remote MCP fallback converts bearer configs and rejects unprepared OAuth clearly', async () => {
+  for (const auth of [{ type: 'bearer', token: 'fixture' }, { type: 'oauth' }]) {
+    const { start, finished, agents, env } = await runtime();
+    env.mcpServers = [{ id: 'remote', name: 'Remote', transport: 'http', command: '', args: [], env: [], url: 'https://example.com/mcp', auth }];
+    const id = await start({ id: 'remote-' + auth.type, name: 'Remote MCP', blocks: [B('chat', 'chatbox'), B('remote', 'mcp', { mcp: { serverId: 'remote' } })], edges: [{ id: 'edge', from: 'chat', to: 'remote', type: 'use' }] }, 'Hello');
+    const run = await finished(id);
+    if (auth.type === 'oauth') {
+      assert.equal(run.status, 'failed');
+      assert.match(out(run, 'chat').error, /fresh authorization/);
+      assert.equal(agents.sessions.size, 0);
+    } else {
+      assert.equal(run.status, 'succeeded');
+      const config = [...agents.sessions.values()][0].spec.mcps[1];
+      assert.equal(config.type, 'http');
+      assert.equal(config.command, undefined);
+      assert.deepEqual(config.headers, [{ name: 'Authorization', value: 'Bearer fixture' }]);
+    }
+  }
+});
+
+test('agents discover MCP blocks in both initial instructions and the connections tool without exposing credentials', async () => {
+  for (const type of ['ai', 'chatbox']) {
+    let inspected = false;
+    const { start, finished, env } = await runtime(async (_spec, text, tool) => {
+      assert.match(text, /Connected workflow blocks and capabilities/);
+      assert.match(text, /"server_name":"GitHub"/);
+      assert.match(text, /Call workflow_connections/);
+      assert.match(text, /tool discovery\/search/);
+      assert.ok(!text.includes('No workflow blocks are connected'));
+      const connections = await tool('workflow_connections', {});
+      assert.deepEqual(connections.map(c => c.block_id), ['github', 'script']);
+      assert.equal(connections[0].invocation, 'provider_mcp_tools');
+      assert.equal(connections[0].server_name, 'GitHub');
+      assert.equal(connections[1].invocation, 'workflow_use_block');
+      assert.ok(!JSON.stringify(connections).includes('secret-token'));
+      const guidance = await tool('workflow_use_block', { block_id: 'github' });
+      assert.equal(guidance.invocation, 'provider_mcp_tools');
+      assert.match(guidance.usage, /does not call the MCP server/);
+      inspected = true;
+      return 'Discovered GitHub tools';
+    });
+    env.mcpServers = [{ id: 'github-config', name: 'GitHub', transport: 'http', command: '', args: [], env: [], url: 'https://example.com/mcp', auth: { type: 'bearer', token: 'secret-token' } }];
+    const id = await start({ id: 'discover-' + type, name: 'Discovery', blocks: [B('agent', type, { prompt: 'Use connected capabilities to answer the user.' }), B('github', 'mcp', { mcp: { serverId: 'github-config' } }), B('script', 'script', { command: 'echo ok' }), B('unconnected', 'mcp', { mcp: { serverId: 'github-config' } })], edges: [{ id: 'mcp', from: 'agent', to: 'github', ...(type === 'ai' ? { type: 'use' } : {}) }, { id: 'script', from: 'agent', to: 'script', type: 'use' }] }, 'List my repositories');
+    const run = await finished(id);
+    assert.equal(run.status, 'succeeded', out(run, 'agent').error);
+    assert.equal(inspected, true);
+  }
 });

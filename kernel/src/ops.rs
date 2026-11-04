@@ -201,7 +201,7 @@ pub fn host_async(k: &Arc<Kernel>, gen: &Arc<Generation>, op: String, args: Valu
         let r = dispatch(&k, &gen, &op, &args);
         if let Err(e) = &r {
             if e.code == "EPERM" || e.code == "EDENIED" {
-                k.audit.record(&gen.module_id, gen.gen_id, &op, &summarize(&args), &format!("{e}"), None);
+                k.audit.record(&gen.module_id, gen.gen_id, &op, &audit_summary(&op, &args), &format!("{e}"), None);
             }
         }
         let _ = gen.tx.send(op_result_msg(call_id, r));
@@ -209,6 +209,17 @@ pub fn host_async(k: &Arc<Kernel>, gen: &Arc<Generation>, op: String, args: Valu
     if spawn.is_err() {
         let _ = tx.send(op_result_msg(call_id, Err(HostError::new("EAGAIN", "cannot spawn op thread"))));
     }
+}
+
+/// Audit text for an op. Requests that can carry credentials (headers, form bodies) are reduced
+/// to their method and host/path.
+fn audit_summary(op: &str, args: &Value) -> String {
+    if op == "net.fetch" {
+        let url = args.get("url").and_then(|u| u.as_str()).unwrap_or("");
+        let target = crate::host::http::check_url(url).unwrap_or_else(|_| url.split(['?', '#']).next().unwrap_or("").chars().take(200).collect());
+        return format!("{} {target}", args.get("method").and_then(|m| m.as_str()).unwrap_or("GET"));
+    }
+    summarize(args)
 }
 
 fn summarize(v: &Value) -> String {
@@ -542,11 +553,20 @@ fn dispatch(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: &Value) -> H
         }
 
         // ---------------------------------------------------------------- loopback net
+        "net.fetch" => {
+            gen.caps.require("net.fetch")?;
+            let r = crate::host::http::fetch(args);
+            let status = r.as_ref().map(|v| v["status"].to_string()).unwrap_or_else(|e| e.code.clone());
+            k.audit.record(owner, gen.gen_id, "net.fetch", &audit_summary(op, args), &status, None);
+            r
+        }
         "net.listen" => {
             gen.caps.require("net.loopback")?;
             let kk = k.clone();
             let own = owner.to_string();
-            let l = NetListener::bind(Arc::new(move |conn: Arc<NetConn>| kk.handles.insert("netconn", &own, conn.peer.clone(), conn)))?;
+            let port = args.get("port").and_then(|p| p.as_u64()).unwrap_or(0);
+            if port != 0 && !(1024..=65535).contains(&port) { return Err(HostError::invalid("port must be 0 or 1024–65535")); }
+            let l = NetListener::bind_port(port as u16, Arc::new(move |conn: Arc<NetConn>| kk.handles.insert("netconn", &own, conn.peer.clone(), conn)))?;
             let h = k.handles.insert("listener", owner, format!("127.0.0.1:{}", l.port), l.clone());
             Ok(json!({"handle": h, "port": l.port}))
         }
@@ -856,6 +876,20 @@ fn dispatch(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: &Value) -> H
             let label = format!("{} {}", doc.workspace_key, doc.path);
             let h = k.handles.insert("document", owner, label, doc);
             Ok(json!(h))
+        }
+        "ui.openUrl" => {
+            gen.caps.require("ui.openUrl")?;
+            let url = arg_str(args, "url")?;
+            let lower = url.to_ascii_lowercase();
+            if !(lower.starts_with("https://") || lower.starts_with("http://")) || url.len() > 8192 || url.chars().any(|c| c.is_control()) {
+                return Err(HostError::invalid("only http(s) URLs can be opened"));
+            }
+            if !k.ui.connected() {
+                return Err(HostError::new("ENOTSUP", "no window (headless)"));
+            }
+            k.audit.record(owner, gen.gen_id, "ui.openUrl", &url.split(['?', '#']).next().unwrap_or("").chars().take(200).collect::<String>(), "ok", None);
+            k.ui.send(UiMsg::OpenUrl(url.to_string()));
+            Ok(Value::Null)
         }
         "ui.pickFolder" => {
             gen.caps.require("ui.dialog")?;

@@ -10,7 +10,7 @@ import {
   blockingIssues, edgeType, isAgentBlock, isCapabilityBlock, normalizeDefinition, preview, validateWorkflow,
 } from "../../../../sdk/workflows";
 import { WORKFLOW_TEMPLATES } from "../../../../sdk/workflow-templates";
-import { cancel, chat, drive, execs, initEngine, invoke, messages, newExec, stateOf, steer, toolTargets, touch, track, transfer, useMeeting, answer, type Exec } from "./engine";
+import { recordMcpActivity, cancel, chat, drive, execs, initEngine, invoke, messages, newExec, stateOf, steer, toolTargets, toolCatalogue, touch, track, transfer, useMeeting, answer, type Exec } from "./engine";
 import { initMcp, issueEndpoint, revokeWhere, type Scope } from "./mcp";
 import { terminalAction } from "./terminal";
 import { appAction, killAllApps, listApps, runningApps } from "./procs";
@@ -76,7 +76,7 @@ function detail(run: WorkflowRun) {
 
 const object = (properties: any, required: string[] = []) => ({ type: "object", properties, required, additionalProperties: false });
 const RUN_TOOLS = [
-  { name: "workflow_connections", description: "List the workflow blocks connected to you as tools, with their types and allowed actions.", inputSchema: object({}) },
+  { name: "workflow_connections", description: "Discover connected workflow blocks and capabilities, including MCP server names, invocation methods, and allowed actions. Call before choosing tools or claiming a capability is unavailable.", inputSchema: object({}) },
   { name: "workflow_use_block", description: "Run or control a connected workflow block. Pass block_id and input; action selects start/status/tail/steer (AI Agent, Chatbox), start/status/kill/tail (Run App), publish/tail/diff/wait/status/shake (Meeting; shake requires peer_block_id and a specific message), list/read/write (Terminal Control, key/cursor/text), or fetch (unseen output of any data block).",
     inputSchema: object({ block_id: { type: "string" }, input: { type: "string" }, action: { type: "string" }, lines: { type: "number" }, timeout_seconds: { type: "number" }, message: { type: "string" }, peer_block_id: { type: "string" }, key: { type: "string" }, cursor: { type: "number" }, text: { type: "string" }, after: { type: "number" } }, ["block_id"]) },
   { name: "workflow_block_output", description: "Read retained output of a connected block in pages without running it.", inputSchema: object({ block_id: { type: "string" }, offset: { type: "number" }, limit: { type: "number" } }, ["block_id"]) },
@@ -158,7 +158,7 @@ async function runToolBody(s: Extract<Scope, { kind: "run" }>, name: string, a: 
     return t;
   };
   const record = (text: string) => { const st = stateOf(x, caller); st.log.push({ at: now(), kind: "tool", text: text.slice(0, 500) }); if (st.log.length > 200) st.log.shift(); };
-  if (name === "workflow_connections") return targets.map(t => ({ block_id: t.id, name: t.label, type: t.type, description: t.description, status: stateOf(x, t.id).status }));
+  if (name === "workflow_connections") return toolCatalogue(x, x.def.blocks.find(b => b.id === caller)!).map(t => ({ ...t, status: stateOf(x, t.block_id).status }));
   if (name === "workflow_choose_path") {
     const paths = x.def.edges.filter(e => e.from === caller && edgeType(e) === "path").map(e => e.label);
     if (!paths.includes(String(a.path))) throw new Error(`Unknown path; choose one of ${JSON.stringify(paths)}`);
@@ -177,12 +177,14 @@ async function runToolBody(s: Extract<Scope, { kind: "run" }>, name: string, a: 
   const input = String(a.input ?? a.message ?? "");
   record(`${action || "use"} ${t.label}`);
   if (action === "fetch") {
-    if (t.type === "meeting") return useMeeting(x, t.id, caller, { action: "diff" });
+    if (t.type === "mcp") return toolCatalogue(x, x.def.blocks.find(b => b.id === caller)!).find(entry => entry.block_id === t.id);
+  if (t.type === "meeting") return useMeeting(x, t.id, caller, { action: "diff" });
     const k = `${caller}>${t.id}`, out = x.outputs.get(t.id) ?? "", seen = x.fetched.get(k) ?? 0;
     const from = seen > out.length ? 0 : seen, text = out.slice(from, from + 8000);
     x.fetched.set(k, from + text.length);
     return text ? { text, hasMore: from + text.length < out.length } : { unchanged: true };
   }
+  if (t.type === "mcp") return toolCatalogue(x, x.def.blocks.find(b => b.id === caller)!).find(entry => entry.block_id === t.id);
   if (t.type === "meeting") return useMeeting(x, t.id, caller, { ...a, action: action || "diff" });
   if (t.type === "terminal_control") {
     const value = await terminalAction(ctxRef, x.env, action || "list", a);
@@ -226,6 +228,11 @@ const mod: AppModule = {
     db = await ctx.host.db.openNamespace("workflow-runner");
     await ctx.host.db.exec(db, "CREATE TABLE IF NOT EXISTS definitions(id TEXT PRIMARY KEY, project TEXT NOT NULL, revision INTEGER NOT NULL, data TEXT NOT NULL); CREATE INDEX IF NOT EXISTS definitions_project ON definitions(project); CREATE TABLE IF NOT EXISTS runs(id TEXT PRIMARY KEY, project TEXT NOT NULL, workflow TEXT NOT NULL, created TEXT NOT NULL, data TEXT NOT NULL, env TEXT NOT NULL); CREATE INDEX IF NOT EXISTS runs_workflow ON runs(project, workflow, created)");
     initEngine(ctx, save);
+    ctx.events.on("agent-runner.toolActivity", async (event: any) => {
+      if (!event.workflow?.runId || !event.workflow?.blockId) return;
+      try { recordMcpActivity(await execFor(event.workflow.runId), event.workflow.blockId, event.sessionId, event.update); }
+      catch (e) { ctx.log.warn("MCP activity trace", errMsg(e)); }
+    });
     await initMcp(ctx, db, {
       list: s => s.kind === "run" ? RUN_TOOLS : CONFIG_TOOLS,
       call: (s, name, args) => s.kind === "run" ? runTool(s, name, args) : configTool(s, name, args),

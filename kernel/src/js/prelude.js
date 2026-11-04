@@ -192,7 +192,8 @@
         cancelForward: (handle) => call("ssh.cancelForward", { handle }),
       },
       net: {
-        listenLoopback: () => call("net.listen", {}),
+        listenLoopback: (opts) => call("net.listen", { port: (opts && opts.port) || 0 }),
+        fetch: (request) => call("net.fetch", request),
         write: (handle, text) => call("net.write", { handle, text }),
         close: (handle) => call("net.close", { handle }),
       },
@@ -246,6 +247,7 @@
         invalidate: (moduleId) => sync("ui.invalidate", { moduleId }),
         documentOpen: (workspaceKey, text, language, opts) => call("ui.documentOpen", Object.assign({ workspaceKey, text, language }, opts || {})),
         pickFolder: () => call("ui.pickFolder", {}),
+        openUrl: (url) => call("ui.openUrl", { url }),
         toast: (level, text) => sync("ui.toast", { level, text }),
       },
     },

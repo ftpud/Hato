@@ -1,6 +1,7 @@
 pub mod daemon_link;
 pub mod db;
 pub mod fs;
+pub mod http;
 pub mod net;
 pub mod process;
 pub mod pty;

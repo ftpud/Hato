@@ -12,7 +12,8 @@
     "fs.scope",
     "ssh.connect",
     "ui.document",
-    "remote.daemon"
+    "remote.daemon",
+    "process.scope"
   ],
   "stateVersion": 1,
   "description": "Workspace-scoped file listing and native document handles."

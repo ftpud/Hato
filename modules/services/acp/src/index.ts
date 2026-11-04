@@ -4,6 +4,7 @@
 // No local fallback, no implicit clone, no auto-install.
 import { reportedUsage, type ReportedUsage } from "../../../../sdk/context-usage";
 import { imageAttachments } from "../../../../sdk/images";
+import { applyClaudeRateLimit, parseClaudeUsage, parseCodexStatus, type LimitProvider, type LimitsSnapshot } from "../../../../sdk/usage-limits";
 import type { AppModule, Handle, ModuleContext } from "../../../../sdk/types";
 import { errMsg, JsonRpcPeer, rpcError, targetFor, workspaceGrant, type WorkspaceDescriptor } from "../../../../sdk/runtime";
 
@@ -42,12 +43,66 @@ interface Conn {
   status: "starting" | "ready" | "busy" | "exited" | "error";
   error: string | null;
   stderrTail: string;
-  mcp: { enabled: boolean; status: string };
+  stopping?: boolean;
+  mcp: { enabled: boolean; status: string; selection?: string[] };
   executablePath: string;
   startedAt: number;
 }
 
 const conns = new Map<string, Conn>();
+
+// ---- plan usage limits ---------------------------------------------------------------------------
+// Published at `acp.limits` as { claude, codex }. Refreshed by a short-lived hidden ACP session that
+// runs the adapter's local usage command (no model call), and passively from live Claude turns.
+const LIMIT_COMMAND: Record<LimitProvider, string> = { claude: "/usage", codex: "/status" };
+let limits: Record<LimitProvider, LimitsSnapshot | null> = { claude: null, codex: null };
+const probes = new Map<LimitProvider, Promise<LimitsSnapshot>>();
+function publishLimits(ctx: ModuleContext) { ctx.state.set("acp.limits", limits as any); }
+function setLimits(ctx: ModuleContext, provider: LimitProvider, snap: LimitsSnapshot) { limits = { ...limits, [provider]: snap }; publishLimits(ctx); }
+
+async function probeLimits(ctx: ModuleContext, provider: LimitProvider, workspaceId: string): Promise<LimitsSnapshot> {
+  const desc: WorkspaceDescriptor = await ctx.modules.call("workspace", "resolve", { workspaceId });
+  const all = await profiles(ctx);
+  const profile = all.find((p: any) => p.enabled && p.provider === provider && (p.machineId === desc.machineId || p.machineId === "*"));
+  if (!profile) throw new Error(`no enabled ${provider} agent profile for ${desc.machineId}`);
+  const det = await detect(ctx, desc, profile.executable);
+  if (!det.found) throw new Error(`${profile.executable} was not found on ${desc.machineId}`);
+  const g = await workspaceGrant(ctx, desc, "process");
+  const env: Record<string, string> = { ...(profile.envRefs || {}) };
+  if (det.pathEnv) env.PATH = det.pathEnv;
+  const envRemove: string[] = [];
+  if (provider === "claude" && (await authSettings(ctx)).claudeSubscription) for (const k of CLAUDE_API_VARS) { envRemove.push(k); delete env[k]; }
+  const proc = await ctx.host.process.spawn(g.grant, {
+    target: await targetFor(ctx, desc), executable: desc.location === "ssh" ? profile.executable : det.path,
+    args: profile.args || [], cwd: desc.rootAbsolutePath, env, envRemove, loginShell: desc.location === "ssh",
+  });
+  const peer = new JsonRpcPeer((line) => ctx.host.process.write(proc.handle, line + "\n"), 1);
+  let text = "", rateLimit: any = null;
+  peer.onNotification = (method, params) => {
+    const u = method === "session/update" ? params?.update : null;
+    if (u?.sessionUpdate === "agent_message_chunk" && u.content?.type === "text") text += u.content.text;
+    if (u?.sessionUpdate === "usage_update" && u._meta?.["_claude/rateLimit"]) rateLimit = u._meta["_claude/rateLimit"];
+  };
+  peer.onRequest = async (method) => { if (method === "session/request_permission") return { outcome: { outcome: "cancelled" } }; throw rpcError(-32601, `method not supported by client: ${method}`); };
+  const subs = [
+    await ctx.host.streams.listen(proc.handle, { channel: "stdout" }, (chunk) => peer.feed(chunk), () => peer.failAll("agent process exited")),
+  ];
+  try {
+    await withTimeout(peer.request("initialize", { protocolVersion: PROTOCOL_VERSION, clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false },
+      clientInfo: { name: "hato", title: "Hato usage meter", version: "0.1.0" } }), 60000, "initialize");
+    const session: any = await withTimeout(peer.request("session/new", { cwd: desc.rootAbsolutePath, mcpServers: [] }), 120000, "session/new");
+    await withTimeout(peer.request("session/prompt", { sessionId: session.sessionId, prompt: [{ type: "text", text: LIMIT_COMMAND[provider] }] }), 90000, LIMIT_COMMAND[provider]);
+  } finally {
+    for (const sub of subs) await sub.close().catch(() => {});
+    await ctx.host.process.closeStdin(proc.handle).catch(() => {});
+    await ctx.host.process.terminate(proc.handle).catch(() => {});
+  }
+  const parsed = provider === "claude" ? parseClaudeUsage(text) : parseCodexStatus(text);
+  let snap: LimitsSnapshot = { provider, windows: parsed.windows, plan: parsed.plan, updatedAt: Date.now(), source: "probe", error: null };
+  if (!snap.windows.length && rateLimit) snap = { ...applyClaudeRateLimit(null, rateLimit)!, source: "probe" };
+  if (!snap.windows.length) snap.error = /not logged in|API key/i.test(text) ? `${provider} is not using a subscription login; plan limits are unavailable` : "the agent reported no plan limits";
+  return snap;
+}
 
 function publicState(c: Conn | undefined) {
   if (!c) return null;
@@ -158,17 +213,23 @@ async function start(ctx: ModuleContext, a: any) {
     c.steering = init._meta?.steering?.supported === true;
     c.authMethods = init.authMethods || [];
     if (init.protocolVersion !== PROTOCOL_VERSION) throw new Error(`agent negotiated unsupported ACP protocol version ${init.protocolVersion}`);
-    let mcpServers: any[] = [];
+    let mcpServers: any[] = [...(a.mcpServers || [])];
     if (a.mcp) {
       try {
         const ep = await ctx.modules.call("internal-mcp", "endpoint", { conversationId: c.conversationId, workspaceId: desc.id }, { timeoutMs: 300000 });
-        mcpServers = [ep.server];
+        mcpServers.push(ep.server);
         c.mcp = { enabled: true, status: `internal MCP via ${ep.transport}` };
       } catch (e) {
         c.mcp = { enabled: true, status: `unavailable: ${errMsg(e)}` };
         ctx.log.warn("internal MCP unavailable for", c.conversationId, errMsg(e));
       }
     }
+    const caps = c.agentCapabilities.mcpCapabilities || {};
+    for (const server of mcpServers) {
+      if (server.type === "http" && !caps.http) throw new Error(`Agent does not support HTTP MCP server “${server.name}”`);
+      if (server.type === "sse" && !caps.sse) throw new Error(`Agent does not support SSE MCP server “${server.name}”`);
+    }
+    c.mcp.selection = (a.mcpSelection || (a.mcp ? ["internal"] : [])).filter((id: string) => id !== "internal" || mcpServers.some(s => s.name === "hato-internal"));
     let res: any;
     if (a.resumeSessionId && c.agentCapabilities.loadSession) {
       try {
@@ -215,7 +276,11 @@ async function wire(ctx: ModuleContext, c: Conn, nextId: number, partial = "") {
       const u = params.update;
       if (u.sessionUpdate === "config_option_update" && Array.isArray(u.configOptions)) { c.configOptions = u.configOptions; emitStatus(ctx, c); }
       else if (u.sessionUpdate === "current_mode_update" && c.modes) { c.modes = { ...c.modes, currentModeId: u.currentModeId }; emitStatus(ctx, c); }
-      else if (u.sessionUpdate === "usage_update") { c.usage = reportedUsage(u); emitStatus(ctx, c); }
+      else if (u.sessionUpdate === "usage_update") {
+        c.usage = reportedUsage(u); emitStatus(ctx, c);
+        const rl = u._meta?.["_claude/rateLimit"];
+        if (rl) { const next = applyClaudeRateLimit(limits.claude, rl); if (next) setLimits(ctx, "claude", { ...next, plan: limits.claude?.plan ?? null }); }
+      }
       else if (u.sessionUpdate === "available_commands_update") { c.commands = u.availableCommands || []; }
       ctx.events.emit("acp.update", { conversationId: c.conversationId, update: u });
     }
@@ -229,11 +294,13 @@ async function wire(ctx: ModuleContext, c: Conn, nextId: number, partial = "") {
   };
   c.peer.onProtocolError = (err, line) => ctx.log.warn(`ACP protocol error (${c.conversationId}): ${err}: ${line.slice(0, 200)}`);
   await ctx.host.streams.listen(c.proc, { channel: "stdout" }, (chunk) => c.peer.feed(chunk), (err) => {
+    const wasBusy = c.status === "busy";
     c.status = "exited";
+    if (c.stopping) { c.peer.failAll("agent stopped"); return; }
     c.error = c.error || (err ? errMsg(err) : "agent process exited");
     c.peer.failAll("agent process exited");
     ctx.host.process.wait(c.proc).then((x) => { if (x) c.error = `agent process exited (code ${x.code}${x.signal ? ", signal " + x.signal : ""})${c.stderrTail ? ": " + c.stderrTail.trim().split("\n").slice(-3).join(" | ") : ""}`; emitStatus(ctx, c); }).catch(() => emitStatus(ctx, c));
-    ctx.events.emit("acp.turnEnded", { conversationId: c.conversationId, error: "agent process exited" });
+    if (wasBusy) ctx.events.emit("acp.turnEnded", { conversationId: c.conversationId, error: "agent process exited" });
   });
   await ctx.host.streams.listen(c.proc, { channel: "stderr" }, (chunk) => { c.stderrTail = (c.stderrTail + chunk).slice(-8000); });
 }
@@ -244,6 +311,9 @@ const mod: AppModule = {
   async activate(ctx, prev) {
     const existing = await profiles(ctx);
     for (const p of DEFAULT_PROFILES) if (!existing.some((x: any) => x.id === p.id)) await ctx.modules.call("persistence", "acpProfiles.upsert", { profile: p });
+    if (prev?.limits) limits = { claude: prev.limits.claude || null, codex: prev.limits.codex || null };
+    for (const k of Object.keys(limits) as LimitProvider[]) if (limits[k]?.loading) limits[k] = { ...limits[k]!, loading: false };
+    publishLimits(ctx);
     // Hot-swap hand-over: re-attach live agent processes; the kernel replays buffered stdout.
     if (prev && Array.isArray(prev.conns)) {
       for (const s of prev.conns) {
@@ -256,13 +326,14 @@ const mod: AppModule = {
   },
   /** Defer swaps while a prompt turn or an agent request is in flight (parser state would be lost). */
   canSwap() {
+    if (probes.size) return { ok: false, reason: "a usage-limit probe is running" };
     for (const c of conns.values()) {
       if (c.status === "busy" || c.status === "starting" || (c.peer && c.peer.pendingCount > 0)) return { ok: false, reason: `ACP session ${c.conversationId} is busy` };
     }
     return { ok: true };
   },
   snapshot() {
-    return { conns: Array.from(conns.values()).map((c) => ({ ...publicState(c), proc: c.proc, stderrTail: c.stderrTail, nextId: c.peer ? c.peer.nextRequestId : 1, partial: c.peer ? c.peer.partial : "" })) };
+    return { limits, conns: Array.from(conns.values()).map((c) => ({ ...publicState(c), proc: c.proc, stderrTail: c.stderrTail, nextId: c.peer ? c.peer.nextRequestId : 1, partial: c.peer ? c.peer.partial : "" })) };
   },
   methods: {
     profiles: async (ctx, a) => {
@@ -295,8 +366,8 @@ const mod: AppModule = {
       c.status = "busy";
       emitStatus(ctx, c);
       c.peer.request("session/prompt", { sessionId: c.sessionId, prompt: blocks }).then(
-        (r: any) => { if (c.status === "busy") c.status = "ready"; emitStatus(ctx, c); ctx.events.emit("acp.turnEnded", { conversationId: c.conversationId, stopReason: r && r.stopReason }); },
-        (e) => { if (c.status === "busy") c.status = "ready"; c.error = errMsg(e); emitStatus(ctx, c); ctx.events.emit("acp.turnEnded", { conversationId: c.conversationId, error: errMsg(e) }); },
+        (r: any) => { if (c.stopping || c.status === "exited") return; if (c.status === "busy") c.status = "ready"; emitStatus(ctx, c); ctx.events.emit("acp.turnEnded", { conversationId: c.conversationId, stopReason: r && r.stopReason }); },
+        (e) => { if (c.stopping || c.status === "exited") return; if (c.status === "busy") c.status = "ready"; c.error = errMsg(e); emitStatus(ctx, c); ctx.events.emit("acp.turnEnded", { conversationId: c.conversationId, error: errMsg(e) }); },
       );
       return { accepted: true };
     },
@@ -343,6 +414,7 @@ const mod: AppModule = {
     async stop(ctx, a) {
       const c = conns.get(a.conversationId);
       if (!c) return null;
+      c.stopping = true;
       await ctx.host.process.closeStdin(c.proc).catch(() => {});
       await ctx.host.process.terminate(c.proc).catch(() => {});
       c.status = "exited";
@@ -352,6 +424,23 @@ const mod: AppModule = {
       return null;
     },
     list: () => Array.from(conns.values()).map(publicState),
+
+    /** Latest plan usage limits, refreshed through a hidden ACP session when older than `maxAgeMs`
+     *  (default 60 s) or when `force`. Concurrent refreshes share one probe. */
+    async limits(ctx, a) {
+      const provider: LimitProvider = a?.provider === "codex" ? "codex" : "claude";
+      const cur = limits[provider];
+      const maxAge = Number.isFinite(a?.maxAgeMs) ? Number(a.maxAgeMs) : 60000;
+      if (!a?.workspaceId || (!a.force && cur && !cur.error && Date.now() - cur.updatedAt < maxAge)) return cur;
+      let p = probes.get(provider);
+      if (!p) {
+        setLimits(ctx, provider, { ...(cur || { provider, windows: [], plan: null, updatedAt: 0, source: "probe", error: null }), loading: true });
+        p = probeLimits(ctx, provider, String(a.workspaceId)).catch((e) => ({ ...(limits[provider] || { provider, windows: [], plan: null, source: "probe" as const }), updatedAt: Date.now(), error: errMsg(e) }));
+        probes.set(provider, p);
+        p.then((snap) => { probes.delete(provider); setLimits(ctx, provider, { ...snap, loading: false }); });
+      }
+      return p;
+    },
 
     /** Installed/latest versions of the known adapters on the workspace's machine. */
     async adapters(ctx, a) {

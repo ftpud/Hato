@@ -3,10 +3,11 @@
 // gateway (workflows) and the designer (workflows-panel). Definitions use the same JSON shape
 // as VibeEditor/HatoPad workflows, so existing definitions import unchanged where the block
 // types are supported here.
+import type { ChatMessage } from "./types";
 import type { AgentMcp, AgentProfile } from "./persistent-agents";
 
 /** Bumped whenever the daemon runtime changes behavior; the gateway pushes a newer runtime when idle. */
-export const WORKFLOW_RUNNER_VERSION = "5";
+export const WORKFLOW_RUNNER_VERSION = "8";
 
 export type WorkflowBlockType =
   | "start_button" | "start_input" | "ai" | "chatbox" | "skill" | "mcp" | "task_controls" | "terminal_control"
@@ -78,6 +79,8 @@ export interface WorkflowBlockState {
   selectedRoute?: string; question?: string; pauseId?: string; waitingUntil?: string;
   permissionId?: string; chat?: WorkflowChatMessage[];
   /** Live session projection supplied by the desktop gateway; does not change run status. */
+  agentMessages?: ChatMessage[];
+  agentHistoryBefore?: number | null;
   agentActivity?: { status: string; text: string; permissionId?: string };
   meeting?: { seq: number; messages: WorkflowMeetingMessage[]; cursors: Record<string, number> };
   log: WorkflowLog[];
@@ -88,6 +91,8 @@ export interface WorkflowRunEnv {
   daemon?: { bin: string; dir: string };
   profiles: AgentProfile[]; defaultProfileId: string; claudeSubscription: boolean;
   mcpServers: AgentMcp[];
+  /** Provider-ready configurations, including fresh remote authorization. */
+  mcpConfigs?: Record<string, any>;
 }
 
 /** Actual payload boundaries, retained in order so polling cannot lose fast calls. */
@@ -242,7 +247,7 @@ export function validateWorkflow(def: WorkflowDefinition, available?: { profiles
     if (t === "path" && from.type !== "ai" && from.type !== "yes_no_prompt") err("route-label", `Paths start at an AI Agent or Yes/No Prompt ('${from.label}')`, { edgeId: e.id });
     if (t === "path" && !e.label?.trim()) err("route-label", `Path from '${from.label}' needs a route name`, { edgeId: e.id });
     if (t === "path" && from.type === "yes_no_prompt" && e.label && !["yes", "no"].includes(e.label)) err("route-label", "Yes/No paths are named yes or no", { edgeId: e.id });
-    if (t !== "use" && isCapabilityBlock(to)) err("invalid-capability", `'${to.label}' adds tools to agents; connect it with a Use connection`, { edgeId: e.id });
+    if (t !== "use" && from.type !== "chatbox" && isCapabilityBlock(to)) err("invalid-capability", `'${to.label}' adds tools to agents; connect it with a Use connection`, { edgeId: e.id });
     if (t !== "use" && isStartBlock(to)) err("invalid-follow", "Start blocks cannot have incoming connections", { edgeId: e.id });
     if (t !== "use" && from.type === "chatbox") warn("chatbox-follow", `Chatbox '${from.label}' exposes every outgoing connection as a tool; follow connections do not run automatically`, { edgeId: e.id });
     if (t !== "use" && !e.loop && reaches(def.edges.filter(x => x.id !== e.id), e.to, e.from) && !["timer", "user_prompt", "yes_no_prompt"].includes(from.type) && !isAgentBlock(to))

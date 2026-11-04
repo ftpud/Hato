@@ -3,7 +3,8 @@
   "_comment": "Install-time capability upper bounds for first-party modules. Compiled into the kernel binary (include_str!), so modules cannot widen it at runtime. 'calls' lists the modules each module may RPC.",
   "modules": {
     "agent-runner": {"kind": "service", "capabilities": ["db:agent-runner", "process.scope", "fs.scope"], "calls": ["internal-remote-mcp"]},
-    "persistent-agents": {"kind": "service", "capabilities": ["remote.daemon", "ssh.connect", "fs.scope", "approvals.request"], "calls": ["workspace", "persistence", "agent-runner", "internal-local-mcp", "internal-remote-mcp", "git-tasks"]},
+    "persistent-agents": {"kind": "service", "capabilities": ["remote.daemon", "ssh.connect", "fs.scope", "approvals.request"], "calls": ["workspace", "persistence", "agent-runner", "internal-local-mcp", "internal-remote-mcp", "git-tasks", "mcp-auth"]},
+    "mcp-auth": {"kind": "service", "capabilities": ["net.fetch", "net.loopback", "ui.openUrl"], "calls": ["persistence"]},
     "internal-local-mcp": {"kind": "service", "capabilities": [], "calls": ["internal-mcp"]},
     "internal-remote-mcp": {"kind": "service", "capabilities": ["net.loopback", "db:internal-remote-mcp", "process.scope", "fs.scope"], "calls": ["agent-runner", "terminals", "workspace", "persistent-agents"]},
     "workflow-runner": {"kind": "service", "capabilities": ["db:workflow-runner", "process.scope", "fs.scope", "net.loopback"], "calls": ["agent-runner"]},
@@ -14,12 +15,12 @@
     "workspace":    { "kind": "service", "capabilities": ["events.publish"], "calls": ["persistence", "projects", "git-tasks"] },
     "projects":     { "kind": "service", "capabilities": ["fs.scope", "process.scope", "ssh.connect", "ui.dialog"], "calls": ["persistence", "workspace", "git-tasks"] },
     "git-tasks":    { "kind": "service", "capabilities": ["fs.scope", "process.scope", "ssh.connect"], "calls": ["persistence", "projects", "workspace"] },
-    "files":        { "kind": "service", "capabilities": ["fs.scope", "ssh.connect", "ui.document", "remote.daemon"], "calls": ["workspace", "persistence"] },
+    "files":        { "kind": "service", "capabilities": ["fs.scope", "process.scope", "ssh.connect", "ui.document", "remote.daemon"], "calls": ["workspace", "persistence"] },
     "git":          { "kind": "service", "capabilities": ["process.scope", "ssh.connect", "ui.document", "fs.scope", "remote.daemon"], "calls": ["workspace"] },
     "terminals":    { "kind": "service", "capabilities": ["pty.scope", "ssh.connect", "remote.daemon"], "calls": ["workspace", "persistence"] },
     "remote-runtime": { "kind": "service", "capabilities": ["remote.daemon", "remote.daemon.admin", "ssh.connect"], "calls": ["workspace", "persistence"] },
     "acp":          { "kind": "service", "capabilities": ["process.scope", "ssh.connect"], "calls": ["workspace", "persistence", "ai-sessions", "internal-mcp"] },
-    "ai-sessions":  { "kind": "service", "capabilities": ["approvals.request"], "calls": ["persistence", "workspace", "acp", "internal-mcp"] },
+    "ai-sessions":  { "kind": "service", "capabilities": ["approvals.request"], "calls": ["persistence", "workspace", "acp", "internal-mcp", "mcp-auth"] },
     "internal-mcp": { "kind": "service", "capabilities": ["net.loopback", "ssh.connect", "ssh.forward", "fs.scope", "modules.read"], "calls": ["module-dev", "workspace", "persistence"] },
     "module-dev":   { "kind": "service", "capabilities": ["modules.read", "modules.admin", "modules.source.read", "modules.source.write", "process.build", "fs.scope"], "calls": [] },
     "workspace-layout": { "kind": "ui", "capabilities": [], "calls": ["workspace", "module-dev", "projects", "ai-sessions", "persistence", "settings"] },
@@ -33,6 +34,8 @@
     "git-changes":      { "kind": "ui", "capabilities": [], "calls": ["git", "persistence"] },
     "remote-panel":     { "kind": "ui", "capabilities": [], "calls": ["remote-runtime", "workspace"] },
     "terminal-panel":   { "kind": "ui", "capabilities": [], "calls": ["terminals", "workspace"] },
-    "ai":               { "kind": "ui", "capabilities": [], "calls": ["ai-sessions", "acp", "workspace"] }
+    "ai":               { "kind": "ui", "capabilities": [], "calls": ["ai-sessions", "acp", "workspace"] },
+    "claude-usage":     { "kind": "ui", "capabilities": [], "calls": ["acp", "persistence"] },
+    "codex-usage":      { "kind": "ui", "capabilities": [], "calls": ["acp", "persistence"] }
   }
 }

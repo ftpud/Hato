@@ -23,6 +23,7 @@ function fixture(total) {
     }
     if (method === 'state') return { status: 'ready' };
     if (method === 'authSettings') return {};
+    if (method === 'settings.get') return [];
     if (method === 'messages.upsert') return;
     throw new Error(method);
   } } };

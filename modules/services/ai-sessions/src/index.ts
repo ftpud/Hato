@@ -1,6 +1,8 @@
 // ai-sessions: conversations per workspace, transcript projection of ACP updates, persistence of
 // cached history, and the requested approval policy. Policy here only decides *agent* permission
 // requests; module patch/build/activate approvals are enforced by the kernel regardless.
+import { acpServer, transportOf } from "../../../../sdk/mcp-servers";
+import type { AgentMcp } from "../../../../sdk/persistent-agents";
 import { reasoningMarkdown } from "../../../../sdk/reasoning";
 import { imageAttachments, transcriptContent } from "../../../../sdk/images";
 import { messageWindow } from "../../../../sdk/chat-window";
@@ -175,14 +177,29 @@ async function update(ctx: ModuleContext, id: string, fields: any) {
   if (c) c.row = { ...c.row, ...fields };
 }
 
+async function configuredMcps(ctx: ModuleContext): Promise<AgentMcp[]> {
+  return (await ctx.modules.call("persistence", "settings.get", { key: "persistent-agents.mcps" }) || []).filter((m: AgentMcp) => m.enabled !== false);
+}
+
 async function connect(ctx: ModuleContext, id: string) {
   const c = await load(ctx, id);
   await update(ctx, id, { status: "connecting" });
   notify();
   try {
+    const selected = new Set<string>(c.row.mcpSelection || []);
+    const servers = (await configuredMcps(ctx)).filter(m => selected.has(m.id));
+    const mcpServers: any[] = [];
+    for (const server of servers) {
+      let authorization: string | undefined;
+      if (transportOf(server) !== "stdio" && server.auth?.type === "oauth") {
+        try { authorization = await ctx.modules.call("mcp-auth", "authorization", { serverId: server.id, url: server.url }, { timeoutMs: 60000 }); }
+        catch (e) { throw new Error(`MCP server “${server.name}” needs sign-in: open Manage MCP servers and choose Sign in (${errMsg(e)})`); }
+      }
+      mcpServers.push(acpServer(server, authorization));
+    }
     const st = await ctx.modules.call("acp", "start", {
       conversationId: id, workspaceId: c.row.workspaceId, profileId: c.row.acpProfileId,
-      mcp: (c.row.mcpSelection || []).includes("internal"), resumeSessionId: c.row.providerSessionId,
+      mcp: selected.has("internal"), mcpServers, mcpSelection: [...selected].filter(id => id === "internal" || servers.some(m => m.id === id)), resumeSessionId: c.row.providerSessionId,
     }, { timeoutMs: 600000 });
     c.live = st;
     await update(ctx, id, { status: "online", providerSessionId: st.sessionId });
@@ -208,6 +225,7 @@ const mod: AppModule = {
   moduleApiVersion: 1,
   async activate(ctx) {
     notify = debounce(() => { publishBusy(ctx); ctx.events.emit("ai-sessions.changed", {}); }, 60);
+    ctx.events.on("persistent-agents.mcpsChanged", () => notify());
     publishBusy(ctx);
     flushSoon = debounce(() => { flush(ctx); }, 1200);
     ctx.events.on("acp.update", (p: any) => {
@@ -261,11 +279,18 @@ const mod: AppModule = {
       const existing = await ctx.modules.call("persistence", "conversations.list", { workspaceId: desc.id });
       const preferences = await ctx.modules.call("workspace", "view.get", { workspaceId: desc.id });
       const previous = existing.find((c: any) => c.id === preferences.activeConversationId) || existing[0];
-      const preferred = a.profileId || preferences.ui?.lastAcpProfileId || previous?.acpProfileId;
+      const preferred = a.profileId || previous?.acpProfileId || preferences.ui?.lastAcpProfileId;
       const profileId = profiles.find((p: any) => p.id === preferred)?.id || profiles[0]?.id;
       if (!profileId) throw new Error(`no agent profile configured for ${desc.machineId}`);
+      // Configuration belongs to the provider; never carry provider session identity or history.
+      const source = previous && previous.acpProfileId === profileId ? previous : null;
+      const config = { ...(source?.config || {}) };
+      const live = source && convs.get(source.id)?.live;
+      for (const option of live?.configOptions || []) {
+        if (option.currentValue != null) config[option.id] = option.currentValue;
+      }
       const id = crypto.randomUUID();
-      await ctx.modules.call("persistence", "conversations.insert", { conversation: { id, workspaceId: desc.id, acpProfileId: profileId, title: a.title || `Chat ${existing.length + 1}`, approvalPolicy: "ask", mcpSelection: ["internal"] } });
+      await ctx.modules.call("persistence", "conversations.insert", { conversation: { id, workspaceId: desc.id, acpProfileId: profileId, title: a.title || `Chat ${existing.length + 1}`, approvalPolicy: previous?.approvalPolicy || "ask", mcpSelection: [...(previous?.mcpSelection || ["internal"])], config } });
       await ctx.modules.call("workspace", "view.patch", { workspaceId: desc.id, patch: { activeConversationId: id, ui: { lastAcpProfileId: profileId } } });
       notify();
       return ctx.modules.call("persistence", "conversations.get", { id });
@@ -294,7 +319,7 @@ const mod: AppModule = {
           hasLoadedOlder: window.hasLoadedOlder, hasNewer: window.hasNewer, hasOlder: c.hasOlder || window.hasLoadedOlder, historyLoading: c.historyLoading, historyError: c.historyError, live: c.live, busy: c.busy, steering: c.steering.length };
       }
       const auth = await ctx.modules.call("acp", "authSettings", {});
-      return { mcpServers: [{ id: "internal", name: "Hato", description: "Inspect, build and reload application modules" }], auth, workspace: { id: desc.id, name: desc.name, machineId: desc.machineId, root: desc.rootAbsolutePath, location: desc.location }, conversations: list.map((x: any) => ({ id: x.id, title: x.title, status: x.status })), activeId, active, profiles };
+      return { mcpServers: [{ id: "internal", name: "Hato", description: "Inspect, build and reload application modules" }, ...(await configuredMcps(ctx)).map(m => ({ id: m.id, name: m.name, description: transportOf(m) === "stdio" ? "Runs on the workspace machine" : "Remote MCP server" }))], auth, workspace: { id: desc.id, name: desc.name, machineId: desc.machineId, root: desc.rootAbsolutePath, location: desc.location }, conversations: list.map((x: any) => ({ id: x.id, title: x.title, status: convs.get(x.id)?.busy ? "busy" : x.status, acpProfileId: x.acpProfileId, updatedAt: x.updatedAt })), activeId, active, profiles };
     },
 
     async loadOlder(ctx, a) {
@@ -402,17 +427,30 @@ const mod: AppModule = {
     },
 
     async setMcp(ctx, a) {
-      await load(ctx, a.conversationId);
-      await update(ctx, a.conversationId, { mcpSelection: a.internal ? ["internal"] : [] });
+      const c = await load(ctx, a.conversationId);
+      const id = typeof a.serverId === "string" ? a.serverId : "internal";
+      const enabled = typeof a.serverId === "string" ? !!a.enabled : !!a.internal;
+      if (enabled && id !== "internal" && !(await configuredMcps(ctx)).some(m => m.id === id)) throw new Error("Unknown or disabled MCP server");
+      const selection = new Set<string>(c.row.mcpSelection || []);
+      if (enabled) selection.add(id); else selection.delete(id);
+      await update(ctx, a.conversationId, { mcpSelection: [...selection] });
       notify();
       return { reconnectRequired: true };
     },
 
     async setProfile(ctx, a) {
       const c = await load(ctx, a.conversationId);
+      if (c.row.acpProfileId === a.profileId) return null;
+      if (c.busy || c.submitting || c.steering.length || c.row.status === "connecting" || c.live?.status === "starting" || c.live?.status === "busy") {
+        throw new Error("Wait for the agent to finish or stop its turn before switching providers.");
+      }
       const desc = await ctx.modules.call("workspace", "resolve", { workspaceId: c.row.workspaceId });
       const profiles = await ctx.modules.call("acp", "profiles", { machineId: desc.machineId });
       if (!profiles.some((p: any) => p.id === a.profileId)) throw new Error("provider is unavailable for this workspace");
+      // Profile discovery yields; a turn may have started in the meantime.
+      if (c.busy || c.submitting || c.steering.length || c.row.status === "connecting" || c.live?.status === "starting" || c.live?.status === "busy") {
+        throw new Error("Wait for the agent to finish or stop its turn before switching providers.");
+      }
       if (c.live && ["ready", "busy"].includes(c.live.status)) await ctx.modules.call("acp", "stop", { conversationId: a.conversationId });
       c.live = null;
       c.busy = false;

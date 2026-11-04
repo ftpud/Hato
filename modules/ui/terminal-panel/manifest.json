@@ -19,7 +19,7 @@
         "dock": "bottom",
         "activity": {
           "side": "left",
-          "order": 20,
+          "order": 70,
           "icon": "terminal"
         }
       }

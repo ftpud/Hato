@@ -23,9 +23,10 @@
           "size": 0.38
         },
         "activity": {
-          "side": "right",
+          "side": "left",
           "order": 31,
-          "icon": "git"
+          "icon": "history",
+          "title": "Latest changes"
         }
       }
     ]

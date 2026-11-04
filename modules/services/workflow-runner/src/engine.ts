@@ -3,6 +3,7 @@
 // Agent (or a Yes/No Prompt), and use connections make blocks tools of AI Agents and Chatboxes.
 import type { ModuleContext, Handle } from "../../../../sdk/types";
 import { errMsg } from "../../../../sdk/runtime";
+import { acpServer, transportOf } from "../../../../sdk/mcp-servers";
 import type { AgentProfile } from "../../../../sdk/persistent-agents";
 import {
   type WorkflowBlock, type WorkflowBlockState, type WorkflowDefinition, type WorkflowEdge, type WorkflowRun, type WorkflowRunEnv,
@@ -13,6 +14,7 @@ import { issueEndpoint, revokeWhere } from "./mcp";
 
 export interface Exec {
   run: WorkflowRun; env: WorkflowRunEnv; def: WorkflowDefinition;
+  mcpCalls: Map<string, { blockId: string; edgeId: string; callId: string; title: string; status: string }>;
   outputs: Map<string, string>; busy: Set<string>;
   timers: Map<string, ReturnType<typeof setTimeout>>;
   answers: Map<string, { pauseId: string; resolve: (v: string) => void; reject: (e: Error) => void }>;
@@ -53,11 +55,59 @@ export function transfer(x: Exec, edgeId: string, phase: "send" | "return" | "fl
   touch(x);
   return callId;
 }
+/** Attribute provider MCP events only to a server explicitly connected to this agent. */
+export function recordMcpActivity(x: Exec, callerId: string, sessionId: string, u: any) {
+  if (stateOf(x, callerId).sessionId !== sessionId || !u.toolCallId) return;
+  const key = `${sessionId}:${u.toolCallId}`;
+  let call = x.mcpCalls.get(key);
+  if (!call) {
+    const raw = u.rawInput || {};
+    const server = raw.server || raw.server_name || raw.mcpServer || u._meta?.mcpServer;
+    const title = String(u.title || raw.tool || raw.name || "");
+    const names = [u.title, raw.tool, raw.name].filter((name): name is string => typeof name === "string");
+    const candidates = toolTargets(x, callerId).filter(b => b.type === "mcp").filter(b => {
+      const config = x.env.mcpServers.find(m => m.id === b.mcp?.serverId);
+      return config && [config.id, config.name].some(name => server === name || names.some(tool => tool.startsWith(`mcp__${name}__`) || tool.startsWith(`mcp.${name}.`)));
+    });
+    // Ambiguous or unqualified native tools must never light up an unrelated MCP block.
+    if (candidates.length !== 1) return;
+    const target = candidates[0];
+    const edge = x.def.edges.find(e => e.from === callerId && e.to === target.id && edgeType(e) === "use")
+      || x.def.edges.find(e => e.from === callerId && e.to === target.id && block(x, callerId).type === "chatbox");
+    if (!edge) return;
+    const callId = transfer(x, edge.id, "send", raw.arguments || raw, undefined, title);
+    call = { blockId: target.id, edgeId: edge.id, callId, title: title || String(raw.tool || "MCP tool"), status: "" };
+    x.mcpCalls.set(key, call);
+    const st = stateOf(x, target.id);
+    st.runs++; st.startedAt = now(); st.completedAt = undefined; st.error = undefined;
+    log(st, "tool", `${callerId} · ${call.title} · ${callId}\n${preview(JSON.stringify(raw.arguments || raw), 3000)}`);
+  }
+  const status = String(u.status || "in_progress");
+  if (call.status === status || ["completed", "failed"].includes(call.status)) return;
+  call.status = status;
+  const st = stateOf(x, call.blockId);
+  if (["completed", "failed"].includes(status)) {
+    const result = (u.content || []).map((item: any) => item.content?.text || item.text || "").join("\n");
+    log(st, status === "failed" ? "error" : "response", `${call.title} · ${status} · ${call.callId}\n${result}`);
+    transfer(x, call.edgeId, "return", result, call.callId, call.title, status === "failed");
+    if (status === "failed") st.error = preview(result || `${call.title} failed`, 1000);
+    st.completedAt = now();
+  }
+  const pending = [...x.mcpCalls.values()].some(c => c.blockId === call!.blockId && !["completed", "failed"].includes(c.status));
+  st.status = pending ? "running" : st.error ? "failed" : "succeeded";
+  // Retain bounded terminal identities so duplicate provider updates are harmless.
+  if (x.mcpCalls.size > 200) for (const [id, old] of x.mcpCalls) {
+    if (x.mcpCalls.size <= 200) break;
+    if (["completed", "failed"].includes(old.status)) x.mcpCalls.delete(id);
+  }
+  touch(x);
+}
+
 function assertActive(x: Exec) { if (x.cancelled) throw new Error("Workflow run was cancelled"); }
 
 export function newExec(run: WorkflowRun, env: WorkflowRunEnv): Exec {
   const x: Exec = {
-    run, env, def: run.definition, outputs: new Map(), busy: new Set(), timers: new Map(), answers: new Map(), background: new Set(),
+    run, env, def: run.definition, mcpCalls: new Map(), outputs: new Map(), busy: new Set(), timers: new Map(), answers: new Map(), background: new Set(),
     loops: new Map(), steps: 0, joins: new Map(), fetched: new Map(), meetingWaiters: new Map(), participantStatuses: new Map(run.blocks.map(s => [s.blockId, s.status])), procs: new Set(), cancelled: false, driving: false,
   };
   for (const s of run.blocks) if (s.output !== undefined) x.outputs.set(s.blockId, s.output);
@@ -277,9 +327,13 @@ function pickProfile(x: Exec, b: WorkflowBlock): AgentProfile {
   return p;
 }
 
-function toolCatalogue(x: Exec, b: WorkflowBlock) {
-  return toolTargets(x, b.id).filter(t => !isCapabilityBlock(t) || t.type === "terminal_control").map(t => ({
+export function toolCatalogue(x: Exec, b: WorkflowBlock) {
+  return toolTargets(x, b.id).map(t => ({
     block_id: t.id, name: t.label, type: t.type, ...(t.description ? { description: t.description } : {}),
+    invocation: t.type === "mcp" ? "provider_mcp_tools" : t.type === "task_controls" ? "workspace_task_tools" : "workflow_use_block",
+    ...(t.type === "mcp" ? { server_id: t.mcp?.serverId, server_name: x.env.mcpServers.find(m => m.id === t.mcp?.serverId)?.name,
+      usage: "Discover and call this server's tools through the provider MCP tools. workflow_use_block only describes the connection; it does not call the MCP server." } : {}),
+    ...(t.type === "task_controls" ? { usage: "Use workspace tasks_list, tasks_create, tasks_start_agent and tasks_reconcile tools." } : {}),
     ...(t.type === "run_app" ? { actions: t.app?.actions?.length ? t.app.actions : ["start", "status", "kill", "tail"] } : {}),
     ...(t.type === "terminal_control" ? { actions: ["list", "read", "write"] } : {}),
     ...(t.type === "timer" ? { seconds: t.seconds } : {}),
@@ -292,7 +346,9 @@ function instructions(x: Exec, b: WorkflowBlock) {
   const caps = toolTargets(x, b.id).filter(isCapabilityBlock).map(t => t.type);
   return [
     `You are the "${b.label}" block of the Hato workflow "${x.run.workflowName}". Each workflow block keeps its own session and context.`,
-    tools.length ? `Connected tools (call workflow_use_block with block_id and input): ${JSON.stringify(tools)}.` : "No workflow blocks are connected to you as tools.",
+    tools.length ? `Connected workflow blocks and capabilities: ${JSON.stringify(tools)}.` : "No workflow blocks are connected to you as tools.",
+    "Call workflow_connections to discover your connected blocks and their invocation methods before deciding which tools to use. Check the connected capabilities before claiming you lack access. Blocks with invocation workflow_use_block accept block_id and input; provider_mcp_tools means use that MCP server's advertised tools directly.",
+    caps.includes("mcp") ? "Connected MCP servers are available capabilities. Identify them by server_name in workflow_connections, then inspect their advertised tool names and descriptions. If your provider loads tools lazily, use its tool discovery/search facility to find that server's tools. Use relevant tools for the user's request without requiring the user to name the server. If discovery or connection fails, report that specific error rather than claiming no MCP server is connected." : "",
     tools.length ? "For connected AI Agents and Chatboxes: omit action to run and wait, start launches in the background, status checks state, tail reads recent messages (lines 1–50) and steer sends input to a running session. A timed_out result means the block keeps working; check it with status or workflow_block_messages. Run App blocks take action start, status, kill or tail. Meetings automatically publish participant status changes (started activity, idle, permission wait, error or stop) as room messages. Use diff or wait to receive them without status polling. Publishing does not consume your unread cursor or invoke other agents. Meetings take publish (message), tail, diff, wait, status and shake (peer_block_id and an explicit message, required). Skill blocks return instructions to apply in your own session. Timers arm and return at once; when they fire, their follow connections receive the input you gave them. User Prompt and Yes/No Prompt blocks wait for the user's answer. action \"fetch\" returns output you have not seen yet. Use workflow_block_output to page through long outputs. Keep requests and reports concise." : "",
     caps.includes("terminal_control") ? "Terminal Control: always call workflow_use_block with the connected Terminal Control block_id and action list, read or write. read/write take key; read accepts cursor; write takes text. These calls are logged on the block. Do not use direct workspace terminals_* tools. Reuse existing terminals; do not start agents in terminals." : "",
     caps.includes("task_controls") ? "Task controls: use the workspace tasks_list, tasks_create, tasks_start_agent and tasks_reconcile tools (they need the Hato desktop open)." : "",
@@ -307,8 +363,13 @@ async function createSession(x: Exec, b: WorkflowBlock) {
   const profile = pickProfile(x, b);
   if (b.reasoning && !(await agentCall("health", {}).catch(() => null))?.reasoning) throw new Error("Reasoning needs the updated agent runtime. Stop saved background agents before upgrading their runtime, then retry.");
   const targets = toolTargets(x, b.id);
+  const extra = targets.filter(t => t.type === "mcp").map(t => x.env.mcpServers.find(m => m.id === t.mcp?.serverId)).filter(Boolean).map((m: any) => {
+    const prepared = x.env.mcpConfigs?.[m.id];
+    if (prepared) return { id: m.id, ...prepared };
+    if (transportOf(m) !== "stdio" && m.auth?.type === "oauth") throw new Error(`MCP server “${m.name}” needs fresh authorization. Start a new workflow run to reconnect it.`);
+    return { id: m.id, ...acpServer(m) };
+  });
   const endpoint = await issueEndpoint(ctx, { kind: "run", runId: x.run.id, blockId: b.id });
-  const extra = targets.filter(t => t.type === "mcp").map(t => x.env.mcpServers.find(m => m.id === t.mcp?.serverId)).filter(Boolean).map(({ enabled, ...m }: any) => m);
   const id = crypto.randomUUID();
   const spec = {
     id, name: `${x.run.workflowName} · ${b.label}`.slice(0, 120), workspaceId: x.env.workspaceId, workspaceName: x.env.workspaceName, root: x.env.root, machineId: x.env.machineId,

@@ -47,10 +47,10 @@ test('model discovery reuses existing metadata and removes only its own prompt-f
 
 test('agent startup applies the selected model before model-specific reasoning', async () => {
   const mod = (await load('modules/services/agent-runner/src/index.ts')).default;
-  const listeners = new Map(), requests = [];
+  const listeners = new Map(), requests = [], dbWrites = [];
   const ctx = { modules: { call: async () => null }, log: { error() {}, info() {} }, host: {
     env: { info: () => ({ platform: 'linux' }) },
-    db: { openNamespace: async () => 'db', query: async () => [], exec: async () => ({ changes: 1 }) },
+    db: { openNamespace: async () => 'db', query: async () => [], exec: async (_db, sql, args) => { dbWrites.push({ sql, args }); return { changes: 1 }; } },
     capabilities: { request: async () => ({ grant: 'grant' }), release: async () => {} }, resources: { release: async () => {} },
     streams: { listen: async (handle, opts, onData) => { if (opts.channel === 'stdout') listeners.set(handle, onData); return { close: async () => {} }; } },
     process: { spawn: async () => ({ handle: 'process' }), closeStdin: async () => {}, write: async (handle, data) => {
@@ -67,6 +67,13 @@ test('agent startup applies the selected model before model-specific reasoning',
   const session = await mod.methods.create(ctx, { spec: { id: 'test', name: 'Test', workspaceId: 'ws', root: '/workspace', profile: { executable: 'test', args: [] }, model: 'b', reasoning: 'high', agentFile: null, skills: [], mcps: [], workspaceMcp: false } });
   assert.equal(session.model, 'b'); assert.equal(session.reasoning, 'high');
   assert.deepEqual(requests.filter(r => r.method === 'session/set_config_option').map(r => [r.params.configId, r.params.value]), [['model-id', 'b'], ['effort', 'high']]);
+  const update = u => listeners.get('process')(JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'provider-session', update: u } }) + '\n');
+  update({ sessionUpdate: 'tool_call', toolCallId: 'first', title: 'Read configuration', status: 'in_progress' });
+  update({ sessionUpdate: 'tool_call', toolCallId: 'second', title: 'Run tests', status: 'in_progress' });
+  update({ sessionUpdate: 'tool_call_update', toolCallId: 'first', status: 'completed' });
+  update({ sessionUpdate: 'tool_call_update', toolCallId: 'second', status: 'failed' });
+  await mod.methods.view(ctx, { id: 'test' });
+  assert.deepEqual(dbWrites.filter(w => w.sql.startsWith('INSERT INTO messages')).map(w => w.args[3]), ['Read configuration', 'Run tests', 'Read configuration', 'Run tests']);
   await mod.methods.stop(ctx, { id: 'test' });
   await assert.rejects(mod.methods.create(ctx, { spec: { id: 'invalid', name: 'Invalid', root: '/workspace', profile: { executable: 'test', args: [] }, model: 'b', reasoning: 'unsupported', agentFile: null, skills: [], mcps: [] } }), /does not advertise reasoning/);
 });

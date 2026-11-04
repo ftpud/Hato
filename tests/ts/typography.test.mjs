@@ -63,7 +63,9 @@ test('appearance reset restores all UI preferences and keeps the top bar visible
   listeners.get('settings.reset')({ module: 'workspace-layout' }); await tick();
   assert.equal(mod.snapshot().sidebarButtons.files, 'left-top');
   assert.equal(mod.snapshot().sidebarButtons.ai, 'right-top');
-  assert.ok(mod.snapshot().sidebarOrder['left-top'].includes('@spacer:source'));
+  assert.ok(!mod.snapshot().sidebarOrder['left-top'].includes('@spacer:old'));
+  assert.equal(mod.snapshot().groupBySpace, true);
+  assert.equal(mod.snapshot().panelSharing.files, mod.snapshot().panelSharing.git);
   assert.equal(mod.snapshot().panelSharing.viewer, mod.snapshot().panelSharing['git-changes']);
   assert.equal(mod.snapshot().panelSharing.ai, mod.snapshot().panelSharing.agents);
   assert.deepEqual(mod.snapshot().tableStyle, { density: 'comfortable', stripes: true, dividers: false });
@@ -71,5 +73,5 @@ test('appearance reset restores all UI preferences and keeps the top bar visible
   assert.deepEqual(mod.methods.getLayout().mainSizes, [0.76, 0.24]);
   assert.equal(persisted.get('appearance.theme'), 'classic');
   assert.ok(emitted.includes('workspace-layout.tableStyleChanged'));
-  assert.ok([...persisted.keys()].every(k => /^(appearance\.|layout\.|activity-sidebar\.|sidebar-order\.|panel-sharing\.|ui-tables\.)/.test(k)));
+  assert.ok([...persisted.keys()].every(k => /^(appearance\.|layout\.|activity-sidebar\.|sidebar-order\.|panel-sharing\.|sidebar-grouping\.|ui-tables\.)/.test(k)));
 });

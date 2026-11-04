@@ -20,9 +20,10 @@
         "defaultHidden": true,
         "dockBelow": "files",
         "activity": {
-          "side": "right",
-          "order": 30,
-          "icon": "git"
+          "side": "left",
+          "order": 21,
+          "icon": "git",
+          "title": "Git changes"
         }
       }
     ]

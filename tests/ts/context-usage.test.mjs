@@ -20,7 +20,7 @@ test('ACP usage notifications update live state and model changes clear stale us
   const mod = (await import('data:text/javascript;base64,' + Buffer.from(built.outputFiles[0].text).toString('base64'))).default;
   let feed;
   const events = [];
-  const ctx = { modules: { async call() { return [{ id: 'codex' }, { id: 'claude' }]; } }, log: { info() {}, warn() {} }, events: { emit: (topic, value) => events.push({ topic, value }) }, host: {
+  const ctx = { modules: { async call() { return [{ id: 'codex' }, { id: 'claude' }]; } }, log: { info() {}, warn() {} }, state: { get() {}, set() {}, watch() {} }, events: { emit: (topic, value) => events.push({ topic, value }) }, host: {
     streams: { async listen(_, options, callback) { if (options.channel === 'stdout') feed = callback; } },
     process: { async write(_, line) { const request = JSON.parse(line); queueMicrotask(() => feed(JSON.stringify({ jsonrpc: '2.0', id: request.id, result: {} }) + '\n')); } }
   } };

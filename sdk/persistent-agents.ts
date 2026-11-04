@@ -1,12 +1,20 @@
 import type { ChatMessage } from "./types";
 export interface AgentProfile { id: string; provider: string; name: string; executable: string; args: string[]; envRefs?: Record<string,string>; enabled?: boolean }
-export interface AgentMcp { enabled?: boolean; id: string; name: string; command: string; args: string[]; env: {name:string; value:string}[] }
+export type McpTransport = "stdio" | "http" | "sse";
+/** Remote server authentication. OAuth tokens live in the mcp-auth service, never in this config. */
+export interface McpAuth { type: "none" | "oauth" | "bearer"; token?: string; clientId?: string; clientSecret?: string; scopes?: string; redirectPort?: number }
+/** A user MCP server: a local command (stdio) or a remote endpoint (Streamable HTTP or legacy SSE). */
+export interface AgentMcp { enabled?: boolean; id: string; name: string; transport?: McpTransport;
+  command: string; args: string[]; env: {name:string; value:string}[];
+  url?: string; headers?: {name:string; value:string}[]; auth?: McpAuth }
 export interface AgentSpec {
   id: string; name: string; workspaceId: string; workspaceName: string; root: string; machineId: string;
   profile: AgentProfile; model: string; reasoning?: string; agentFile: string | null; skills: string[]; mcps: AgentMcp[];
   claudeSubscription: boolean; workspaceMcp?: boolean; daemon?: {bin:string;dir:string};
   /** Approve the agent's tool permissions (allow-once) without asking, also while the desktop is closed. */
   autopilot?: boolean;
+  /** Workflow session ownership used for scoped tool activity tracing. */
+  workflow?: { runId: string; blockId: string };
 }
 export interface AgentSession extends AgentSpec {
   status: "starting" | "ready" | "busy" | "waiting" | "stopped" | "interrupted" | "error";

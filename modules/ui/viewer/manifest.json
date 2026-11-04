@@ -12,17 +12,23 @@
   ],
   "capabilities": [],
   "stateVersion": 1,
-  "description": "Read-only syntax-highlighted code viewer and Git diff tabs.",
+  "description": "Syntax-highlighted source editor with autosave, and Git diff tabs.",
   "contributes": {
     "panels": [
       {
         "id": "viewer",
-        "title": "Source viewer",
+        "title": "Editor",
         "dock": {
           "column": 2,
           "size": 0.38
         },
-        "pinned": true
+        "pinned": true,
+        "activity": {
+          "side": "left",
+          "order": 30,
+          "icon": "code",
+          "title": "Editor"
+        }
       }
     ]
   }

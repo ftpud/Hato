@@ -9,8 +9,9 @@ test("built-in manifests contribute the default panels, sidebars and overlays", 
   assert.equal(c.panels.files.module, "explorer");
   assert.deepEqual(c.sidebars.map((s) => [s.module, s.side]), [["left-sidebar", "left"], ["sidebar", "right"]]);
   assert.deepEqual(c.overlays.map((o) => o.module), ["settings"]);
-  assert.deepEqual(P.activityPanels(c, "right").map((p) => p.id), ["projects", "files", "agents", "workflows", "mcps", "git", "git-changes", "remote"]);
-  assert.deepEqual(P.activityPanels(c, "left").map((p) => p.id), ["ai", "terminal"]);
+  // Buttons follow shared spaces: Projects │ Navigator │ Editor area on the left, Assistant on the right.
+  assert.deepEqual(P.activityPanels(c, "left").map((p) => p.id), ["projects", "files", "git", "remote", "viewer", "git-changes", "workflows", "terminal"]);
+  assert.deepEqual(P.activityPanels(c, "right").map((p) => p.id), ["ai", "agents", "mcps"]);
 });
 
 test("disabled plugins contribute nothing; a user plugin can add a panel and sidebar button", () => {
@@ -19,7 +20,7 @@ test("disabled plugins contribute nothing; a user plugin can add a panel and sid
   const c = P.collectContributions(list);
   assert.ok(!c.panels.git);
   assert.equal(c.panels.notes.module, "notes");
-  assert.deepEqual(P.activityPanels(c, "right").map((p) => p.id), ["notes", "projects", "files", "agents", "workflows", "mcps", "git-changes", "remote"]);
+  assert.deepEqual(P.activityPanels(c, "right").map((p) => p.id), ["notes", "ai", "agents", "mcps"]);
   const defs = builtinPanelDefs(list);
   assert.deepEqual(defs.notes.dock, { column: 4, size: undefined });
 });

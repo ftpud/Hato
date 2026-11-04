@@ -32,6 +32,9 @@ function markdown(key: string, text: string, linkAction?: string, style?: UiStyl
 }
 
 export function messageNode(m: ChatMessage, opts: TranscriptOptions = {}): UiNode {
+  if (m.role === "system" && /^Turn ended(?::|$)/.test(m.text)) {
+    return { type: "divider", key: m.key, tooltip: m.text };
+  }
   if (m.role === "thought") {
     return { type: "column", key: m.key, gap: 2, style: { borderLeft: 2, borderColor: "border", paddingX: 12, paddingY: 4, color: "muted", fontSize: 14 }, children: [
       { type: "label", key: "kind", text: "REASONING", size: "xs" },

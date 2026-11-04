@@ -57,6 +57,10 @@ export interface SqlStatement { sql: string; params?: Json[] }
 export interface StreamSubscription { subId: string; close(): Promise<void> }
 export interface StreamOptions { channel?: "stdout" | "stderr"; encoding?: "utf8" | "base64"; highWaterMark?: number }
 
+export interface HttpRequest { url: string; method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD" | "OPTIONS"; headers?: Record<string, string>; body?: string; timeoutMs?: number; maxBytes?: number }
+/** Header names are lowercase; repeated headers are joined with ", ". */
+export interface HttpResponse { status: number; headers: Record<string, string>; body: string }
+
 export interface ApprovalOption { id: string; label: string; kind?: "allow" | "deny" | "neutral" }
 
 export interface NativeHost {
@@ -102,7 +106,11 @@ export interface NativeHost {
     cancelForward(handle: Handle): Promise<void>;
   };
   net: {
-    listenLoopback(): Promise<{ handle: Handle; port: number }>;
+    /** Accept loopback TCP connections; `port` 0/omitted picks a free port. Needs `net.loopback`. */
+    listenLoopback(opts?: { port?: number }): Promise<{ handle: Handle; port: number }>;
+    /** Outbound HTTP (`net.fetch`): https anywhere, plain http only to loopback. Redirects are
+     *  returned (3xx + location), not followed. Body is UTF-8 text, capped by `maxBytes` (≤ 8 MiB). */
+    fetch(request: HttpRequest): Promise<HttpResponse>;
     write(handle: Handle, text: string): Promise<void>;
     close(handle: Handle): Promise<void>;
   };
@@ -170,6 +178,8 @@ export interface NativeHost {
     invalidate(moduleId?: string): void;
     documentOpen(workspaceKey: string, text: string, language: string, opts?: { path?: string }): Promise<Handle>;
     pickFolder(): Promise<string | null>;
+    /** Open an http(s) URL in the system browser (`ui.openUrl`). */
+    openUrl(url: string): Promise<void>;
     toast(level: "info" | "warn" | "error", text: string): void;
   };
 }
@@ -307,7 +317,9 @@ export type UiNode =
   | (Base & { type: "select"; options: { value: string; label: string; disabled?: boolean }[]; value: string | null; action: string; disabled?: boolean; placeholder?: string; label?: string; disabledReason?: string; /** Style of the dropdown button itself (`style` styles its wrapper). */ buttonStyle?: UiStyle })
   | (Base & { type: "choice"; text: string; description?: string; selected?: boolean; action: string; value: string; /** Glyph shown when selected (default ✓). */ mark?: string })
   | (Base & { type: "switch"; label: string; checked: boolean; action: string; disabled?: boolean; /** Track color when on. */ accent?: UiColor })
-  | (Base & { type: "popover"; children: UiNode[]; closeAction: string; top?: number; left?: number; right?: number; /** Height as a fraction of the parent (0.1–1). */ heightFraction?: number; maxHeight?: number })
+  /** Click-outside-to-close overlay. Anchored from `top` (default 52), or upward from `bottom`
+   *  (content height then, unless `heightFraction` is set). */
+  | (Base & { type: "popover"; children: UiNode[]; closeAction: string; top?: number; bottom?: number; left?: number; right?: number; /** Height as a fraction of the parent (0.1–1). */ heightFraction?: number; maxHeight?: number })
   | (Base & { type: "toggle"; label: string; checked: boolean; action: string; disabled?: boolean })
   | (Base & { type: "tree"; rows: TreeRow[]; selectAction: string; expandAction: string; /** Fired with the row key on double click (after the first click's selectAction). */ activateAction?: string;
       /** Fixed row height (px); omit for content height. */ rowHeight?: number; /** Indent per depth level (px). */ indent?: number; rowGap?: number; iconSize?: number })
@@ -317,7 +329,10 @@ export type UiNode =
   | (Base & { type: "progress"; value?: number; indeterminate?: boolean; label?: string })
   /** Markdown from a document handle (scrolls) or inline `text`; `inline` renders without its own scroll area. */
   | (Base & { type: "markdown"; document?: Handle; text?: string; inline?: boolean; lineHeight?: number; /** rem */ paragraphGap?: number; /** Non-web link clicks fire this action with the raw href as `value`; http(s)/mailto open natively. */ linkAction?: string })
-  | (Base & { type: "codeViewer"; document: Handle | null; placeholder?: string })
+  /** Native syntax-highlighted editor over a document handle (read-only unless `editable`).
+   *  Edits stay native; after `changeDebounceMs` (default 400) of quiet, `changeAction` fires
+   *  with value {document, text}. The module decides whether/how to persist the text. */
+  | (Base & { type: "codeViewer"; document: Handle | null; placeholder?: string; editable?: boolean; changeAction?: string; changeDebounceMs?: number })
   | (Base & { type: "terminal"; pty: Handle | null; placeholder?: string })
   /** Native picture file dialog; fires `action` with attachments (or {error}). */
   | (Base & { type: "imagePicker"; action: string; disabled?: boolean; text?: string; iconSvg?: string; iconSize?: number; dialogTitle?: string; maxFiles?: number; maxBytes?: number })
@@ -326,7 +341,7 @@ export type UiNode =
    *  item, keyed). Scrolling near the top fires `loadOlderAction` (when `hasOlder`); reaching the
    *  bottom fires `bottomAction`. A new `followKey` re-enters follow mode; `scrollKey` separates
    *  scroll state (e.g. per conversation). See sdk/chat-transcript.ts. */
-  | (Base & { type: "transcript"; children: UiNode[]; scrollKey?: string; followKey?: string; hasOlder?: boolean; loadingOlder?: boolean; loadOlderAction?: string; bottomAction?: string; preserveScrollOnChange?: boolean; scrollReset?: number })
+  | (Base & { type: "transcript"; children: UiNode[]; scrollbarMode?: "always" | "hover" | "scrolling"; scrollKey?: string; followKey?: string; hasOlder?: boolean; loadingOlder?: boolean; loadOlderAction?: string; bottomAction?: string; preserveScrollOnChange?: boolean; scrollReset?: number })
   | (Base & { type: "approvalPanel" })
   | (Base & { type: "divider" })
   | (Base & { type: "spacer" })

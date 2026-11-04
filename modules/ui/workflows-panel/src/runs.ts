@@ -2,6 +2,7 @@
 // active-connection detection and per-block run details (outputs, answers, chat).
 import type { UiNode, CanvasItem, CanvasEdge } from "../../../../sdk/types";
 import { edgeType, isAgentBlock, type WorkflowBlock, type WorkflowBlockState, type WorkflowDefinition } from "../../../../sdk/workflows";
+import { followKey, transcriptItems } from "../../../../sdk/chat-transcript";
 import { transferEdges } from "./transfers";
 import { blockColor, blockIcon, edgeStyle, statusColor, statusText } from "./style";
 import { S, btn, card, icon, muted, text, type RunDetail } from "./state";
@@ -149,12 +150,18 @@ export function blockRunView(run: RunDetail, b: WorkflowBlock, st: WorkflowBlock
     const agent = chatStatus(st);
     out.push({ type: "row", key: k("agent-status"), gap: 6, children: [
       text("dot", "●", { color: agent.color, wrap: false }), text("status", agent.label, { weight: "semibold", color: agent.color, wrap: false }),
-      muted("activity", agent.detail, { grow: true }),
+      muted("activity", agent.detail.replace(/\s+/g, " ").trim().slice(0, 100), { grow: true, wrap: false }),
     ] });
     if (agent.busy) out.push({ type: "progress", key: k("agent-busy"), indeterminate: true, height: 3 } as UiNode);
-    const messages = (st.chat || []).slice(-12).map(m => ({ type: "column", key: k(`m-${m.id}`), gap: 2, style: { background: m.role === "user" ? "raised" : "background", radius: 6, padding: 8 }, children: [
-      muted("r", m.role === "user" ? "You" : b.label, { weight: "semibold" }), { type: "markdown", key: "t", text: m.text || "…", inline: true } as UiNode] } as UiNode));
-    if (messages.length) out.push({ type: "column", key: k("messages"), scroll: true, maxHeight: 320, gap: 6, children: messages });
+    const ref = JSON.stringify([run.id, b.id]);
+    const history = S.chatHistory.get(ref);
+    const transcript = history?.messages || (st.agentMessages?.length ? st.agentMessages : (st.chat || []).map(m => ({ key: k(`m-${m.id}`), role: m.role, text: m.text })));
+    const hasOlder = (history ? history.before : st.agentHistoryBefore) != null;
+    const messages = transcriptItems(transcript, { agentLabel: b.label, hasOlder, loadingOlder: history?.loading, historyError: history?.error, loadOlderAction: "chatHistoryOlder" });
+    const older = messages.find(m => m.key === "__older");
+    if (older?.type === "button") { older.value = ref; older.key = `__older:${transcript[0]?.key || ""}`; }
+    if (messages.length) out.push({ type: "column", key: k("messages"), height: 320, children: [{ type: "transcript", key: `chat-history:${ref}`, scrollbarMode: "scrolling", grow: true, scrollKey: `${run.id}:${b.id}:${st.sessionId || ""}`, followKey: followKey(transcript),
+      hasOlder, loadingOlder: history?.loading, loadOlderAction: history?.error ? undefined : "chatHistoryOlder", children: messages }] });
     if (run.status !== "cancelled") out.push({ type: "row", key: k("chat"), gap: 6, align: "end", children: [
       { type: "textInput", key: `chat:${run.id}:${b.id}`, value: S.chatDrafts.get(`chat:${run.id}:${b.id}`) || "", changeAction: "chatText", submitAction: "chatSend", placeholder: `Message ${b.label}`, grow: true, multiline: true, rows: 2 } as UiNode,
       btn("send", "Send", "chatSend", { value: `chat:${run.id}:${b.id}`, variant: "primary", disabled: agent.busy }),

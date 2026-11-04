@@ -1,6 +1,6 @@
 // Shared panel state. One mutable object so the library, run and designer views can be split
 // across files; it is snapshotted on module reload.
-import type { ModuleContext, UiNode } from "../../../../sdk/types";
+import type { ChatMessage, ModuleContext, UiNode } from "../../../../sdk/types";
 import type { ProviderChoices } from "../../../../sdk/workflow-provider-options";
 import type { WorkflowBlockState, WorkflowDefinition, WorkflowEdgeType, WorkflowIssue, WorkflowRun } from "../../../../sdk/workflows";
 
@@ -19,6 +19,7 @@ export const S = {
   open: new Set<string>(), maximized: null as string | null,
   cardRun: new Map<string, string>(), cardBlock: new Map<string, string>(),
   logOpen: new Set<string>(),
+  chatHistory: new Map<string, { sessionId?: string; messages: ChatMessage[]; before: number | null; loading: boolean; error?: string }>(),
   starting: null as string | null, quick: null as { wf: string; block: string } | null,
   startText: new Map<string, string>(), chatDrafts: new Map<string, string>(), answers: new Map<string, string>(),
   providerChoices: new Map<string, ProviderChoices>(), providerLoading: new Set<string>(), providerErrors: new Map<string, string>(),
@@ -64,3 +65,20 @@ export const input = (key: string, value: string | number | undefined, action: s
   ({ type: "textInput", key, value: value === undefined ? "" : String(value), changeAction: action, ...extra });
 export const card = (key: string, children: UiNode[], extra: any = {}): UiNode =>
   ({ type: "column", key, gap: 8, ...extra, style: { background: "panel", borderColor: "border", borderWidth: 1, radius: 10, padding: 10, ...(extra.style || {}) }, children } as UiNode);
+
+/** Refresh live messages without discarding older pages or duplicating overlapping rows. */
+export function rememberChatHistory(run: RunDetail) {
+  for (const st of run.blocks) {
+    if (!st.agentMessages) continue;
+    const key = JSON.stringify([run.id, st.blockId]);
+    const old = S.chatHistory.get(key);
+    if (!old || old.sessionId !== st.sessionId) {
+      S.chatHistory.set(key, { sessionId: st.sessionId, messages: st.agentMessages, before: st.agentHistoryBefore ?? null, loading: false });
+    } else {
+      const messages = new Map(old.messages.map(m => [m.key, m]));
+      for (const m of st.agentMessages) messages.set(m.key, m);
+      old.messages = [...messages.values()];
+    }
+  }
+  return run;
+}

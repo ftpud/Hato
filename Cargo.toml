@@ -37,6 +37,8 @@ dirs = "6"
 log = { version = "0.4", features = ["std"] }
 libc = "0.2"
 notify = { version = "=8.2.1", default-features = false, features = ["macos_fsevent"] }
+# HTTPS client for the capability-gated `net.fetch` primitive (OAuth discovery/token exchange).
+ureq = { version = "3", default-features = false, features = ["rustls", "platform-verifier"] }
 
 [features]
 # The desktop window. Build the headless remote daemon with `--no-default-features`.

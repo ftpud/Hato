@@ -18,6 +18,8 @@ pub enum UiMsg {
     /// A native folder picker was requested; reply via the channel.
     PickFolder(crossbeam_channel::Sender<Option<String>>),
     Toast { level: String, text: String },
+    /// Open an http(s) URL in the system browser.
+    OpenUrl(String),
     Quit,
 }
 

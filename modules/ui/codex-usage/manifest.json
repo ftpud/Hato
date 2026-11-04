@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 2,
+  "id": "codex-usage",
+  "kind": "ui",
+  "entry": "src/index.ts",
+  "moduleApiVersion": 1,
+  "dependencies": [
+    "acp",
+    "persistence"
+  ],
+  "capabilities": [],
+  "stateVersion": 1,
+  "description": "Bar meter showing how much of the Codex plan's 5-hour and weekly limits is left (via ACP).",
+  "contributes": {
+    "barItems": [
+      {
+        "id": "codex-usage",
+        "title": "Codex usage left",
+        "bar": "bottom",
+        "width": 270,
+        "order": 20
+      }
+    ]
+  }
+}

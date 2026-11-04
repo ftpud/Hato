@@ -16,28 +16,60 @@ test('MCP configurations retain ids, validate settings and serialize simultaneou
  await assert.rejects(service.methods.removeMcp(s.ctx,{id:'internal-remote-mcp'}),/Built-in/);
  await service.methods.removeMcp(s.ctx,{id:'one'});assert.deepEqual(s.list.map(v=>v.id),['two']);
 });
-test('separate MCP panel adds, edits and removes configurations without a selected workspace',async()=>{
+const panelCtx=s=>({events:s.ctx.events,ui:{invalidate(){}},state:{get(){},set(){},watch(){}}});
+const walk=n=>[n,...(n.children||[]).flatMap(walk)];
+test('MCP panel adds, edits and removes a local server without a selected workspace',async()=>{
  const service=await load('modules/services/persistent-agents/src/index.ts'),panel=await load('modules/ui/mcp-panel/src/index.ts'),s=store();
  service.activate(s.ctx);
- const ctx={events:s.ctx.events,ui:{invalidate(){}}};
+ const ctx=panelCtx(s);
  const event=(action,inputs={},extra={})=>panel.onEvent(ctx,{action,key:action,inputs,...extra});
- const walk=n=>[n,...(n.children||[]).flatMap(walk)];
  try{
   await panel.activate(ctx);await new Promise(setImmediate);
-  assert.equal(walk(panel.render()).find(n=>n.type==='tree').rows.length,3);
-  await event('add');await event('save',{name:'Test server',command:'npx',args:'["-y","test"]',env:'{"TOKEN":"value"}'});
+  assert.ok(walk(panel.render()).some(n=>n.key==='empty'),'first run shows the empty state with quick-add presets');
+  await event('toggleBuiltin');
+  assert.equal(walk(panel.render()).find(n=>n.key==='builtin').rows.length,3);
+  await event('add');await event('kind',{}, {value:'local'});
+  await event('save',{'f-name':'Test server','f-command':'npx','f-args':'-y\ntest\n','f-env':'TOKEN=value'});
   assert.equal(s.list.length,1);const id=s.list[0].id;
-  await event('select',{}, {rowKey:id});await event('configure');
-  assert.equal(walk(panel.render()).find(n=>n.key==='command').value,'npx');
-  await event('enabled',{}, {value:false});await event('save',{name:'Renamed',command:'node',args:'["server.js"]',env:'{}'});
+  assert.deepEqual([s.list[0].transport,s.list[0].args,s.list[0].env],['stdio',['-y','test'],[{name:'TOKEN',value:'value'}]]);
+  await event('select',{}, {rowKey:id});await event('edit');
+  assert.equal(walk(panel.render()).find(n=>n.key==='f-command').value,'npx');
+  await event('draftEnabled',{}, {value:false});await event('save',{'f-name':'Renamed','f-command':'node','f-args':'server.js','f-env':''});
   assert.equal(s.list[0].id,id);assert.equal(s.list[0].name,'Renamed');assert.equal(s.list[0].enabled,false);
   assert.ok(!JSON.stringify(panel.snapshot()).includes('TOKEN'));
-  await event('remove');assert.ok(walk(panel.render()).some(n=>n.key==='confirm-remove'));
-  await event('confirmRemove');assert.equal(s.list.length,0);
+  await event('toggleEnabled',{}, {value:true});assert.equal(s.list[0].enabled,true,'the detail switch saves immediately');
+  await event('duplicate');await event('save',{});assert.equal(s.list.length,2);assert.equal(s.list[1].name,'Renamed copy');
+  await event('select',{}, {rowKey:id});await event('remove');assert.ok(walk(panel.render()).some(n=>n.key==='confirm-remove'));
+  await event('confirmRemove');assert.deepEqual(s.list.map(v=>v.name),['Renamed copy']);
  }finally{panel.deactivate();}
 });
-test('invalid MCP JSON keeps the editor open and does not save',async()=>{
+test('invalid MCP fields keep the editor open and do not save',async()=>{
  const service=await load('modules/services/persistent-agents/src/index.ts'),panel=await load('modules/ui/mcp-panel/src/index.ts'),s=store();service.activate(s.ctx);
- const ctx={events:s.ctx.events,ui:{invalidate(){}}};
- try{await panel.activate(ctx);await new Promise(setImmediate);await panel.onEvent(ctx,{action:'add',inputs:{}});await panel.onEvent(ctx,{action:'save',inputs:{name:'X',command:'node',args:'{}',env:'{}'}});assert.equal(s.list.length,0);assert.ok(panel.render().children.some(n=>n.key==='editor'));}finally{panel.deactivate();}
+ const ctx=panelCtx(s);
+ try{
+  await panel.activate(ctx);await new Promise(setImmediate);
+  await panel.onEvent(ctx,{action:'add',inputs:{}});await panel.onEvent(ctx,{action:'kind',inputs:{},value:'local'});
+  await panel.onEvent(ctx,{action:'save',inputs:{'f-name':'X','f-command':'node','f-env':'NOT VALID'}});
+  assert.equal(s.list.length,0);assert.ok(panel.render().children.some(n=>n.key==='editor'));
+  await panel.onEvent(ctx,{action:'kind',inputs:{},value:'remote'});
+  await panel.onEvent(ctx,{action:'save',inputs:{'f-url':'http://example.com/mcp'}});
+  assert.equal(s.list.length,0,'plain http is rejected for non-loopback hosts');
+  assert.match(walk(panel.render()).find(n=>n.key==='save-error').text,/https/);
+ }finally{panel.deactivate();}
+});
+test('remote presets and pasted configs become remote servers; OAuth tokens stay out of the config',async()=>{
+ const service=await load('modules/services/persistent-agents/src/index.ts'),panel=await load('modules/ui/mcp-panel/src/index.ts'),s=store();service.activate(s.ctx);
+ const ctx=panelCtx(s);
+ const event=(action,inputs={},extra={})=>panel.onEvent(ctx,{action,key:action,inputs,...extra});
+ try{
+  await panel.activate(ctx);await new Promise(setImmediate);
+  await event('add');await event('preset',{}, {value:'linear'});await event('save',{});
+  assert.deepEqual([s.list[0].name,s.list[0].transport,s.list[0].url,s.list[0].auth.type],['Linear','http','https://mcp.linear.app/mcp','oauth']);
+  assert.ok(!('token' in s.list[0].auth));
+  await event('addImport');
+  await event('import',{'f-importText':JSON.stringify({mcpServers:{files:{command:'npx',args:['-y','fs'],env:{ROOT:'/'}},api:{url:'https://api.example.com/mcp',headers:{Authorization:'Bearer abc','X-Team':'7'}}}})});
+  assert.equal(s.list.length,3);
+  const api=s.list.find(v=>v.name==='api');
+  assert.deepEqual([api.auth.type,api.auth.token,api.headers],['bearer','abc',[{name:'X-Team',value:'7'}]]);
+ }finally{panel.deactivate();}
 });

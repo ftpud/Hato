@@ -20,24 +20,24 @@ test('separate sidebar toggles layout panels and reflects collapse, hide and res
   assert.equal(sidebar.render().border, undefined);
   assert.equal(sidebar.render().surface, undefined);
   assert.equal(left.render().surface, undefined);
-  const fileButton = () => sidebar.render().children.find(n => n.key === 'files');
+  const fileButton = () => left.render().children.find(n => n.key === 'files');
   assert.equal(fileButton().variant, 'primary');
-  sidebar.onEvent(ctx, { action: 'toggle', value: 'files' });
+  left.onEvent(ctx, { action: 'toggle', value: 'files' });
   assert.equal(layout.methods.getLayout().collapsed.files, true);
   assert.equal(fileButton().tooltip, 'Show Files');
-  sidebar.onEvent(ctx, { action: 'toggle', value: 'files' });
+  left.onEvent(ctx, { action: 'toggle', value: 'files' });
   assert.equal(layout.methods.getLayout().collapsed.files, false);
   await layout.onEvent(ctx, { action: 'hide', value: 'files' });
   assert.equal(fileButton().variant, 'ghost');
-  sidebar.onEvent(ctx, { action: 'toggle', value: 'files' });
+  left.onEvent(ctx, { action: 'toggle', value: 'files' });
   assert.ok(layout.methods.getLayout().columns.some(c => c.panels.includes('files')));
   assert.equal(fileButton().variant, 'primary');
+  left.onEvent(ctx, { action: 'toggle', value: 'ai' });
+  assert.ok(!layout.methods.getLayout().collapsed.ai, 'a sidebar ignores buttons it does not show');
   sidebar.onEvent(ctx, { action: 'toggle', value: 'ai' });
-  assert.ok(!layout.methods.getLayout().collapsed.ai);
-  left.onEvent(ctx, { action: 'toggle', value: 'ai' });
   assert.equal(layout.methods.getLayout().collapsed.ai, true);
-  assert.equal(left.render().children.find(n => n.key === 'ai').tooltip, 'Show AI Chat');
-  left.onEvent(ctx, { action: 'toggle', value: 'ai' });
+  assert.equal(sidebar.render().children.find(n => n.key === 'ai').tooltip, 'Show AI Chat');
+  sidebar.onEvent(ctx, { action: 'toggle', value: 'ai' });
   assert.equal(layout.methods.getLayout().collapsed.ai, false);
   await layout.onEvent(ctx, { action: 'hide', value: 'terminal' });
   left.onEvent(ctx, { action: 'toggle', value: 'terminal' });
@@ -51,16 +51,17 @@ test('sidebar drawings are module data and a new module build picks up edited SV
   const sidebar = await load('sidebar'), left = await load('left-sidebar');
   const ctx = { host: { plugins: pluginsHost() }, state: { get() {}, watch() {} }, events: { on() { return () => {}; } }, ui: { invalidate() {} }, log: { warn() {} } };
   await sidebar.activate(ctx); await left.activate(ctx);
-  assert.deepEqual(sidebar.render().children.map(n => n.key), ['projects', 'files', 'agents', 'workflows', 'mcps', 'git', 'git-changes', 'remote']);
-  for (const node of [...sidebar.render().children, ...left.render().children]) {
+  assert.deepEqual(left.render().children.map(n => n.key), ['projects', 'files', 'git', 'remote', 'viewer', 'git-changes', 'workflows', 'terminal']);
+  assert.deepEqual(sidebar.render().children.map(n => n.key), ['ai', 'agents', 'mcps']);
+  for (const node of [...sidebar.render().children, ...left.render().children].filter(n => n.type === 'button')) {
     assert.equal(node.icon, undefined);
     assert.match(node.iconSvg, /<svg /);
     assert.match(node.iconSvg, /stroke="currentColor"/);
     assert.equal(node.iconSize, 22);
   }
   const changed = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/></svg>';
-  const originalFiles = sidebar.render().children[1].iconSvg;
-  const updated = await load('sidebar', { projects: changed, files: originalFiles });
+  const originalFiles = left.render().children[1].iconSvg;
+  const updated = await load('left-sidebar', { projects: changed, files: originalFiles });
   await updated.activate(ctx);
   assert.equal(updated.render().children[0].iconSvg, changed);
   assert.equal(updated.render().children[1].iconSvg, originalFiles);

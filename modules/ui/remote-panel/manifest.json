@@ -6,11 +6,25 @@
   "entry": "src/index.ts",
   "moduleApiVersion": 1,
   "dependencies": [],
-  "requires": ["remote.runtime"],
+  "requires": [
+    "remote.runtime"
+  ],
   "capabilities": [],
   "stateVersion": 1,
   "description": "Shows the workspace machine's Hato daemon: held terminals and processes, and plugins running there.",
   "contributes": {
-    "panels": [{ "id": "remote", "title": "Remote runtime", "defaultHidden": true, "dockBelow": "files", "activity": { "side": "right", "order": 40, "icon": "remote" } }]
+    "panels": [
+      {
+        "id": "remote",
+        "title": "Remote runtime",
+        "defaultHidden": true,
+        "dockBelow": "files",
+        "activity": {
+          "side": "left",
+          "order": 22,
+          "icon": "server"
+        }
+      }
+    ]
   }
 }

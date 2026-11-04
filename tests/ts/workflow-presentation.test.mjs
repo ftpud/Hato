@@ -75,18 +75,25 @@ test('workflow gateway queries the actual Chatbox session while preserving run s
   assert.equal(detail.blocks[0].status, 'succeeded');
   assert.equal(detail.blocks[0].agentActivity.status, 'busy');
   assert.match(detail.blocks[0].agentActivity.text, /Read file/);
+  assert.equal(detail.blocks[0].agentMessages[0].title, "Read file");
   assert.equal(run.blocks[0].agentActivity, undefined, 'live projection never mutates stored run data');
   status = 'ready';
   detail = await mod.methods.runDetail(ctx, { workspaceId: 'ws', runId: 'run' });
   assert.equal(detail.blocks[0].agentActivity.text, 'Ready for a message');
+  const page = await mod.methods.chatHistory(ctx, { workspaceId: 'ws', runId: 'run', blockId: 'chat', before: 100 });
+  assert.equal(page.sessionId, 'session');
+  assert.equal(requests.at(-1).before, 100);
+  assert.equal(requests.at(-1).limit, 40);
+  await assert.rejects(mod.methods.chatHistory(ctx, { workspaceId: 'ws', runId: 'run', blockId: 'chat', before: -1 }), /cursor/);
   wrongScope = true;
+  await assert.rejects(mod.methods.chatHistory(ctx, { workspaceId: 'ws', runId: 'run', blockId: 'chat', before: 100 }), /another workflow/);
   detail = await mod.methods.runDetail(ctx, { workspaceId: 'ws', runId: 'run' });
   assert.equal(detail.blocks[0].agentActivity.status, 'unavailable');
   assert.ok(!detail.blocks[0].agentActivity.text.includes('Read file'));
   wrongScope = false; unavailable = true;
   detail = await mod.methods.runDetail(ctx, { workspaceId: 'ws', runId: 'run' });
   assert.equal(detail.blocks[0].agentActivity.status, 'unavailable');
-  assert.ok(requests.every(r => r.id === 'session' && r.limit === 8));
+  assert.ok(requests.every(r => r.id === 'session' && r.limit === 40));
 });
 
 test('completed Chatboxes keep polling live activity and retain drafts while the agent is busy', async t => {
@@ -182,4 +189,34 @@ test('uneven designer row gaps compress individually instead of inheriting the s
     assert.ok(items[i].y - items[i - 1].y <= 32 + 1e-9, 'no empty vertical band exceeds the compact row step');
   }
   assert.ok(canvas.height < 160, 'irregular row spacing does not inflate the preview');
+});
+
+
+test('Chatbox shows streamed reasoning and tool status in chat with a compact status line', async () => {
+  const { blockRunView } = await load('modules/ui/workflows-panel/src/runs.ts');
+  const state = { blockId: 'chat', status: 'running', runs: 1, log: [],
+    agentActivity: { status: 'busy', text: 'Thinking: first line\n' + 'more detail '.repeat(30) },
+    agentMessages: [
+      { key: 'u', role: 'user', text: 'Check the project' },
+      { key: 'r', role: 'thought', text: 'I will inspect the configuration first.' },
+      { key: 't', role: 'tool', title: 'Read config', status: 'in_progress', text: '' },
+      { key: 'a', role: 'assistant', text: 'Streaming answer' },
+      { key: 's', role: 'system', text: 'Turn ended: complete' },
+    ] };
+  const nodes = blockRunView({ id: 'run', status: 'running' }, block('chat', 'chatbox'), state, 'test');
+  const messages = nodes.find(n => n.key.endsWith(':messages')).children.flatMap(walk);
+  assert.ok(messages.some(n => n.text === 'REASONING'));
+  assert.ok(messages.some(n => n.text === state.agentMessages[1].text));
+  assert.ok(messages.some(n => n.text === 'Read config'));
+  assert.ok(messages.some(n => n.text === 'in_progress'));
+  assert.ok(messages.some(n => n.text === 'Streaming answer'));
+  assert.ok(messages.some(n => n.key === 's' && n.type === 'divider'));
+  assert.ok(!messages.some(n => n.text === 'Turn ended: complete'));
+  const transcript = nodes.find(n => n.key.endsWith(':messages')).children[0];
+  assert.equal(transcript.type, 'transcript');
+  assert.equal(transcript.followKey, 'u');
+  const status = nodes.find(n => n.key.endsWith(':agent-status')).children.find(n => n.key === 'activity');
+  assert.equal(status.wrap, false);
+  assert.ok(status.text.length <= 100);
+  assert.ok(!status.text.includes('\n'));
 });

@@ -64,6 +64,11 @@ pub struct Shell {
     render_errors: HashMap<String, String>,
     inputs: HashMap<(String, String), InputSlot>,
     editors: HashMap<String, (Entity<EditorState>, Instant)>,
+    /// Editable code viewers: change subscription and the latest (module, key, action, debounce)
+    /// binding from the tree, keyed by document handle.
+    editor_subs: HashMap<String, Subscription>,
+    editor_bind: HashMap<String, (String, String, String, u64)>,
+    editor_seq: HashMap<String, u64>,
     diffs: HashMap<String, (Entity<DiffState>, Instant)>,
     terminals: HashMap<String, Entity<TerminalView>>,
     scrolls: HashMap<String, transcript_scroll::TranscriptScroll>,
@@ -110,6 +115,9 @@ impl Shell {
             render_errors: HashMap::new(),
             inputs: HashMap::new(),
             editors: HashMap::new(),
+            editor_subs: HashMap::new(),
+            editor_bind: HashMap::new(),
+            editor_seq: HashMap::new(),
             diffs: HashMap::new(),
             terminals: HashMap::new(),
             scrolls: HashMap::new(),
@@ -156,6 +164,7 @@ impl Shell {
                 }
                 cx.notify();
             }
+            UiMsg::OpenUrl(url) => cx.open_url(&url),
             UiMsg::Quit => cx.quit(),
         }
     }
@@ -576,6 +585,9 @@ impl Shell {
                     }
                     slot.applied = value.clone();
                 }
+                let line = match &slot.input { AnyInput::Line(e) => Some(e.clone()), AnyInput::Area(_) => None };
+                let area = match &slot.input { AnyInput::Area(e) => Some(e.clone()), AnyInput::Line(_) => None };
+                let area2 = area.clone();
                 let el = match &slot.input {
                     AnyInput::Line(e) => {
                         let bg = n["style"]["background"].as_str().map(|c| theme::color(cx, c, cx.theme().background)).unwrap_or_else(|| theme::color(cx, "field", cx.theme().background));
@@ -597,7 +609,30 @@ impl Shell {
                 let paste = n.get("pasteImageAction").and_then(|v| v.as_str()).map(str::to_owned);
                 let paste_limits = images::Limits::from_node(n);
                 let (k2, m2, inputs2, key3, paste2) = (k.clone(), m.clone(), inputs.clone(), key2.clone(), paste.clone());
+                // Single-line fields ignore Up/Down upstream; follow the macOS convention of jumping
+                // to the start/end of the text (Home/End semantics elsewhere are unchanged).
+                let line2 = line.clone();
                 self.apply_base(div(), n, cx)
+                    .when_some(line, |d, e| d.capture_action(move |_: &gpui_component::input::MoveUp, _, cx| {
+                        e.update(cx, |st, cx| st.set_selected_range(0..0, cx));
+                        cx.stop_propagation();
+                    }))
+                    .when_some(line2, |d, e| d.capture_action(move |_: &gpui_component::input::MoveDown, _, cx| {
+                        e.update(cx, |st, cx| { let end = st.value().len(); st.set_selected_range(end..end, cx) });
+                        cx.stop_propagation();
+                    }))
+                    // Multi-line: let the area move by a row first; if the caret did not move it was
+                    // already on the first/last visual row, so jump to the start/end (macOS behaviour).
+                    .when_some(area, |d, e| d.capture_action(move |_: &gpui_component::input::MoveUp, _, cx| {
+                        let (before, empty) = { let st = e.read(cx); (st.cursor(), st.selected_range().is_empty()) };
+                        let e = e.clone();
+                        cx.defer(move |cx| e.update(cx, |st, cx| if empty && st.cursor() == before && before != 0 { st.set_selected_range(0..0, cx) }));
+                    }))
+                    .when_some(area2, |d, e| d.capture_action(move |_: &gpui_component::input::MoveDown, _, cx| {
+                        let (before, empty) = { let st = e.read(cx); (st.cursor(), st.selected_range().is_empty()) };
+                        let e = e.clone();
+                        cx.defer(move |cx| e.update(cx, |st, cx| { let end = st.value().len(); if empty && st.cursor() == before && before != end { st.set_selected_range(end..end, cx) } }));
+                    }))
                     .capture_key_down(move |ev, window, cx| {
                         if (ev.keystroke.modifiers.control || ev.keystroke.modifiers.platform) && ev.keystroke.key == "v" {
                             if let Some(action) = &paste {
@@ -700,10 +735,14 @@ impl Shell {
                 div().absolute().inset_0().occlude()
                     .on_mouse_down(MouseButton::Left, move |_, _, cx| Self::fire(&k, &m, &inputs, &action, &key2, None, Value::Null, cx))
                     .child(self.apply_base(v_flex(), n, cx).absolute()
-                        .top(px(n["top"].as_f64().unwrap_or(52.0).clamp(0.0, 4096.0) as f32))
+                        // `bottom` anchors upward (e.g. above a composer); content height unless `heightFraction`.
+                        .map(|d| match n["bottom"].as_f64() {
+                            Some(b) => d.bottom(px(b.clamp(0.0, 4096.0) as f32)),
+                            None => d.top(px(n["top"].as_f64().unwrap_or(52.0).clamp(0.0, 4096.0) as f32)),
+                        })
                         .left(px(n["left"].as_f64().unwrap_or(8.0).clamp(0.0, 4096.0) as f32))
                         .right(px(n["right"].as_f64().unwrap_or(8.0).clamp(0.0, 4096.0) as f32))
-                        .h(relative(n["heightFraction"].as_f64().unwrap_or(0.55).clamp(0.1, 1.0) as f32))
+                        .when(n["bottom"].is_null() || n["heightFraction"].is_number(), |d| d.h(relative(n["heightFraction"].as_f64().unwrap_or(0.55).clamp(0.1, 1.0) as f32)))
                         .max_h(px(n["maxHeight"].as_f64().unwrap_or(420.0).clamp(40.0, 4096.0) as f32)).shadow_lg().overflow_hidden().occlude()
                         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation()).children(kids))
                     .into_any_element()
@@ -846,7 +885,35 @@ impl Shell {
                         });
                         entry.1 = Instant::now();
                         let st = entry.0.clone();
-                        Editor::new(&st).readonly(true).h_full().into_any_element()
+                        let editable = b("editable");
+                        let change = s("changeAction");
+                        if editable && !change.is_empty() {
+                            let debounce = n["changeDebounceMs"].as_u64().unwrap_or(400).clamp(0, 10_000);
+                            self.editor_bind.insert(h.clone(), (module.to_string(), key.to_string(), change, debounce));
+                            if !self.editor_subs.contains_key(&h) {
+                                let h2 = h.clone();
+                                let sub = cx.subscribe_in(&st, window, move |this: &mut Shell, st, ev: &InputEvent, _w, cx| {
+                                    if !matches!(ev, InputEvent::Change) { return; }
+                                    let seq = { let c = this.editor_seq.entry(h2.clone()).or_insert(0); *c += 1; *c };
+                                    let Some((_, _, _, ms)) = this.editor_bind.get(&h2).cloned() else { return; };
+                                    let (h3, st) = (h2.clone(), st.clone());
+                                    cx.spawn(async move |this, cx| {
+                                        if ms > 0 { cx.background_executor().timer(Duration::from_millis(ms)).await; }
+                                        let _ = this.update(cx, |this: &mut Shell, cx| {
+                                            if this.editor_seq.get(&h3) != Some(&seq) { return; }
+                                            let Some((m, k, a, _)) = this.editor_bind.get(&h3).cloned() else { return; };
+                                            let text = st.read(cx).value().to_string();
+                                            let inputs = this.module_inputs(&m);
+                                            Shell::fire(&this.kernel, &m, &inputs, &a, &k, None, json!({"document": h3, "text": text}), cx);
+                                        });
+                                    }).detach();
+                                });
+                                self.editor_subs.insert(h.clone(), sub);
+                            }
+                        } else {
+                            self.editor_bind.remove(&h);
+                        }
+                        Editor::new(&st).readonly(!editable).h_full().into_any_element()
                     }
                     None => div().p_3().text_sm().text_color(theme_muted).child(placeholder).into_any_element(),
                 };
@@ -855,6 +922,9 @@ impl Shell {
                     v.sort_by_key(|x| x.1);
                     for (k, _) in v.into_iter().take(16) {
                         self.editors.remove(&k);
+                        self.editor_subs.remove(&k);
+                        self.editor_bind.remove(&k);
+                        self.editor_seq.remove(&k);
                     }
                 }
                 self.apply_base(div(), n, cx).flex().flex_col().size_full().min_w_0().min_h_0().overflow_hidden().child(body).into_any_element()
@@ -948,6 +1018,11 @@ impl Shell {
                 let has_older = b("hasOlder");
                 let loading_older = b("loadingOlder");
                 let older_action = s("loadOlderAction");
+                let scrollbar_mode = match s("scrollbarMode").as_str() {
+                    "scrolling" => ScrollbarMode::Scrolling,
+                    "hover" => ScrollbarMode::Hover,
+                    _ => ScrollbarMode::Always,
+                };
                 let load_kernel = self.kernel.clone();
                 let load_module = module.to_string();
                 let load_key = key.to_string();
@@ -1029,7 +1104,7 @@ impl Shell {
                         })
                         .child(list))
                     .child(follow_layout)
-                    .child(Scrollbar::vertical(&handle).mode(ScrollbarMode::Always).viewport_from_layout())
+                    .child(Scrollbar::vertical(&handle).mode(scrollbar_mode).viewport_from_layout())
                     .into_any_element()
             }
             "approvalPanel" => {

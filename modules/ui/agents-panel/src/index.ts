@@ -8,6 +8,10 @@ let selected:string|null=null,creating=false,error:string|null=null,busy=false,v
 /** Agent being edited in the form (null while creating), and a pending destructive confirmation. */
 let editing:string|null=null,confirming:{action:"clear"|"remove";id:string}|null=null;
 let name="",profile="",agentFile="",filter="";
+/** Agents started by workflow runs (and the workflow configurator) are hidden unless shown. */
+let showWorkflow=false;
+// Configurators created before the marker existed are recognised by their fixed name.
+const isWorkflowAgent=(s:any)=>!!s?.workflow||s?.name==="Workflow configurator";
 /** Floating create/edit window geometry. Kept for the session and across module reloads. */
 const DEFAULT_EDITOR={x:180,y:90,width:440,height:560};
 let editor={...DEFAULT_EDITOR};
@@ -75,6 +79,8 @@ function editorWindow():UiNode {
     ]},
   ]};
 }
+const workflowCount=()=>rows.filter(isWorkflowAgent).length;
+const workflowIcon=`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="6" height="6" rx="1"/><rect x="15" y="15" width="6" height="6" rx="1"/><rect x="15" y="3" width="6" height="6" rx="1"/><path d="M9 6h6M18 9v6M6 9v6a3 3 0 0 0 3 3h6"/></svg>`;
 const mod:AppModule={id:"agents-panel",moduleApiVersion:1,
  async activate(ctx,prev){
   const saved:any=prev?.editor;
@@ -83,32 +89,34 @@ const mod:AppModule={id:"agents-panel",moduleApiVersion:1,
   ctx.state.watch("workspace.selected",(next:any)=>{const changed=next?.id!==ws?.id;ws=next;if(changed)void setup(ctx);});
   ctx.state.watch("workspace-layout.panels",(panels:any)=>{visible=!!panels?.agents;schedule(ctx);if(visible)void refresh(ctx,true);});
   await setup(ctx);
-  if(prev&&prev.workspaceId===ws?.id){selected=prev.selected||null;filter=prev.filter||"";if(visible)await refresh(ctx,true);}
+  if(prev&&prev.workspaceId===ws?.id){selected=prev.selected||null;filter=prev.filter||"";showWorkflow=!!prev.showWorkflow;if(visible)await refresh(ctx,true);}
   ctx.events.on("persistent-agents.mcpsChanged",()=>{if(ws&&creating)void call(ctx,"catalog").then(next=>{catalog=next;mcps=new Set([...mcps].filter(id=>next.mcps.some((server:any)=>server.id===id)));ctx.ui.invalidate();}).catch(e=>{error=errMsg(e);ctx.ui.invalidate();});});
   ctx.state.watch("ai.session",(session:any)=>{selected=session?.kind==="background"&&session.workspaceId===ws?.id?session.id:null;ctx.ui.invalidate();});
   schedule(ctx);
  },
  deactivate(){epoch++;if(timer)clearInterval(timer);timer=null;if(animation)clearInterval(animation);animation=null;},
- snapshot:()=>({workspaceId:ws?.id,selected,filter,editor}),
+ snapshot:()=>({workspaceId:ws?.id,selected,filter,editor,showWorkflow}),
  render():UiNode {
   const children:UiNode[]=[{type:"row",key:"header",gap:3,children:[
     {type:"textInput",key:"agent-filter",prefixSvg:uiIcons.search,placeholder:"Filter agents",value:filter,changeAction:"filter",grow:true},
+    {type:"button",key:"workflow-toggle",text:workflowCount()?String(workflowCount()):"",iconSvg:workflowIcon,action:"toggleWorkflow",small:true,variant:showWorkflow?"primary":"ghost",
+      tooltip:showWorkflow?"Showing workflow agents — click to hide them":`Show workflow agents${workflowCount()?` (${workflowCount()} hidden)`:""}`},
     {type:"button",key:"new",text:"",iconSvg:uiIcons.plus,action:"new",small:true,variant:"ghost",tooltip:"Create agent"},
     {type:"button",key:"refresh",text:"",iconSvg:uiIcons.refresh,action:"refresh",small:true,variant:"ghost",tooltip:"Refresh agents"},
-  ]},{type:"row",key:"summary",children:[{type:"label",key:"count",text:`${rows.length} agents`,size:"xs",color:"muted",grow:true}]}];
+  ]},{type:"row",key:"summary",children:[{type:"label",key:"count",text:`${rows.filter(s=>showWorkflow||!isWorkflowAgent(s)).length} agents${!showWorkflow&&workflowCount()?` · ${workflowCount()} workflow hidden`:""}`,size:"xs",color:"muted",grow:true}]}];
   if(!ws)children.push(label("none","Select a workspace to create or open its agents."));
   if(error&&!creating)children.push({type:"status",key:"error",level:"error",text:error});
   if(busy&&!creating)children.push({type:"progress",key:"busy",indeterminate:true});
   if(ws) {
     const query=filter.trim().toLowerCase();
-    const agents=rows.filter(s=>[s.name,s.profile.name,s.status,s.activity||""].some(v=>v.toLowerCase().includes(query)));
+    const agents=rows.filter(s=>(showWorkflow||!isWorkflowAgent(s))&&[s.name,s.profile.name,s.status,s.activity||""].some(v=>v.toLowerCase().includes(query)));
     children.push({type:"tree",key:"agents",rowHeight:42,rowGap:0,iconSize:18,grow:true,selectAction:"open",expandAction:"noop",rows:agents.map(s=>({
       key:s.id,label:s.name,detail:s.activity||`${s.profile.name} · ${s.machineId}`,badge:s.status,
       tooltip:`${s.profile.name} · ${s.machineId}${s.activity?"\n"+s.activity:""}`,
       selected:s.id===selected,depth:0,expandable:false,expanded:false,
       iconSvg:working(s)?spinnerSvg():s.status==="waiting"?uiIcons.warning:uiIcons["message-square"],iconColor:working(s)?"primary":s.status==="error"?"danger":s.status==="waiting"?"warning":"muted",
     }))});
-    if(!agents.length)children.push(label("empty",query?"No matching agents.":"No background agents in this workspace. Create one to begin."));
+    if(!agents.length)children.push(label("empty",query?"No matching agents.":!showWorkflow&&workflowCount()?"Only workflow agents here — use the workflow button to show them.":"No background agents in this workspace. Create one to begin."));
     const current=rows.find(s=>s.id===selected);
     if(current) {
       const running=["starting","busy","waiting"].includes(current.status);
@@ -137,6 +145,7 @@ const mod:AppModule={id:"agents-panel",moduleApiVersion:1,
  async onEvent(ctx,ev) {
   const value=String(ev.value||"");
   if(ev.action==="filter"){filter=value;ctx.ui.invalidate();return;}
+  if(ev.action==="toggleWorkflow"){showWorkflow=!showWorkflow;if(!showWorkflow&&isWorkflowAgent(rows.find(s=>s.id===selected)))selected=null;ctx.ui.invalidate();return;}
   if(ev.action==="name"){name=value;return;}
   if(ev.action==="provider"){profile=value;return;}
   if(ev.action==="agentFile"){agentFile=value;return;}

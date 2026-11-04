@@ -5,7 +5,7 @@
 import type { AppModule, ModuleContext, DaemonTarget } from "../../../../sdk/types";
 import { errMsg, sshConnect, type WorkspaceDescriptor } from "../../../../sdk/runtime";
 import { exportMcpTools } from "../../../../sdk/mcp";
-import { WORKFLOW_REFERENCE, WORKFLOW_RUNNER_VERSION, normalizeDefinition, validateWorkflow, type WorkflowRunEnv, type WorkflowRun } from "../../../../sdk/workflows";
+import { WORKFLOW_REFERENCE, WORKFLOW_RUNNER_VERSION, edgeType, isAgentBlock, normalizeDefinition, validateWorkflow, type WorkflowRunEnv, type WorkflowRun } from "../../../../sdk/workflows";
 import { advertisedChoices, providerChoiceKey } from "../../../../sdk/workflow-provider-options";
 import { agentActivity } from "../../../../sdk/persistent-agents";
 import { WORKFLOW_TEMPLATES } from "../../../../sdk/workflow-templates";
@@ -27,7 +27,7 @@ async function daemon(ctx: ModuleContext, d: WorkspaceDescriptor) {
         if (plugins.find(p => p.id === id)?.active) {
           if (id !== "agent-runner") continue;
           const health = await ctx.host.daemon.request(target, "modules.call", { target: id, method: "health", args: {}, timeoutMs: 15000 }).catch(() => null);
-          if (health?.reasoning) continue;
+          if (health?.reasoning && health?.mcpActivity && health?.toolTitles) continue;
           const agents = await ctx.host.daemon.request(target, "modules.call", { target: id, method: "list", args: {}, timeoutMs: 15000 }).catch(() => null);
           if (!Array.isArray(agents) || agents.some((s: any) => ["ready", "starting", "busy", "waiting"].includes(s.status))) continue;
         }
@@ -65,15 +65,31 @@ async function catalog(ctx: ModuleContext, d: WorkspaceDescriptor) {
   const defaultProfileId = c.profiles.some((p: any) => p.id === preferred) ? preferred : c.profiles[0]?.id || "";
   return { defaultProfileId, workspace: { id: d.id, name: d.name, machineId: d.machineId, location: d.location }, profiles: c.profiles.map((p: any) => ({ id: p.id, name: p.name, provider: p.provider })), skills: c.skills, agentFiles: c.agentFiles, mcps: mcps.map((m: any) => ({ id: m.id, name: m.name })), templates: WORKFLOW_TEMPLATES.map(t => ({ id: t.id, name: t.name, description: t.description })) };
 }
-async function runEnv(ctx: ModuleContext, d: WorkspaceDescriptor): Promise<WorkflowRunEnv> {
+async function runEnv(ctx: ModuleContext, d: WorkspaceDescriptor, workflowId?: string): Promise<WorkflowRunEnv> {
   const t = await daemon(ctx, d);
   const c = await ctx.modules.call("persistent-agents", "catalog", { workspaceId: d.id }, { timeoutMs: 120_000 });
   const mcps = ((await ctx.modules.call("persistence", "settings.get", { key: "persistent-agents.mcps" })) || []).filter((m: any) => m.enabled !== false);
+  const mcpConfigs: Record<string, any> = {};
+  if (workflowId) {
+    const { definition } = await runner(ctx, d, "get", { id: workflowId });
+    const connected = new Set<string>();
+    for (const edge of definition.edges) {
+      const agent = definition.blocks.find((b: any) => b.id === edge.from);
+      if (agent && isAgentBlock(agent) && (agent.type === "chatbox" || edgeType(edge) === "use")) connected.add(edge.to);
+    }
+    const ids = [...new Set<string>(definition.blocks
+      .filter((b: any) => b.type === "mcp" && connected.has(b.id))
+      .map((b: any) => b.mcp?.serverId).filter(Boolean))];
+    if (ids.length) {
+      const configs = await ctx.modules.call("persistent-agents", "mcpConfigs", { workspaceId: d.id, ids }, { timeoutMs: 120_000 });
+      for (const { id, ...config } of configs) mcpConfigs[id] = config;
+    }
+  }
   const subscription = await ctx.modules.call("persistence", "settings.get", { key: "acp.claude.useSubscription" });
   const preferred = await ctx.modules.call("persistence", "settings.get", { key: "workflows.defaultProfile" }).catch(() => null);
   return {
     projectId: d.projectId, workspaceId: d.id, workspaceName: d.name, root: d.rootAbsolutePath, machineId: d.machineId, daemon: { bin: t.bin, dir: t.dir },
-    profiles: c.profiles, defaultProfileId: c.profiles.some((p: any) => p.id === preferred) ? preferred : c.profiles[0]?.id || "", claudeSubscription: subscription !== false, mcpServers: mcps,
+    profiles: c.profiles, defaultProfileId: c.profiles.some((p: any) => p.id === preferred) ? preferred : c.profiles[0]?.id || "", claudeSubscription: subscription !== false, mcpServers: mcps, mcpConfigs,
   };
 }
 const available = async (ctx: ModuleContext, d: WorkspaceDescriptor) => { const c = await catalog(ctx, d); return { profiles: c.profiles, mcps: c.mcps }; };
@@ -86,7 +102,7 @@ async function configurator(ctx: ModuleContext, d: WorkspaceDescriptor, a: any) 
   const id = crypto.randomUUID();
   const endpoint = await runner(ctx, d, "configEndpoint", { sessionId: id, profiles: env.profiles.map(p => ({ id: p.id, provider: p.provider })), mcps: env.mcpServers.map(m => ({ id: m.id })) });
   const spec = { id, name: "Workflow configurator", workspaceId: d.id, workspaceName: d.name, root: d.rootAbsolutePath, machineId: d.machineId, profile, model: String(a.model || ""),
-    agentFile: null, skills: [], mcps: [endpoint], claudeSubscription: env.claudeSubscription, workspaceMcp: false, daemon: env.daemon };
+    agentFile: null, skills: [], mcps: [endpoint], claudeSubscription: env.claudeSubscription, workspaceMcp: false, daemon: env.daemon, workflow: { configurator: true } };
   await daemonCall(ctx, d, "agent-runner", "create", { spec }, 240_000);
   const focus = a.workflowId ? `The user is editing workflow "${a.workflowId}" in the designer; read it first.` : "";
   const text = [
@@ -157,7 +173,7 @@ const mod: AppModule = {
       { name: "validate", title: "Validate a workflow", description: "Validate a workflow definition without saving it.", inputSchema: object({ content: {} }, ["content"]), annotations: { readOnlyHint: true },
         handler: async (a, s) => ({ issues: validateWorkflow(normalizeDefinition(parse(a.content)), await available(ctx, await scoped(s))) }) },
       { name: "run", title: "Run a workflow", description: "Start a workflow run on the workspace daemon. Only use when the user explicitly asks to run it.", inputSchema: object({ id: { type: "string" }, input: { type: "string" }, start_block_id: { type: "string" } }, ["id"]),
-        handler: async (a, s) => { const d = await scoped(s); const r = await runner(ctx, d, "start", { workflowId: String(a.id), input: String(a.input || ""), startBlockId: a.start_block_id, env: await runEnv(ctx, d) }); ctx.events.emit("workflows.changed", { workspaceId: d.id, runId: r.id }); return r; } },
+        handler: async (a, s) => { const d = await scoped(s); const r = await runner(ctx, d, "start", { workflowId: String(a.id), input: String(a.input || ""), startBlockId: a.start_block_id, env: await runEnv(ctx, d, String(a.id)) }); ctx.events.emit("workflows.changed", { workspaceId: d.id, runId: r.id }); return r; } },
       { name: "run_status", title: "Workflow run status", description: "Read a workflow run's status and block results (or list recent runs when run_id is omitted).", inputSchema: object({ run_id: { type: "string" }, workflow_id: { type: "string" } }), annotations: { readOnlyHint: true },
         handler: async (a, s) => {
           const d = await scoped(s);
@@ -195,9 +211,23 @@ const mod: AppModule = {
       // Recheck an idle daemon before each new run. A prior check may have deferred
       // an upgrade because another run or app was still active.
       prepared.delete(d.machineId);
-      const r = await runner(ctx, d, "start", { workflowId: a.id, input: String(a.input || ""), startBlockId: a.startBlockId || undefined, env: await runEnv(ctx, d) });
+      const r = await runner(ctx, d, "start", { workflowId: a.id, input: String(a.input || ""), startBlockId: a.startBlockId || undefined, env: await runEnv(ctx, d, a.id) });
       ctx.events.emit("workflows.changed", { workspaceId: d.id, runId: r.id });
       return r;
+    },
+    async chatHistory(ctx, a) {
+      const d = await resolve(ctx, a.workspaceId), r: WorkflowRun = await runner(ctx, d, "run", { id: a.runId });
+      if (r.projectId !== d.projectId) throw new Error("Run belongs to another project");
+      const st = r.blocks.find(b => b.blockId === a.blockId);
+      if (!st?.sessionId || r.definition.blocks.find(b => b.id === a.blockId)?.type !== "chatbox") throw new Error("Unknown chatbox session");
+      if (!Number.isSafeInteger(a.before) || a.before <= 0) throw new Error("Invalid history cursor");
+      const view = await daemonCall(ctx, d, "agent-runner", "view", { id: st.sessionId, before: a.before, limit: 40 }, 15_000);
+      if (view.session.workspaceId !== d.id || (view.session.workflow && (view.session.workflow.runId !== r.id || view.session.workflow.blockId !== st.blockId))) throw new Error("Session belongs to another workflow");
+      const messages = view.messages.map((message: any) => {
+        const user = message.role === "user" && [...(st.chat || [])].reverse().find(m => m.role === "user" && String(message.text || "").endsWith(m.text));
+        return user ? { ...message, text: user.text } : message;
+      });
+      return { sessionId: st.sessionId, messages, before: view.before ?? null };
     },
     async runs(ctx, a) { return runner(ctx, await resolve(ctx, a.workspaceId), "runs", { workflowId: a.workflowId }); },
     async runDetail(ctx, a) {
@@ -208,9 +238,13 @@ const mod: AppModule = {
       const blocks = await Promise.all(r.blocks.map(async st => {
         if (!st.sessionId || r.definition.blocks.find(b => b.id === st.blockId)?.type !== "chatbox") return st;
         try {
-          const view = await daemonCall(ctx, d, "agent-runner", "view", { id: st.sessionId, limit: 8 }, 15_000);
+          const view = await daemonCall(ctx, d, "agent-runner", "view", { id: st.sessionId, limit: 40 }, 15_000);
           if (view.session.workspaceId !== d.id || (view.session.workflow && (view.session.workflow.runId !== r.id || view.session.workflow.blockId !== st.blockId))) throw new Error("Session belongs to another workflow");
-          return { ...st, agentActivity: { status: view.session.status, text: view.session.status === "ready" ? "Ready for a message" : agentActivity(view), permissionId: view.permissions?.[0]?.id } };
+          return { ...st, agentMessages: view.messages.map((message: any) => {
+            // The first provider prompt contains workflow instructions; display the user's chat text.
+            const user = message.role === "user" && [...(st.chat || [])].reverse().find(m => m.role === "user" && String(message.text || "").endsWith(m.text));
+            return user ? { ...message, text: user.text } : message;
+          }), agentHistoryBefore: view.before ?? null, agentActivity: { status: view.session.status, text: view.session.status === "ready" ? "Ready for a message" : agentActivity(view), permissionId: view.permissions?.[0]?.id } };
         } catch { return { ...st, agentActivity: { status: "unavailable", text: "Agent status is temporarily unavailable" } }; }
       }));
       return { ...r, blocks };

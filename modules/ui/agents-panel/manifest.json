@@ -1,1 +1,31 @@
-{"schemaVersion":2,"id":"agents-panel","name":"Background agents","kind":"ui","entry":"src/index.ts","moduleApiVersion":1,"dependencies":["persistent-agents"],"capabilities":[],"stateVersion":1,"contributes":{"panels":[{"id":"agents","title":"Background agents","defaultHidden":true,"dock":{"column":1},"activity":{"side":"right","order":25,"icon":"ai"}}]},"description":"Separate persistent agent manager and chat, independent of the existing chatbox."}
+{
+  "schemaVersion": 2,
+  "id": "agents-panel",
+  "name": "Background agents",
+  "kind": "ui",
+  "entry": "src/index.ts",
+  "moduleApiVersion": 1,
+  "dependencies": [
+    "persistent-agents"
+  ],
+  "capabilities": [],
+  "stateVersion": 1,
+  "contributes": {
+    "panels": [
+      {
+        "id": "agents",
+        "title": "Background agents",
+        "defaultHidden": true,
+        "dock": {
+          "column": 3
+        },
+        "activity": {
+          "side": "right",
+          "order": 51,
+          "icon": "bot"
+        }
+      }
+    ]
+  },
+  "description": "Separate persistent agent manager and chat, independent of the existing chatbox."
+}

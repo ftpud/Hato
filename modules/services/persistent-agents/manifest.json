@@ -11,7 +11,8 @@
     "agent-runner",
     "internal-local-mcp",
     "internal-remote-mcp",
-    "git-tasks"
+    "git-tasks",
+    "mcp-auth"
   ],
   "capabilities": [
     "remote.daemon",

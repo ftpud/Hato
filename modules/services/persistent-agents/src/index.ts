@@ -2,6 +2,7 @@ import type { AppModule, ModuleContext, DaemonTarget } from "../../../../sdk/typ
 import { sshConnect, workspaceGrant, type WorkspaceDescriptor } from "../../../../sdk/runtime";
 import { workspaceSkills } from "../../files/src/skills";
 import { agentActivity, relativeAgentPath, type AgentMcp, type AgentSpec } from "../../../../sdk/persistent-agents";
+import { acpServer, transportOf, validateMcp } from "../../../../sdk/mcp-servers";
 
 const activityCache=new Map<string,{revision:number;status:string;text:string}>();
 const daemonInfo=new Map<string,{bin:string;dir:string}>();
@@ -53,14 +54,14 @@ function editMcps(ctx:ModuleContext,edit:(list:AgentMcp[])=>AgentMcp[]) {
     ctx.events.emit("persistent-agents.mcpsChanged",{});
   });mcpWrites=next;return next;
 }
-function validateMcp(value:any):AgentMcp {
-  if(!value||!value.id||!value.name||typeof value.command!=="string"||!value.command.trim()||!Array.isArray(value.args)||!value.args.every((a:any)=>typeof a==="string")||!Array.isArray(value.env||[])||!(value.env||[]).every((v:any)=>typeof v.name==="string"&&typeof v.value==="string"))throw new Error("MCP requires id, name, command, string args and environment entries");
-  if(String(value.id).startsWith("internal-")||String(value.id).length>120)throw new Error("Reserved or invalid MCP server id");
-  if(!String(value.name).trim())throw new Error("Server name is required");
-  const names=new Set<string>();
-  for(const item of value.env||[]){if(!/^[A-Za-z_][A-Za-z0-9_]*$/.test(item.name)||names.has(item.name))throw new Error("Environment variable names must be valid and unique");names.add(item.name);}
-  if(value.enabled!==undefined&&typeof value.enabled!=="boolean")throw new Error("Enabled must be a boolean");
-  return {id:String(value.id),name:String(value.name).trim(),command:value.command.trim(),args:value.args,env:value.env||[],enabled:value.enabled!==false};
+/** Fresh `Authorization` values for the OAuth servers in `list` (refreshing tokens when needed). */
+async function oauthHeaders(ctx:ModuleContext,list:AgentMcp[]):Promise<Record<string,string>> {
+  const out:Record<string,string>={};
+  for(const m of list)if(transportOf(m)!=="stdio"&&m.auth?.type==="oauth") {
+    try{out[m.id]=await ctx.modules.call("mcp-auth","authorization",{serverId:m.id,url:m.url},{timeoutMs:60000});}
+    catch(e){throw new Error(`MCP server “${m.name}” needs you to sign in: open MCP servers and choose Sign in (${e instanceof Error?e.message:String(e)})`);}
+  }
+  return out;
 }
 async function catalog(ctx:ModuleContext,workspaceId:string) {
   const d:WorkspaceDescriptor=await ctx.modules.call("workspace","resolve",{workspaceId});
@@ -90,7 +91,10 @@ async function agentConfig(ctx:ModuleContext,c:Awaited<ReturnType<typeof catalog
   const ids:string[]=Array.isArray(a.mcps)?a.mcps:[];
   if(ids.some(id=>!c.mcps.some(m=>m.id===id)))throw new Error("Unknown MCP server");
   await target(ctx,c.workspace.id);
-  const servers:any[]=(await mcps(ctx)).filter(m=>m.enabled!==false&&ids.includes(m.id)).map(({enabled,...server})=>server);
+  const chosen=(await mcps(ctx)).filter(m=>m.enabled!==false&&ids.includes(m.id));
+  const auth=await oauthHeaders(ctx,chosen);
+  // Agents receive ACP-shaped entries; OAuth servers carry a short-lived token refreshed on reconnect.
+  const servers:any[]=chosen.map(m=>({id:m.id,...acpServer(m,auth[m.id])}));
   if(ids.includes("internal-remote-mcp-local")) {
     const endpoint=await ctx.modules.call("internal-remote-mcp","endpoint",{workspaceId:c.workspace.id,sessionId,skills});
     servers.push({...endpoint,id:"internal-remote-mcp-local",name:"internal-remote-mcp-local"});
@@ -202,7 +206,7 @@ const mod:AppModule={id:"persistent-agents",moduleApiVersion:1,
     // Keep this UI adapter allowlist narrow instead of exposing arbitrary module calls.
     const allowed=new Set(["view","send","cancel","stop","reconnect","setModel","setAutopilot","reviewPermission","clear"]);
     ctx.events.on("mcp-panel.request",async(request:any)=>{
-      if(typeof request?.requestId!=="string"||!["listMcps","saveMcp","removeMcp"].includes(request.method))return;
+      if(typeof request?.requestId!=="string"||!["listMcps","saveMcp","removeMcp","probeMcp","signInMcp","signOutMcp","cancelSignInMcp"].includes(request.method))return;
       try{const value=await mod.methods![request.method](ctx,request.args||{},{caller:"mcp-panel"});ctx.events.emit("persistent-agents.mcpResponse",{requestId:request.requestId,value});}
       catch(e){ctx.events.emit("persistent-agents.mcpResponse",{requestId:request.requestId,error:e instanceof Error?e.message:String(e)});}
     });
@@ -221,14 +225,28 @@ const mod:AppModule={id:"persistent-agents",moduleApiVersion:1,
   },
   workspaceEndpoint:async(ctx,a)=>ctx.modules.call("internal-remote-mcp","endpoint",{workspaceId:String(a.workspaceId),sessionId:String(a.sessionId||crypto.randomUUID()),skills:Array.isArray(a.skills)?a.skills:[]}),
   catalog:(ctx,a)=>catalog(ctx,String(a.workspaceId)),
-  async listMcps(ctx) {return [...builtInMcps,...await mcps(ctx)];},
+  async listMcps(ctx) {
+    const list=await mcps(ctx);
+    const remote=list.filter(m=>transportOf(m)!=="stdio"&&m.auth?.type==="oauth").map(m=>({id:m.id,url:m.url}));
+    const status=remote.length?await ctx.modules.call("mcp-auth","status",{servers:remote}).catch(()=>({})):{};
+    return [...builtInMcps,...list.map(m=>status[m.id]?{...m,authStatus:status[m.id]}:m)];
+  },
+  async probeMcp(ctx,a) {return ctx.modules.call("mcp-auth","probe",{url:a.url,transport:a.transport,headers:a.headers},{timeoutMs:60000});},
+  async signInMcp(ctx,a) {
+    const server=(await mcps(ctx)).find(m=>m.id===a.id);
+    if(!server||transportOf(server)==="stdio"||server.auth?.type!=="oauth")throw new Error("Save the server with OAuth authentication first");
+    return ctx.modules.call("mcp-auth","signIn",{serverId:server.id,url:server.url,transport:server.transport,headers:server.headers,auth:server.auth});
+  },
+  async signOutMcp(ctx,a) {return ctx.modules.call("mcp-auth","signOut",{serverId:String(a.id)});},
+  async cancelSignInMcp(ctx,a) {return ctx.modules.call("mcp-auth","cancel",{serverId:String(a.id)});},
   async saveMcp(ctx,a) {
     const server=validateMcp(a.server);
     await editMcps(ctx,list=>[...list.filter(p=>p.id!==server.id),server]);return null;
   },
   async removeMcp(ctx,a) {
     if(typeof a.id!=="string"||a.id.startsWith("internal-"))throw new Error("Built-in MCP servers cannot be removed");
-    await editMcps(ctx,list=>list.filter(m=>m.id!==a.id));return null;
+    await editMcps(ctx,list=>list.filter(m=>m.id!==a.id));
+    await ctx.modules.call("mcp-auth","signOut",{serverId:a.id}).catch(()=>{});return null;
   },
   async create(ctx,a) {
     const c=await catalog(ctx,String(a.workspaceId));
@@ -288,6 +306,14 @@ const mod:AppModule={id:"persistent-agents",moduleApiVersion:1,
     return result;
   },
   async fork(ctx,a) {await owned(ctx,{...a,id:a.parentId});return invoke(ctx,a.workspaceId,"fork",{parentId:a.parentId,name:a.name,text:a.text,model:a.model});},
+  async mcpConfigs(ctx,a) {
+    await ctx.modules.call("workspace","resolve",{workspaceId:String(a.workspaceId)});
+    if(!Array.isArray(a.ids)||!a.ids.every((id:any)=>typeof id==="string"))throw new Error("MCP server ids are required");
+    const ids=new Set<string>(a.ids),list=(await mcps(ctx)).filter(m=>m.enabled!==false&&ids.has(m.id));
+    if(list.length!==ids.size)throw new Error("A connected MCP server is missing or disabled");
+    const auth=await oauthHeaders(ctx,list);
+    return list.map(m=>({id:m.id,...acpServer(m,auth[m.id])}));
+  },
   async view(ctx,a) {const v=await invoke(ctx,String(a.workspaceId),"view",{id:a.id,before:a.before,limit:a.limit});if(v.session.workspaceId!==a.workspaceId)throw new Error("Agent belongs to another workspace");return v;},
   async send(ctx,a) {await owned(ctx,a);return invoke(ctx,a.workspaceId,"send",{id:a.id,text:a.text,steer:!!a.steer});},
   async cancel(ctx,a) {await owned(ctx,a);return invoke(ctx,a.workspaceId,"cancel",{id:a.id});},
@@ -296,7 +322,12 @@ const mod:AppModule={id:"persistent-agents",moduleApiVersion:1,
     await ctx.modules.call("internal-remote-mcp","revoke",{sessionId:a.id}).catch(()=>{});
     return result;},
   async setAutopilot(ctx,a) {await owned(ctx,a);return invoke(ctx,a.workspaceId,"setAutopilot",{id:a.id,enabled:a.enabled===true});},
-  async reconnect(ctx,a) {await owned(ctx,a);return invoke(ctx,a.workspaceId,"reconnect",{id:a.id});},
+  async reconnect(ctx,a) {
+    const v=await owned(ctx,a);
+    const used=new Set((v.session.mcps||[]).map((m:any)=>m.id));
+    const authorization=await oauthHeaders(ctx,(await mcps(ctx)).filter(m=>used.has(m.id)));
+    return invoke(ctx,a.workspaceId,"reconnect",{id:a.id,authorization});
+  },
   async setModel(ctx,a) {await owned(ctx,a);return invoke(ctx,a.workspaceId,"setModel",{id:a.id,model:a.model});},
   async reviewPermission(ctx,a) {
     const v=await owned(ctx,a),permission=v.permissions.find((p:any)=>p.id===a.permissionId);

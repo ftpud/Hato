@@ -5,15 +5,28 @@
   "kind": "ui",
   "entry": "src/index.ts",
   "moduleApiVersion": 1,
-  "dependencies": ["workflows"],
+  "dependencies": [
+    "workflows"
+  ],
   "capabilities": [],
   "stateVersion": 1,
   "contributes": {
-    "panels": [{
-      "id": "workflows", "title": "Workflows", "defaultHidden": true,
-      "dock": {"column": 2, "size": 0.32},
-      "activity": {"side": "right", "order": 26, "iconSvg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><rect x=\"3\" y=\"3\" width=\"6\" height=\"6\" rx=\"1\"/><rect x=\"15\" y=\"15\" width=\"6\" height=\"6\" rx=\"1\"/><rect x=\"15\" y=\"3\" width=\"6\" height=\"6\" rx=\"1\"/><path d=\"M9 6h6M18 9v6M6 9v6a3 3 0 0 0 3 3h6\"/></svg>"}
-    }]
+    "panels": [
+      {
+        "id": "workflows",
+        "title": "Workflows",
+        "defaultHidden": true,
+        "dock": {
+          "column": 2,
+          "size": 0.32
+        },
+        "activity": {
+          "side": "left",
+          "order": 32,
+          "icon": "workflow"
+        }
+      }
+    ]
   },
   "description": "Visual workflow list, designer and run view: blocks, connections, runs, answers and chat."
 }

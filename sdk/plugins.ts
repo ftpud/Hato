@@ -22,12 +22,16 @@ export interface PanelContribution {
 
 export interface SidebarContribution { module: string; side: "left" | "right"; width?: number; order?: number }
 export interface OverlayContribution { module: string }
+/** A widget on the top/bottom bar rendered by `module` (defaults to the contributing plugin).
+ *  `bar` is where it appears the first time it is seen; users can move or hide it afterwards. */
+export interface BarItemContribution { id: string; title: string; module: string; bar: "top" | "bottom"; width?: number; order: number }
 
 export interface Contributions {
   plugins: PluginInfo[];
   panels: Record<string, PanelContribution & { module: string; plugin: string }>;
   sidebars: SidebarContribution[];
   overlays: OverlayContribution[];
+  barItems: BarItemContribution[];
 }
 
 const isObj = (x: unknown): x is Record<string, any> => !!x && typeof x === "object" && !Array.isArray(x);
@@ -35,7 +39,7 @@ const isId = (x: unknown): x is string => typeof x === "string" && /^[a-z0-9][a-
 
 /** Validate contributions of enabled plugins. Malformed entries are skipped, never thrown. */
 export function collectContributions(plugins: PluginInfo[]): Contributions {
-  const out: Contributions = { plugins, panels: {}, sidebars: [], overlays: [] };
+  const out: Contributions = { plugins, panels: {}, sidebars: [], overlays: [], barItems: [] };
   for (const p of plugins) {
     if (!p.enabled || !isObj(p.contributes)) continue;
     const c = p.contributes;
@@ -63,7 +67,14 @@ export function collectContributions(plugins: PluginInfo[]): Contributions {
     for (const o of Array.isArray(c.overlays) ? c.overlays : []) {
       if (o === true || isObj(o)) out.overlays.push({ module: isObj(o) && isId(o.module) ? o.module : p.id });
     }
+    for (const b of Array.isArray(c.barItems) ? c.barItems : []) {
+      if (!isObj(b) || !isId(b.id) || out.barItems.some(x => x.id === b.id)) continue;
+      out.barItems.push({ id: b.id, title: typeof b.title === "string" && b.title ? b.title : b.id, module: isId(b.module) ? b.module : p.id,
+        bar: b.bar === "top" ? "top" : "bottom", width: Number.isFinite(b.width) && b.width > 0 ? Math.min(600, Number(b.width)) : undefined,
+        order: Number.isFinite(b.order) ? Number(b.order) : 100 });
+    }
   }
+  out.barItems.sort((a, b) => (a.order - b.order) || a.id.localeCompare(b.id));
   out.sidebars.sort((a, b) => (a.order! - b.order!) || a.module.localeCompare(b.module));
   return out;
 }

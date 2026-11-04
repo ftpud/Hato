@@ -22,7 +22,8 @@ export function panelSignature(): string {
   return JSON.stringify(Object.keys(PANELS).sort().map((id) => [id, PANELS[id].slot]));
 }
 
-export const BAR_ITEMS: Record<string, { title: string; grow?: boolean; spacer?: boolean }> = {
+export interface BarItemDef { title: string; grow?: boolean; spacer?: boolean; /** Contributed: module rendered in a slot. */ slot?: string; width?: number; defaultBar?: BarId }
+export const BAR_ITEMS: Record<string, BarItemDef> = {
   toolbarGap: { title: "Toolbar gap", spacer: true },
   toolbarSpace: { title: "Flexible toolbar space", spacer: true, grow: true },
   title: { title: "App title" },
@@ -36,11 +37,36 @@ export const BAR_ITEMS: Record<string, { title: string; grow?: boolean; spacer?:
 };
 
 export type BarId = "top" | "bottom";
+
+/** Replace plugin-contributed bar items in place, keeping built-ins. Returns whether they changed. */
+export function setContributedBarItems(defs: Record<string, BarItemDef>): boolean {
+  const sig = (o: Record<string, BarItemDef>) => JSON.stringify(Object.keys(o).filter(k => o[k].slot).sort().map(k => [k, o[k].slot, o[k].width, o[k].defaultBar]));
+  const before = sig(BAR_ITEMS);
+  for (const k of Object.keys(BAR_ITEMS)) if (BAR_ITEMS[k].slot) delete BAR_ITEMS[k];
+  for (const [k, d] of Object.entries(defs)) if (!BAR_ITEMS[k] || BAR_ITEMS[k].slot) BAR_ITEMS[k] = { ...d };
+  return before !== sig(BAR_ITEMS);
+}
+const contributedBarIds = () => Object.keys(BAR_ITEMS).filter(k => BAR_ITEMS[k].slot);
+/** Place contributed items not seen before on their default bar (bottom: before trailing controls). */
+function placeNewBarItems(l: Layout) {
+  const seen = new Set(Array.isArray(l.barItemsSeen) ? l.barItemsSeen.filter(x => typeof x === "string") : []);
+  for (const id of contributedBarIds()) {
+    if (seen.has(id) || l.bars.top.items.includes(id) || l.bars.bottom.items.includes(id)) { seen.add(id); continue; }
+    const bar = BAR_ITEMS[id].defaultBar || "bottom";
+    const items = l.bars[bar].items;
+    const at = bar === "bottom" ? items.indexOf("approvals") : -1;
+    if (at >= 0) items.splice(at, 0, id); else items.push(id);
+    seen.add(id);
+  }
+  l.barItemsSeen = [...seen].slice(0, 256);
+}
 export interface Column { panels: string[]; size: number; sizes: number[] }
 export interface Layout {
   v: 1;
   settingsButton?: true;
   showPanelControls: boolean;
+  /** Show the "Collapsed" tray of restore buttons under the panels. */
+  showCollapsedTray: boolean;
   showLeftSidebar: boolean;
   showRightSidebar: boolean;
   columns: Column[];
@@ -51,9 +77,16 @@ export interface Layout {
   detached: Record<string, { width: number; height: number }>;
   hidden: string[];
   bars: Record<BarId, { visible: boolean; items: string[] }>;
+  /** Contributed bar items already offered once, so a user's removal sticks. */
+  barItemsSeen?: string[];
 }
 
 export function defaultLayout(): Layout {
+  const d = baseLayout();
+  placeNewBarItems(d);
+  return d;
+}
+function baseLayout(): Layout {
   const ids = Object.keys(PANELS).filter((id) => !PANELS[id].defaultHidden);
   const byColumn = new Map<number, { panels: string[]; size: number }>();
   const bottom: string[] = [];
@@ -73,6 +106,7 @@ export function defaultLayout(): Layout {
     v: 1,
     settingsButton: true,
     showPanelControls: true,
+    showCollapsedTray: true,
     showLeftSidebar: true,
     showRightSidebar: true,
     columns,
@@ -230,11 +264,14 @@ export function repair(raw: any): Layout {
     l.bars[b].items = (Array.isArray(l.bars[b].items) ? l.bars[b].items : []).filter((x: string) => Object.prototype.hasOwnProperty.call(BAR_ITEMS, x) && !s2.has(x) && s2.add(x) && !(b === "bottom" && l.bars.top.items.includes(x)));
     l.bars[b].visible = l.bars[b].visible !== false;
   }
+  l.barItemsSeen = Array.isArray(raw.barItemsSeen) ? raw.barItemsSeen : [];
+  placeNewBarItems(l);
   // Add Settings once to layouts saved before the Settings module existed.
   if (!raw.settingsButton && !l.bars.top.items.includes("settings") && !l.bars.bottom.items.includes("settings")) l.bars.top.items.push("settings");
   l.bars.top.visible = true;
   l.settingsButton = true;
   l.showPanelControls = raw.showPanelControls !== false;
+  l.showCollapsedTray = raw.showCollapsedTray !== false;
   l.showLeftSidebar = raw.showLeftSidebar !== false;
   l.showRightSidebar = raw.showRightSidebar !== false;
   l.collapsed = l.collapsed && typeof l.collapsed === "object" && !Array.isArray(l.collapsed) ? l.collapsed : {};

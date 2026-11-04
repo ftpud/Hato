@@ -22,8 +22,8 @@
           "size": 0.28
         },
         "activity": {
-          "side": "left",
-          "order": 10,
+          "side": "right",
+          "order": 50,
           "icon": "ai",
           "title": "AI Chat"
         }

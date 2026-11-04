@@ -6,7 +6,7 @@ import type { AppModule, ModuleContext, UiNode } from "../../../../sdk/types";
 import { errMsg } from "../../../../sdk/runtime";
 import { blockingIssues, isStartBlock, isAgentBlock, normalizeDefinition, type WorkflowEdgeType } from "../../../../sdk/workflows";
 import { CARD } from "./style";
-import { S, ACTIVE, btn, call, latestRun, muted, shownRunId } from "./state";
+import { S, ACTIVE, btn, call, latestRun, muted, shownRunId, rememberChatHistory } from "./state";
 import { addBlock, block, changed, connect, designer, duplicateBlock, edge, mutate, openDraft, redoDraft, removeBlock, renameBlockId, saveDraft, setField, undoDraft, loadProviderChoices } from "./designer";
 import { tickTransfers, clearTransfers } from "./transfers";
 import { chatStatus } from "./runs";
@@ -21,6 +21,7 @@ async function setup(ctx: ModuleContext) {
   const mine = ++S.epoch;
   Object.assign(S, { catalog: null, list: [], recent: [], error: null });
   S.details.clear();
+  S.chatHistory.clear();
   ctx.ui.invalidate();
   if (!S.ws || (!S.visible && !S.designerOpen)) return;
   try {
@@ -46,7 +47,7 @@ async function refreshDetails(ctx: ModuleContext) {
     if (open && !definitionOf(w.id)) S.defs.set(w.id, (await call(ctx, "get", { id: w.id })).definition);
     const id = shownRunId(w.id); if (!id) continue;
     const cached = S.details.get(id);
-    if (!cached || ACTIVE.has(cached.status) || cached.status !== S.recent.find(r => r.id === id)?.status || cached.blocks.some(b => b.sessionId && cached.definition.blocks.find(d => d.id === b.blockId)?.type === "chatbox")) S.details.set(id, await call(ctx, "runDetail", { runId: id }));
+    if (!cached || ACTIVE.has(cached.status) || cached.status !== S.recent.find(r => r.id === id)?.status || cached.blocks.some(b => b.sessionId && cached.definition.blocks.find(d => d.id === b.blockId)?.type === "chatbox")) S.details.set(id, rememberChatHistory(await call(ctx, "runDetail", { runId: id })));
   }
 }
 function schedule(ctx: ModuleContext) {
@@ -86,7 +87,7 @@ async function startRun(ctx: ModuleContext, wf: string, startBlockId: string | u
   await refreshRuns(ctx); await refreshDetails(ctx);
 }
 const runWorkflow = (runId: string) => S.recent.find(r => r.id === runId)?.workflowId || S.details.get(runId)?.workflowId;
-async function reloadRun(ctx: ModuleContext, runId: string) { S.details.set(runId, await call(ctx, "runDetail", { runId })); await refreshRuns(ctx); }
+async function reloadRun(ctx: ModuleContext, runId: string) { S.details.set(runId, rememberChatHistory(await call(ctx, "runDetail", { runId }))); await refreshRuns(ctx); }
 const split2 = (v: string) => { const i = v.indexOf(":"); return [v.slice(0, i), v.slice(i + 1)] as const; };
 
 const workspaceDrafts = new Map<string, any>();
@@ -232,6 +233,23 @@ const mod: AppModule = {
           const st = S.details.get(runId)?.blocks.find(s => s.pauseId === pauseId); if (!st) return;
           const textValue = String(ev.inputs?.[`answer:${runId}:${pauseId}`] ?? S.answers.get(pauseId) ?? "");
           await act(ctx, async () => { await call(ctx, "answer", { runId, blockId: st.blockId, pauseId, answer: textValue }); S.answers.delete(pauseId); await reloadRun(ctx, runId); });
+          return;
+        }
+        case "chatHistoryOlder": {
+          const ref = value || key.slice(key.indexOf("["));
+          const [runId, blockId] = JSON.parse(ref);
+          const history = S.chatHistory.get(ref);
+          if (!history || history.loading || history.before === null) return;
+          history.loading = true; history.error = undefined; ctx.ui.invalidate();
+          try {
+            const page = await call(ctx, "chatHistory", { runId, blockId, before: history.before });
+            if (S.chatHistory.get(ref) !== history || page.sessionId !== history.sessionId) return;
+            const messages = new Map(page.messages.map((m: any) => [m.key, m]));
+            for (const m of history.messages) messages.set(m.key, m);
+            history.messages = [...messages.values()] as any;
+            history.before = page.before;
+          } catch (e) { history.error = errMsg(e); }
+          finally { history.loading = false; ctx.ui.invalidate(); }
           return;
         }
         case "chatText": S.chatDrafts.set(key, value); return;

@@ -32,7 +32,12 @@ pub struct NetListener {
 impl NetListener {
     /// `on_accept` registers the connection in the handle table and returns its handle string.
     pub fn bind(on_accept: Arc<dyn Fn(Arc<NetConn>) -> String + Send + Sync>) -> HResult<Arc<NetListener>> {
-        let l = TcpListener::bind("127.0.0.1:0").map_err(HostError::io)?;
+        Self::bind_port(0, on_accept)
+    }
+    /// Bind 127.0.0.1 on `port` (0 = any free port). Fixed ports serve OAuth redirect URIs that a
+    /// provider registered exactly.
+    pub fn bind_port(port: u16, on_accept: Arc<dyn Fn(Arc<NetConn>) -> String + Send + Sync>) -> HResult<Arc<NetListener>> {
+        let l = TcpListener::bind(("127.0.0.1", port)).map_err(|e| if e.kind() == std::io::ErrorKind::AddrInUse { HostError::new("EADDRINUSE", format!("port {port} is already in use")) } else { HostError::io(e) })?;
         let port = l.local_addr().map_err(HostError::io)?.port();
         let events = ByteStream::new(format!("listener:{port}"), false);
         let closed = Arc::new(AtomicBool::new(false));

@@ -67,6 +67,7 @@ let settingsOpen = false;
 let mcpOpen = false;
 let modelsOpen = false;
 let historyOpen = false;
+let historyQuery = "";
 let historyConversationId: string | null = null;
 let historyBefore: string[] = [];
 let pagingHistory = false;
@@ -264,7 +265,7 @@ const mod: AppModule = {
     const iconButton = (key: string, icon: "sliders-horizontal" | "message-square" | "plus" | "x", action: string, tooltip: string): UiNode => ({ type: "button", key, text: "", iconSvg: uiIcons[icon], action, tooltip, style: chatStyle.iconControl, disabled: !ws });
     const header: UiNode = { type: "row", key: "hdr", style: chatStyle.toolbar, padding: 8, gap: 6, align: "center", children: [
       { type: "column", key: "provider-field", grow: true, minWidth: 100, gap: 0, children: [
-        { type: "select", key: "agent", height: 32, buttonStyle: { ...chatStyle.fieldControl, height: 32 }, tooltip: "Provider", options: (view?.profiles || []).map((p: any) => ({ value: p.id, label: p.name.replace(/\s*\([^)]*\)$/, "") })), value: conv?.acpProfileId || null, action: "setProfile", disabled: !conv || !!background, placeholder: "Choose provider" },
+        { type: "select", key: "agent", height: 32, buttonStyle: { ...chatStyle.fieldControl, height: 32 }, tooltip: active?.busy || live?.status === "starting" ? "Wait for the agent to finish or stop its turn before switching providers" : "Provider", options: (view?.profiles || []).map((p: any) => ({ value: p.id, label: p.name.replace(/\s*\([^)]*\)$/, "") })), value: conv?.acpProfileId || null, action: "setProfile", disabled: !conv || !!background || !!active?.busy || live?.status === "starting" || live?.status === "busy", placeholder: "Choose provider" },
       ] },
       { type: "column", key: "model-field", grow: true, minWidth: 100, gap: 0, children: [
         { type: "button", key: "cfg-model", style: { ...chatStyle.control, fullWidth: true }, text: modelName + "  ⌄", action: "toggleModels", disabled: model.disabled, tooltip: "Choose model", grow: true },
@@ -290,10 +291,25 @@ const mod: AppModule = {
     if (error) kids.push({ type: "status", key: "err", text: error, level: "error" });
     if (live?.error && !connected) kids.push({ type: "status", key: "liveerr", text: live.error, level: "error" });
     if (adaptersOpen && ws) kids.push(adapterWindow());
-    if (historyOpen && view) kids.push({ type: "modal", key: "history", title: "Chat history", closeAction: "toggleHistory", children: [
-      { type: "button", key: "new-chat", text: "New chat", iconSvg: uiIcons.plus, action: "newChat", style: chatStyle.control },
-      ...view.conversations.map((c: any): UiNode => ({ type: "button", key: c.id, text: (c.id === view.activeId ? "✓ " : "") + c.title, action: "selectConv", value: c.id, variant: "ghost", style: chatStyle.result })),
-    ] });
+    if (historyOpen && view) {
+      const sessions = view.conversations.filter((c: any) => `${c.title} ${view.profiles.find((p: any) => p.id === c.acpProfileId)?.name || ""}`.toLowerCase().includes(historyQuery.toLowerCase()));
+      kids.push({ type: "modal", key: "history", title: "Sessions", closeAction: "toggleHistory", children: [
+        { type: "row", key: "sessions-heading", gap: 12, align: "center", children: [
+          { type: "column", key: "summary", grow: true, gap: 4, children: [
+            { type: "label", key: "workspace", text: view.workspace.name || ws?.name || "Workspace chats", weight: "semibold" },
+            { type: "label", key: "count", text: `${view.conversations.length} saved conversation${view.conversations.length === 1 ? "" : "s"}`, color: "muted", size: "xs" },
+          ] },
+          { type: "button", key: "new-chat", text: "New chat", iconSvg: uiIcons.plus, action: "newChat", style: chatStyle.primary, tooltip: "Start a chat with the current chat’s settings" },
+        ] },
+        { type: "textInput", key: "session-search", value: historyQuery, placeholder: "Search sessions or providers…", changeAction: "searchSessions" },
+        { type: "column", key: "session-list", scroll: true, maxHeight: 440, gap: 6, children: sessions.length ? sessions.map((c: any): UiNode => {
+          const provider = view.profiles.find((p: any) => p.id === c.acpProfileId)?.name || "Agent";
+          const selected = c.id === view.activeId;
+          return { type: "choice", key: c.id, text: c.title, description: `${provider} · ${c.status === "busy" ? "Working" : c.status === "online" ? "Connected" : c.status === "error" ? "Needs attention" : "Saved"}${selected ? " · Current session" : ""}`, selected, action: "selectConv", value: c.id,
+            style: { padding: 12, radius: 10, borderWidth: 1, borderColor: selected ? "primary" : "border", background: selected ? "selection" : "background" } };
+        }) : [{ type: "label", key: "no-sessions", text: historyQuery ? "No matching sessions. Try another search." : "Your conversations will appear here.", color: "muted", padding: 20, wrap: true }] },
+      ] });
+    }
     if (conv) {
       if(settingsOpen&&background&&backgroundPage) {
         const session=backgroundPage.session;
@@ -338,7 +354,7 @@ const mod: AppModule = {
         ] });
         if (active.historyError) kids.push({ type: "status", key: "history-error", text: active.historyError, level: "error" });
         const loadingOlder = pagingHistory || !!active.historyLoading;
-        kids.push({ type: "transcript", key: "transcript", scrollKey: conv.id, followKey: followKey(history.messages),
+        kids.push({ type: "transcript", key: "transcript", scrollbarMode: "scrolling", scrollKey: conv.id, followKey: followKey(history.messages),
           hasOlder: history.hasOlder, loadingOlder, loadOlderAction: "revealOlder",
           bottomAction: history.hasNewer ? "revealNewer" : historyLimit > CHAT_MESSAGE_LIMIT ? "collapseHistory" : undefined,
           preserveScrollOnChange: preserveHistoryScroll, scrollReset: historyScrollReset, grow: true,
@@ -350,24 +366,17 @@ const mod: AppModule = {
           { type: "button", key: "remove", text: "× " + image.name, action: "removeImage", value: index, small: true, tooltip: "Remove picture" },
         ] })) });
         composer.push({ type: "textInput", key: "prompt", style: chatStyle.textarea, changeAction:"draftChanged", pasteImageAction: background?undefined:"attachImages", maxFiles: 4, maxBytes: 5 * 1024 * 1024, placeholder: active.busy ? "Steer " + providerName + "…" : "Ask " + providerName + "…", multiline: true, fillHeight: true, grow: true, rows: 2, submitAction: "send", value: draft });
-        if (mcpOpen) composer.push({ type: "column", key: "mcp-picker", gap: 8, padding: 12, border: true, children: [
-          { type: "label", key: "title", text: "MCP servers", weight: "bold", size: "sm" },
-          ...(view.mcpServers || [{ id: "internal", name: "Hato" }]).map((server: any): UiNode => ({ type: "toggle", key: "mcp-" + server.id, label: server.name, tooltip: server.description, checked: (conv.mcpSelection || []).includes(server.id), action: "toggleMcp:" + server.id })),
-          { type: "button", key: "apply", text: "Reconnect to apply", action: "reconnect", small: true, disabled: active.busy },
-        ] });
-        if (skillsOpen) kids.push({ type: "column", key: "skills-picker", scroll: true, maxHeight: 220, padding: 12, gap: 8, border: true, children: skills.length ? skills.map((skill): UiNode => ({ type: "button", key: skill.path, text: skill.name + (skill.description ? " · " + skill.description : ""), tooltip: skill.path, action: "useSkill", value: skill.path, variant: "ghost", style: chatStyle.result })) : [{ type: "label", key: "none", text: skillState?.loading ? "Loading workspace skills…" : skillState?.error ? "Could not load workspace skills: " + skillState.error : "No workspace skills in .agents/skills.", color: "muted", wrap: true }] });
         composer.push({ type: "row", key: "act", gap: 6, children: [
           { type: "imagePicker", key: "attach", action: "attachImages", iconSvg: uiIcons.paperclip, style: chatStyle.attach, maxFiles: 4, maxBytes: 5 * 1024 * 1024,
             dialogTitle: "Attach pictures", tooltip: "Attach pictures (PNG, JPEG, WebP or GIF)", disabled: busy === "send" },
-          { type: "button", key: "mcp-toggle", text: "MCP", action: "toggleMcpPicker", style: chatStyle.control, tooltip: "MCP servers" },
-          { type: "button", key: "skills-toggle", text: "Skills " + skills.length, iconSvg: uiIcons["graduation-cap"], action: "toggleSkills", style: chatStyle.control },
+          { type: "button", key: "mcp-toggle", text: `MCP ${(conv.mcpSelection || []).length}`, iconSvg: uiIcons.plug, action: "toggleMcpPicker", style: mcpOpen ? { ...chatStyle.control, borderColor: "primary" } : chatStyle.control, tooltip: "MCP servers and skills for this chat" },
           { type: "label", key: "chat-status", grow: true, text: active.steering ? "Steering…" : active.busy ? "Working…" : connected ? "" : live?.status || conv.status || "Offline", size: "xs", color: "muted", tooltip: `${providerName} · ${live?.status || conv.status || "offline"}` },
           { type: "button", key: "context-usage", text: context.value === null ? "—" : `${Math.round(context.value * 100)}%`, iconSvg: usagePieSvg(context.value), iconSize: 18,
             action: "", variant: "ghost", small: true, tooltip: context.tooltip, style: { height: 32, paddingX: 4, gap: 4, noShrink: true, color: "muted" } },
           ...(active.busy ? [{ type: "button", key: "cancel", text: "Stop", action: "cancel", style: chatStyle.control } as UiNode] : []),
           { type: "button", key: "send", text: "", iconSvg: uiIcons.send, action: "send", style: chatStyle.iconPrimary, variant: "primary", disabled: busy === "send", tooltip: active.busy ? "Steer agent" : "Send message" },
         ] });
-        if(background){const actions=composer.find(n=>n.key==="act");if(actions&&"children" in actions)actions.children=(actions.children||[]).filter(n=>!["attach","mcp-toggle","skills-toggle","context-usage"].includes(n.key));}
+        if(background){const actions=composer.find(n=>n.key==="act");if(actions&&"children" in actions)actions.children=(actions.children||[]).filter(n=>!["attach","mcp-toggle","context-usage"].includes(n.key));}
         const transcript = kids.pop()!;
         kids.push({ type: "split", key: "chat-composer-split", direction: "vertical", grow: true,
           sizes: [1 - composerFraction, composerFraction], minSize: 96, resizeAction: "resizeComposer",
@@ -375,9 +384,41 @@ const mod: AppModule = {
           tooltip: "Drag the divider above the input to resize it",
         });
       }
+      if (mcpOpen && conv && !background) {
+        const servers: any[] = view.mcpServers || [{ id: "internal", name: "Hato" }];
+        const on = new Set<string>(conv.mcpSelection || []);
+        const applied = new Set<string>(live?.mcp?.selection || (live?.mcp?.enabled ? ["internal"] : []));
+        const pending = connected && [...new Set([...on, ...applied])].some(id => on.has(id) !== applied.has(id));
+        kids.push({ type: "popover", key: "mcp-picker", closeAction: "toggleMcpPicker", bottom: 56, maxHeight: 460, style: { ...chatStyle.picker, background: "background" }, children: [
+          { type: "row", key: "head", gap: 8, padding: 10, align: "center", children: [
+            { type: "label", key: "t", text: "Tools for this chat", weight: "semibold", grow: true },
+            iconButton("close-mcp", "x", "toggleMcpPicker", "Close"),
+          ] },
+          { type: "divider", key: "d1" },
+          { type: "column", key: "body", scroll: true, gap: 10, padding: 10, children: [
+            { type: "label", key: "mcp-h", text: "MCP SERVERS", size: "xs", weight: "semibold", color: "muted" },
+            ...servers.map((sv): UiNode => ({ type: "row", key: "mcp-" + sv.id, gap: 8, align: "center", children: [
+              { type: "column", key: "t", gap: 1, grow: true, children: [
+                { type: "label", key: "n", text: sv.name, size: "sm", weight: "medium" },
+                ...(sv.description ? [{ type: "label", key: "d", text: sv.description, size: "xs", color: "muted", wrap: true } as UiNode] : []),
+              ] },
+              { type: "switch", key: "s", label: "", checked: on.has(sv.id), action: "toggleMcp:" + sv.id },
+            ] })),
+            ...(pending ? [{ type: "row", key: "apply", gap: 8, align: "center", style: { background: "#d8962014", radius: 8, paddingX: 8, paddingY: 6 }, children: [
+              { type: "label", key: "t", text: "Reconnect to apply changes", size: "xs", grow: true },
+              { type: "button", key: "b", text: "Reconnect", action: "reconnect", small: true, disabled: active.busy },
+            ] } as UiNode] : []),
+            { type: "button", key: "manage", text: "Manage MCP servers…", iconSvg: uiIcons["sliders-horizontal"], action: "openMcps", variant: "ghost", small: true, tooltip: "Add servers, sign in to remote ones, and choose what background agents can use" },
+            { type: "divider", key: "d2" },
+            { type: "button", key: "skills-h", text: `${skillsOpen ? "▾" : "▸"} Insert a skill · ${skills.length}`, action: "toggleSkills", variant: "ghost", small: true, tooltip: "Reference a workspace skill from .agents/skills in your message" },
+            ...(skillsOpen ? [{ type: "column", key: "skills-picker", scroll: true, maxHeight: 200, gap: 2, children: skills.length ? skills.map((skill): UiNode => ({ type: "button", key: skill.path, text: skill.name + (skill.description ? " · " + skill.description : ""), tooltip: skill.path, action: "useSkill", value: skill.path, variant: "ghost", style: chatStyle.result }))
+              : [{ type: "label", key: "none", text: skillState?.loading ? "Loading workspace skills…" : skillState?.error ? "Could not load workspace skills: " + skillState.error : "No workspace skills in .agents/skills.", size: "xs", color: "muted", wrap: true } as UiNode] } as UiNode] : []),
+          ] },
+        ] });
+      }
       if (modelsOpen) {
         const filtered = model.options.filter((o) => `${o.label} ${modelDetails(o.value)?.description || ""}`.toLowerCase().includes(modelQuery.toLowerCase()));
-        kids.push({ type: "popover", key: "model-picker", closeAction: "toggleModels", style: chatStyle.picker, children: [
+        kids.push({ type: "popover", key: "model-picker", closeAction: "toggleModels", style: { ...chatStyle.picker, background: "background" }, children: [
           { type: "row", key: "search-row", gap: 8, padding: 10, children: [
             { type: "textInput", key: "model-search", value: modelQuery, placeholder: "Search models", changeAction: "searchModels", grow: true },
             iconButton("close", "x", "toggleModels", "Close models"),
@@ -447,13 +488,15 @@ const mod: AppModule = {
       }
       if (ev.action === "toggleModels") { modelsOpen = !modelsOpen; modelQuery = ""; ctx.ui.invalidate(); return; }
       if (ev.action === "searchModels") { modelQuery = String(ev.value || ""); ctx.ui.invalidate(); return; }
-      if (ev.action === "toggleHistory") { historyOpen = !historyOpen; ctx.ui.invalidate(); return; }
-      if (ev.action === "toggleSkills") { skillsOpen = !skillsOpen; mcpOpen = false; if (skillsOpen) ctx.events.emit("ai.skillsRequested", {}); ctx.ui.invalidate(); return; }
+      if (ev.action === "searchSessions") { historyQuery = String(ev.value || ""); ctx.ui.invalidate(); return; }
+      if (ev.action === "toggleHistory") { historyOpen = !historyOpen; historyQuery = ""; ctx.ui.invalidate(); return; }
+      if (ev.action === "openMcps") { mcpOpen = false; ctx.events.emit("ai.openMcps", {}); ctx.ui.invalidate(); return; }
+      if (ev.action === "toggleSkills") { skillsOpen = !skillsOpen; if (skillsOpen) ctx.events.emit("ai.skillsRequested", {}); ctx.ui.invalidate(); return; }
       if (ev.action === "useSkill") {
         const skill = workspaceSkillState?.workspaceId === ws?.id && workspaceSkillState.skills?.find((s: any) => s.path === ev.value);
         if (!skill) return;
         draft = `Use the workspace skill at ${skill.path}.\n` + (ev.inputs.prompt || draft || "");
-        skillsOpen = false; ctx.ui.invalidate(); return;
+        skillsOpen = false; mcpOpen = false; ctx.ui.invalidate(); return;
       }
       if (ev.action === "chooseModel" && conv) {
         const model = selectors(view.active.live, true).find((n) => n.key === "cfg-model") as Extract<UiNode, { type: "select" }>;
@@ -467,7 +510,7 @@ const mod: AppModule = {
         ctx.ui.invalidate(); return;
       }
       if (ev.action === "removeImage") { attachments.splice(Number(ev.value), 1); ctx.ui.invalidate(); return; }
-      if (ev.action === "toggleMcpPicker") { mcpOpen = !mcpOpen; skillsOpen = false; ctx.ui.invalidate(); return; }
+      if (ev.action === "toggleMcpPicker") { mcpOpen = !mcpOpen; if (mcpOpen) ctx.events.emit("ai.skillsRequested", {}); ctx.ui.invalidate(); return; }
       if (ev.action === "toggleSettings") { settingsOpen = !settingsOpen; ctx.ui.invalidate(); return; }
       if (ev.action === "openAdapters" && ws) { adaptersOpen = true; adaptersMsg = null; await loadAdapters(ctx); return; }
       if (ev.action === "closeAdapters") { adaptersOpen = false; return; }
@@ -511,7 +554,7 @@ const mod: AppModule = {
       else if (ev.action === "setProfile") { await call("setProfile", { conversationId: conv.id, profileId: ev.value }); connectionAttempts.delete(conv.id); }
       else if (ev.action === "toggleAuto") await call("setPolicy", { conversationId: conv.id, policy: ev.value ? "autopilot" : "ask" });
       else if (ev.action === "setPolicy") await call("setPolicy", { conversationId: conv.id, policy: ev.value });
-      else if (ev.action === "toggleMcp:internal") await call("setMcp", { conversationId: conv.id, internal: !!ev.value });
+      else if (ev.action.startsWith("toggleMcp:")) await call("setMcp", { conversationId: conv.id, serverId: ev.action.slice("toggleMcp:".length), enabled: !!ev.value });
       else if (ev.action.startsWith("setConfig:")) await call("setConfig", { conversationId: conv.id, configId: ev.action.slice(10), value: ev.value });
       else if (ev.action === "cancel") await call("cancel", { conversationId: conv.id });
       else if (ev.action === "send") {

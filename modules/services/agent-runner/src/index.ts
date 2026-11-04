@@ -12,6 +12,7 @@ interface Live {
   /** Agent supports `_session/steering`: follow-ups join the running turn instead of cancelling it. */
   steering: boolean;
   turn: number; stderr: string;
+  toolTitles?: Map<string, string>;
 }
 let db: Handle;
 const sessions = new Map<string,AgentSession>();
@@ -44,7 +45,8 @@ function message(ctx:ModuleContext,s:AgentSession,role:ChatMessage["role"],text:
   });
 }
 function publicSession(s:AgentSession) {
-  return {...s,profile:{...s.profile,envRefs:{}},mcps:s.mcps.map(m=>({...m,env:[]}))};
+  // Secrets stay in the runner: env values and header values (e.g. OAuth bearer tokens) are redacted.
+  return {...s,profile:{...s.profile,envRefs:{}},mcps:s.mcps.map((m:any)=>({...m,env:[],...(Array.isArray(m.headers)?{headers:m.headers.map((h:any)=>({name:h.name,value:""}))}:{})}))};
 }
 function session(id:any):AgentSession { const s=sessions.get(String(id)); if(!s)throw new Error("Unknown persistent agent");return s; }
 async function request(c:Live,method:string,args:any,ms=120000):Promise<any> {
@@ -68,8 +70,13 @@ function update(ctx:ModuleContext,c:Live,u:any) {
   if(kind==="agent_message_chunk" || kind==="agent_thought_chunk") {
     if(u.content?.type==="text")void message(ctx,c.session,kind==="agent_thought_chunk"?"thought":"assistant",String(u.content.text||"")).catch(e=>ctx.log.error(errMsg(e)));
   } else if(kind==="tool_call" || kind==="tool_call_update") {
+    if(c.session.workflow) ctx.events.emit("agent-runner.toolActivity", { sessionId: c.session.id, workflow: c.session.workflow, update: u });
     const text=(u.content||[]).map((x:any)=>x.content?.text||x.text||"").join("\n");
-    void message(ctx,c.session,"tool",text,u.title||u.toolCallId||"Tool",u.status).catch(e=>ctx.log.error(errMsg(e)));
+    const titles=c.toolTitles??=new Map<string,string>();
+    if(u.toolCallId && u.title) titles.set(u.toolCallId,u.title);
+    const title=u.title||titles.get(u.toolCallId)||u.toolCallId||"Tool";
+    if(titles.size>500) titles.delete(titles.keys().next().value!);
+    void message(ctx,c.session,"tool",text,title,u.status).catch(e=>ctx.log.error(errMsg(e)));
   } else if(kind==="plan") {
     void message(ctx,c.session,"plan",(u.entries||[]).map((e:any)=>`- ${e.content} (${e.status})`).join("\n")).catch(e=>ctx.log.error(errMsg(e)));
   } else if(kind==="config_option_update") { c.session.configOptions=u.configOptions||[];void persist(ctx,c.session); }
@@ -152,6 +159,9 @@ async function start(ctx:ModuleContext,s:AgentSession) {
     const init=await request(c,"initialize",{protocolVersion:1,clientCapabilities:{fs:{readTextFile:false,writeTextFile:false},terminal:false},clientInfo:{name:"hato-agents",version:"0.1.0"}});
     if(init.protocolVersion!==1)throw new Error("Unsupported ACP version");
     c.steering=init._meta?.steering?.supported===true;
+    // Remote MCP servers need the provider's matching transport (e.g. Codex has HTTP but not SSE).
+    const caps=init.agentCapabilities?.mcpCapabilities||{};
+    for(const m of s.mcps as any[])if((m.type==="http"||m.type==="sse")&&!caps[m.type])throw new Error(`${s.profile.name} cannot connect to ${m.type.toUpperCase()} MCP server “${m.name}”. Use a provider that supports it${m.type==="sse"?" or switch the server to Streamable HTTP":""}.`);
     let mcpServers=s.mcps.map(({id,...server})=>server);
     if(s.workspaceMcp) {
       await ctx.modules.call("internal-remote-mcp","revoke",{sessionId:s.id});
@@ -223,7 +233,7 @@ const mod:AppModule={
   },
   canSwap:()=>({ok:live.size===0,reason:"Stop persistent agents before replacing their runtime"}),
   methods:{
-    health:()=>({ok:true,reasoning:true,connected:live.size}),
+    health:()=>({ok:true,reasoning:true,mcpActivity:true,toolTitles:true,connected:live.size}),
     async fork(ctx,a,meta) {
       if(!["internal-remote-mcp","daemon-client"].includes(meta.caller))throw new Error("Only workspace controllers can create child agents");
       const parent=session(a.parentId);
@@ -289,7 +299,13 @@ const mod:AppModule={
       }
       return prompt(ctx,c,text);
     }),
-    reconnect:(ctx,a)=>serialize(String(a.id),async()=>{const s=session(a.id);await start(ctx,s);return s;}),
+    reconnect:(ctx,a)=>serialize(String(a.id),async()=>{
+      const s=session(a.id);
+      // Refreshed OAuth headers from the desktop replace the expired ones before reconnecting.
+      const auth=a.authorization&&typeof a.authorization==="object"?a.authorization:{};
+      s.mcps=(s.mcps as any[]).map(m=>typeof auth[m.id]==="string"&&Array.isArray(m.headers)?{...m,headers:[...m.headers.filter((h:any)=>String(h.name).toLowerCase()!=="authorization"),{name:"Authorization",value:auth[m.id]}]}:m);
+      await start(ctx,s);return s;
+    }),
     stop:(ctx,a)=>serialize(String(a.id),()=>stop(ctx,String(a.id))),
     async cancel(ctx,a) {const c=live.get(String(a.id));if(c){
       for(const p of c.permissions.values())p.resolve({outcome:{outcome:"cancelled"}});c.permissions.clear();

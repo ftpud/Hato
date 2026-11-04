@@ -178,3 +178,22 @@ test('working agent icon rotates while visible and stops after panel deactivatio
  }finally{mod.deactivate();}
  const count=invalidations;await new Promise(r=>setTimeout(r,110));assert.equal(invalidations,count);
 });
+
+
+test('workflow MCP preparation refreshes OAuth only for selected enabled servers', async () => {
+ const mod=(await load('modules/services/persistent-agents/src/index.ts')).default;
+ const requests=[];
+ const servers=[{id:'github',name:'GitHub',transport:'http',command:'',args:[],env:[],url:'https://example.com/mcp',auth:{type:'oauth'}},{id:'unused',name:'Unused',transport:'http',url:'https://unused.example/mcp',auth:{type:'oauth'}}];
+ const ctx={modules:{async call(service,method,args){
+  if(service==='workspace')return{id:'ws'};
+  if(service==='persistence'&&method==='settings.get')return servers;
+  if(service==='mcp-auth'){requests.push(args);return 'Bearer fresh-token';}
+  throw new Error(service+':'+method);
+ }}};
+ const configs=await mod.methods.mcpConfigs(ctx,{workspaceId:'ws',ids:['github']});
+ assert.equal(configs[0].type,'http');
+ assert.equal(configs[0].command,undefined);
+ assert.deepEqual(configs[0].headers,[{name:'Authorization',value:'Bearer fresh-token'}]);
+ assert.deepEqual(requests.map(r=>r.serverId),['github']);
+ await assert.rejects(mod.methods.mcpConfigs(ctx,{workspaceId:'ws',ids:['missing']}),/missing or disabled/);
+});

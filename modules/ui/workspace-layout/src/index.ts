@@ -13,13 +13,13 @@ import { animePalette, animeTerminal } from "./anime";
 import { animeWallpaper } from "./anime-wallpaper";
 import { colorScheme } from "../../../../sdk/color-scheme";
 import { debounce, errMsg } from "../../../../sdk/runtime";
-import { BAR_ITEMS, PANELS, defaultLayout, dropPanel, homeOf, locate, moveBarItem, moveTo, panelSignature, removeBarItem, repair, setPanels, type BarId, type Layout, type PanelDef } from "./model";
+import { BAR_ITEMS, PANELS, setContributedBarItems, defaultLayout, dropPanel, homeOf, locate, moveBarItem, moveTo, panelSignature, removeBarItem, repair, setPanels, type BarId, type Layout, type PanelDef } from "./model";
 import { loadContributions, watchContributions, type Contributions } from "../../../../sdk/plugins";
 import { configurableSidebarPanels, normalizeSidebarOrder, orderedSidebarItems, type SidebarOrder, normalizeSidebarButtons, sidebarPosition, sidebarPositionOptions, type SidebarButtons } from "../../../../sdk/sidebar-placement";
 import { parseOrder } from "../../../../sdk/settings-order";
 import { normalizeTableStyle, listRowHeight, type TableStyle } from "../../../../sdk/ui-table";
 import { enforcePanelSharing, normalizePanelSharing, sharingOptions, showPanel, visibleIn, type PanelSharing } from "./panel-sharing";
-import { defaultSidebarButtons, defaultSidebarOrder, defaultPanelSharing } from "./defaults";
+import { defaultSidebarButtons, defaultSidebarOrder, defaultPanelSharing, upgradeLegacy } from "./defaults";
 import { uiIcons } from "../../../../sdk/ui-icons";
 
 let fontFamily = "JetBrains Mono";
@@ -52,6 +52,13 @@ let sidebarButtons: SidebarButtons = {};
 let sidebarOrder: SidebarOrder = {};
 let tableStyle: TableStyle = normalizeTableStyle(null);
 let panelSharing: PanelSharing = {};
+/** Cluster sidebar buttons by shared space and draw a divider between groups. */
+let groupBySpace = true;
+function publishSharing(ctx: ModuleContext) {
+  ctx.state.set("workspace-layout.panelSharing", panelSharing);
+  ctx.state.set("workspace-layout.sidebarGrouping", groupBySpace);
+}
+const savedSetting = async (ctx: ModuleContext, key: string) => upgradeLegacy(key, await ctx.modules.call("persistence", "settings.get", { key }));
 let publishSettings: () => void = () => {};
 const sidebarSubscriptions = new Map<string, () => void>();
 
@@ -61,7 +68,8 @@ function applyContributions(c: Contributions) {
   for (const p of Object.values(c.panels)) defs[p.id] = { slot: p.module, title: p.title, defaultHidden: p.defaultHidden, dockBelow: p.dockBelow, dock: p.dock, pinned: p.pinned };
   const before = panelSignature();
   setPanels(defs);
-  return before !== panelSignature();
+  const barsChanged = setContributedBarItems(Object.fromEntries((c.barItems || []).map(b => [b.id, { title: b.title, slot: b.module, width: b.width, defaultBar: b.bar }])));
+  return before !== panelSignature() || barsChanged;
 }
 
 function subscribeSidebars(ctx: ModuleContext) {
@@ -143,7 +151,7 @@ function collapsedPanels(): UiNode | null {
     ...layout.columns.flatMap((col) => col.panels.filter((id) => layout.collapsed[id])),
     ...layout.bottom.panels.filter((id) => layout.bottom.collapsed || layout.collapsed[id]),
   ];
-  if (!ids.length) return null;
+  if (!ids.length || !layout.showCollapsedTray) return null;
   return { type: "column", key: "collapsed-panels", maxHeight: 108, scroll: true, bg: "panel", children: [
     { type: "row", key: "restore-buttons", wrap: true, gap: 6, padding: 4, children: [
       { type: "label", key: "caption", text: "Collapsed", size: "xs", color: "muted" },
@@ -176,7 +184,7 @@ function dockArea(): UiNode {
   const cols = layout.columns;
   let top: UiNode;
   if (!cols.length || cols.every((col) => col.panels.every((id) => layout.collapsed[id]))) {
-    top = { type: "column", key: "empty", padding: 16, grow: true, children: [{ type: "label", key: "l", text: "Restore a collapsed panel below, or open Layout to dock panels.", color: "muted" }] };
+    top = { type: "column", key: "empty", padding: 16, grow: true, children: [{ type: "label", key: "l", text: layout.showCollapsedTray ? "Restore a collapsed panel below, or open Layout to dock panels." : "Restore a collapsed panel from the sidebar, or open Layout to dock panels.", color: "muted" }] };
   } else if (cols.length === 1) {
     top = columnNode(0);
   } else {
@@ -208,7 +216,11 @@ function itemContent(it: string): UiNode {
     case "machine": return { type: "label", key: "c", text: ws ? `files/terminal/agent run on: ${ws.machineId}` : "no workspace", size: "xs", color: "muted" };
     case "versions": return { type: "label", key: "c", text: versionsSummary(), size: "xs", color: "muted", mono: true, grow: true };
     case "approvals": return { type: "approvalPanel", key: "c" };
-    default: return { type: "label", key: "c", text: it };
+    default: {
+      const def = BAR_ITEMS[it];
+      if (def?.slot) return { type: "slot", key: "c", module: def.slot, width: def.width || 180, height: 24 };
+      return { type: "label", key: "c", text: it };
+    }
   }
 }
 
@@ -277,6 +289,7 @@ function layoutMenu(): UiNode {
     ...itemRows,
     { type: "divider", key: "d1" },
     { type: "label", key: "h2", text: "Panels", weight: "bold", size: "sm" },
+    { type: "toggle", key: "collapsed-tray", label: "Show collapsed panels tray", checked: layout.showCollapsedTray, action: "toggleCollapsedTray", tooltip: "Restore buttons for collapsed panels. Sidebar buttons also restore them." },
     { type: "toggle", key: "panel-controls", label: "Show panel control buttons", checked: layout.showPanelControls, action: "togglePanelControls", tooltip: "Show collapse, float, detach, hide and dock buttons in panel headers. Panels remain accessible from Layout and the sidebar." },
     ...panelRows,
     { type: "divider", key: "d2" },
@@ -351,6 +364,8 @@ async function resetCustomization(ctx: ModuleContext) {
   };
   for (const [key, value] of Object.entries(values)) await ctx.modules.call("persistence", "settings.set", { key, value });
   sidebarButtons = defaultSidebarButtons(); sidebarOrder = defaultSidebarOrder(); panelSharing = defaultPanelSharing(); tableStyle = nextTables;
+  groupBySpace = true; await ctx.modules.call("persistence", "settings.set", { key: "sidebar-grouping.v1", value: true });
+  publishSharing(ctx);
   fontFamily = "JetBrains Mono"; fontSize = "15"; fontWeight = "400"; mode = "system"; appearanceTheme = "classic"; panelOpacity = "balanced";
   ctx.state.set("workspace-layout.sidebarButtons", sidebarButtons);
   ctx.state.set("workspace-layout.sidebarOrder", sidebarOrder);
@@ -371,18 +386,21 @@ const mod: AppModule = {
       layout = repair(prev && prev.layout ? prev.layout : await ctx.modules.call("persistence", "settings.get", { key: "layout.v1" }));
     } catch (e) { ctx.log.warn("load layout", errMsg(e)); layout = defaultLayout(); }
     try {
-      sidebarButtons = normalizeSidebarButtons((prev as any)?.sidebarButtons ?? await ctx.modules.call("persistence", "settings.get", { key: "activity-sidebar.v1" }) ?? defaultSidebarButtons());
+      sidebarButtons = normalizeSidebarButtons((prev as any)?.sidebarButtons ?? await savedSetting(ctx, "activity-sidebar.v1") ?? defaultSidebarButtons());
     } catch (e) { ctx.log.warn("load sidebar buttons", errMsg(e)); sidebarButtons = defaultSidebarButtons(); }
     ctx.state.set("workspace-layout.sidebarButtons", sidebarButtons);
-    try { sidebarOrder = normalizeSidebarOrder((prev as any)?.sidebarOrder ?? await ctx.modules.call("persistence", "settings.get", { key: "sidebar-order.v1" }) ?? defaultSidebarOrder()); }
+    try { sidebarOrder = normalizeSidebarOrder((prev as any)?.sidebarOrder ?? await savedSetting(ctx, "sidebar-order.v1") ?? defaultSidebarOrder()); }
     catch { sidebarOrder = defaultSidebarOrder(); }
     ctx.state.set("workspace-layout.sidebarOrder", sidebarOrder);
     try { tableStyle = normalizeTableStyle((prev as any)?.tableStyle ?? await ctx.modules.call("persistence", "settings.get", { key: "ui-tables.v1" })); }
     catch { tableStyle = normalizeTableStyle(null); }
     ctx.state.set("workspace-layout.tableStyle", tableStyle);
-    try { panelSharing = normalizePanelSharing((prev as any)?.panelSharing ?? await ctx.modules.call("persistence", "settings.get", { key: "panel-sharing.v1" }) ?? defaultPanelSharing()); }
+    try { panelSharing = normalizePanelSharing((prev as any)?.panelSharing ?? await savedSetting(ctx, "panel-sharing.v1") ?? defaultPanelSharing()); }
     catch (e) { ctx.log.warn("load panel sharing", errMsg(e)); panelSharing = defaultPanelSharing(); }
     layout = enforcePanelSharing(layout, panelSharing);
+    const savedGrouping = (prev as any)?.groupBySpace ?? await ctx.modules.call("persistence", "settings.get", { key: "sidebar-grouping.v1" });
+    groupBySpace = typeof savedGrouping === "boolean" ? savedGrouping : true;
+    publishSharing(ctx);
     const savedFont = await ctx.modules.call("persistence", "settings.get", { key: "appearance.fontFamily" });
     fontFamily = fontOptions.some(option => option.value === savedFont) ? savedFont : "JetBrains Mono";
     const savedSize = await ctx.modules.call("persistence", "settings.get", { key: "appearance.fontSize" });
@@ -435,6 +453,10 @@ const mod: AppModule = {
       { key: "showLeftSidebar", label: "Left sidebar", type: "toggle", value: layout.showLeftSidebar },
       { key: "showRightSidebar", label: "Right sidebar", type: "toggle", value: layout.showRightSidebar },
       { key: "showPanelControls", label: "Panel header buttons", type: "toggle", value: layout.showPanelControls },
+      { key: "showCollapsedTray", label: "Collapsed panels tray", type: "toggle", value: layout.showCollapsedTray,
+        description: "Show restore buttons for collapsed panels under the workspace. Sidebar buttons restore collapsed panels either way." },
+      { key: "groupBySpace", label: "Group sidebar buttons by shared space", type: "toggle", value: groupBySpace,
+        description: "Keep buttons of panels that share a space together and separate the groups with a line." },
       { key: "bottomBar", label: "Bottom bar", type: "toggle", value: layout.bars.bottom.visible },
     ] }], async (section, key, value) => {
       if (section === "sidebar-order") {
@@ -452,6 +474,10 @@ const mod: AppModule = {
       }
       if (section === "workspace-chrome") {
         if (typeof value !== "boolean") throw new Error("Invalid panel preference");
+        if (key === "groupBySpace") {
+          await ctx.modules.call("persistence", "settings.set", { key: "sidebar-grouping.v1", value });
+          groupBySpace = value; publishSharing(ctx); return;
+        }
         const next = key === "bottomBar" ? { ...layout, bars: { ...layout.bars, ["bottom"]: { ...layout.bars["bottom"], visible: value } } } : { ...layout, [key]: value };
         await ctx.modules.call("persistence", "settings.set", { key: "layout.v1", value: next }); set(ctx, next); return;
       }
@@ -459,7 +485,7 @@ const mod: AppModule = {
         if (!PANELS[key] || typeof value !== "string" || !sharingOptions(panelSharing).some(o => o.value === value)) throw new Error("Invalid shared space");
         const next = { ...panelSharing }; if (value) next[key] = value; else delete next[key];
         await ctx.modules.call("persistence", "settings.set", { key: "panel-sharing.v1", value: next });
-        panelSharing = next;
+        panelSharing = next; publishSharing(ctx);
         set(ctx, enforcePanelSharing(layout, panelSharing));
         return;
       }
@@ -497,6 +523,7 @@ const mod: AppModule = {
     ws = ctx.state.get("workspace.selected") || null;
     ctx.state.watch("workspace.selected", (v: any) => { ws = v; ctx.ui.invalidate(); });
     ctx.events.on("agents-panel.openMcps", () => revealPanel(ctx, "mcps"));
+    ctx.events.on("ai.openMcps", () => revealPanel(ctx, "mcps"));
     ctx.events.on("workflows-panel.reveal", () => revealPanel(ctx, "workflows"));
     ctx.events.on("ai.chatOpened", () => revealPanel(ctx, "ai"));
     ctx.events.on("workspace.viewChanged", (event: any) => {
@@ -524,7 +551,7 @@ const mod: AppModule = {
     for (const stop of sidebarSubscriptions.values()) stop();
     sidebarSubscriptions.clear();
   },
-  snapshot: () => ({ showModules, showLayout, layout, sidebarButtons, sidebarOrder, tableStyle, panelSharing }),
+  snapshot: () => ({ showModules, showLayout, layout, sidebarButtons, sidebarOrder, tableStyle, panelSharing, groupBySpace }),
   methods: {
     getLayout: () => layout,
     setLayout: (ctx, a) => { set(ctx, repair(a.layout)); return layout; },
@@ -578,6 +605,7 @@ const mod: AppModule = {
         }
         break;
       }
+      case "toggleCollapsedTray": set(ctx, { ...layout, showCollapsedTray: typeof v === "boolean" ? v : !layout.showCollapsedTray }); break;
       case "togglePanelControls": set(ctx, { ...layout, showPanelControls: typeof v === "boolean" ? v : !layout.showPanelControls }); break;
       case "openSettings": await ctx.modules.call("settings", "open"); break;
       case "openPlugins": await ctx.modules.call("settings", "open", { category: "plugins" }); break;

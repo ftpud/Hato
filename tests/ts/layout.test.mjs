@@ -98,7 +98,7 @@ test("collapsed panes use full-name restore buttons without reserving columns or
   assert.deepEqual(cols.fixed, [0, 0, 0, null]);
   const restore = nodes.find(node => node.key === 'restore-buttons');
   assert.equal(restore.wrap, true);
-  assert.deepEqual(restore.children.filter(node => node.type === 'button').map(node => node.text), ['Projects', 'Files', 'Source viewer']);
+  assert.deepEqual(restore.children.filter(node => node.type === 'button').map(node => node.text), ['Projects', 'Files', 'Editor']);
   for (const id of ['projects', 'files', 'viewer']) assert.ok(!nodes.some(node => node.type === 'slot' && node.module === M.PANELS[id].slot));
   await mod.onEvent(ctx, { action: 'toggleCollapse', value: 'files', inputs: {} });
   assert.deepEqual(mod.methods.getLayout().columns.map(c => c.size), originalSizes);

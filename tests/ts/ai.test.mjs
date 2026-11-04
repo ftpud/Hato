@@ -17,6 +17,7 @@ test('new chats retain the remembered provider and fall back when it is unavaila
     if (method === 'conversations.insert') { inserted = args.conversation; return; }
     if (method === 'view.patch') { patch = args.patch; return; }
     if (method === 'conversations.get') return inserted;
+    if (method === 'settings.get') return [];
     throw new Error(method);
   } } };
   await mod.methods.create(ctx, { workspaceId: 'ws' });
@@ -50,7 +51,8 @@ test('chat auto-connects once and keeps secondary controls behind the cog', asyn
   assert.ok(!nodes.some(n => n.key === 'transcript'));
   await mod.onEvent(ctx, { action: 'toggleSettings', inputs: {} });
   await mod.onEvent(ctx, { action: 'toggleMcpPicker', inputs: {} });
-  assert.ok(walk(mod.render()).some(n => n.key === 'mcp-internal' && n.type === 'toggle'));
+  assert.ok(walk(mod.render()).some(n => n.key === 'mcp-internal' && n.children.some(c => c.type === 'switch')), 'MCP switches live in the composer popover');
+  assert.equal(walk(mod.render()).find(n => n.key === 'mcp-picker').type, 'popover');
   await mod.onEvent(ctx, { action: 'toggleAuto', value: true, inputs: {} });
   assert.ok(calls.includes('setPolicy'));
 });
@@ -125,6 +127,7 @@ test('image-only prompts are persisted and passed to ACP, including steering', a
     if (method === 'messages.upsert') { stored.push(args); return; }
     if (method === 'prompt') { prompts.push(args); return; }
     if (method === 'cancel') return;
+    if (method === 'settings.get') return [];
     throw new Error(method);
   } } };
   await mod.activate(ctx);
@@ -160,6 +163,7 @@ test('model picker searches advertised metadata, selects the right config and pr
   assert.ok(!walk(mod.render()).some(n => n.key === 'model-picker'));
   assert.equal(mod.snapshot().draft, 'Keep my draft');
   assert.deepEqual(mod.snapshot().attachments, [picture]);
+  await mod.onEvent(ctx, { action: 'toggleMcpPicker', inputs: {} });
   await mod.onEvent(ctx, { action: 'toggleSkills', inputs: {} });
   assert.ok(walk(mod.render()).some(n => n.key === 'skills-picker'));
 });
@@ -174,6 +178,8 @@ test('Skills lists only active workspace files and invokes the explicit workspac
   const ctx = { state: { get: key => key === 'files.skills' ? skillState : selected, watch: (key, fn) => { watchers[key] = fn; } }, events: { on() {}, emit: (topic) => emitted.push(topic) }, ui: { invalidate() {} }, modules: { async call() { return view; } } };
   const walk = n => [n, ...(n.children || []).flatMap(walk)];
   await mod.activate(ctx);
+  assert.ok(!walk(mod.render()).some(n => n.key === 'skills-toggle'), 'skills moved into the MCP popover');
+  await mod.onEvent(ctx, { action: 'toggleMcpPicker', inputs: {} });
   await mod.onEvent(ctx, { action: 'toggleSkills', inputs: {} });
   let picker = walk(mod.render()).find(n => n.key === 'skills-picker');
   assert.deepEqual(picker.children.map(n => n.value), [skills[0].path]);
@@ -183,10 +189,11 @@ test('Skills lists only active workspace files and invokes the explicit workspac
   await mod.onEvent(ctx, { action: 'useSkill', value: skills[0].path, inputs: { prompt: 'Review my edits' } });
   assert.equal(mod.snapshot().draft, 'Use the workspace skill at .agents/skills/review/SKILL.md.\nReview my edits');
   selected = { id: 'two' }; watchers['workspace.selected'](selected);
+  await mod.onEvent(ctx, { action: 'toggleMcpPicker', inputs: {} });
   await mod.onEvent(ctx, { action: 'toggleSkills', inputs: {} });
   picker = walk(mod.render()).find(n => n.key === 'skills-picker');
   assert.ok(!picker.children.some(n => n.value === skills[0].path));
-  assert.equal(walk(mod.render()).find(n => n.key === 'skills-toggle').text, 'Skills 0');
+  assert.match(walk(mod.render()).find(n => n.key === 'skills-h').text, /· 0$/);
 });
 
 test('existing history projects embedded image data as a preview and replayed image blocks stay out of text', async () => {
@@ -203,6 +210,7 @@ test('existing history projects embedded image data as a preview and replayed im
     if (method === 'state') return { status: 'ready' };
     if (method === 'authSettings') return {};
     if (method === 'messages.upsert') return;
+    if (method === 'settings.get') return [];
     throw new Error(method);
   } } };
   await mod.activate(ctx);
@@ -315,4 +323,136 @@ test('chat composer divider restores workspace size and keeps draft across resiz
   await mod.onEvent(ctx, { action: 'resizeComposer', value: { sizes: [NaN, 1] }, inputs: {} });
   assert.equal(saved.length, count);
   mod.deactivate();
+});
+
+test('new chats copy active settings and live defaults without session identity', async () => {
+  const mod = await load('modules/services/ai-sessions/src/index.ts');
+  const previous = { id: 'old', workspaceId: 'ws', acpProfileId: 'codex', approvalPolicy: 'autopilot', mcpSelection: [], config: { reasoning: 'high' }, providerSessionId: 'private-session' };
+  let inserted;
+  const ctx = { modules: { async call(_, method, args) {
+    if (method === 'resolve') return { id: 'ws', machineId: 'local' };
+    if (method === 'profiles') return [{ id: 'codex' }, { id: 'claude' }];
+    if (method === 'conversations.list') return [previous];
+    if (method === 'view.get') return { activeConversationId: 'old', ui: { lastAcpProfileId: 'claude' } };
+    if (method === 'conversations.get') return args.id === 'old' ? previous : inserted;
+    if (method === 'messages.list') return [];
+    if (method === 'state') return { status: 'ready', configOptions: [{ id: 'model', currentValue: 'best' }, { id: 'reasoning', currentValue: 'medium' }] };
+    if (method === 'authSettings') return {};
+    if (method === 'conversations.insert') { inserted = args.conversation; return; }
+    if (method === 'view.patch') return;
+    if (method === 'settings.get') return [];
+    throw new Error(method);
+  } } };
+  await mod.methods.view(ctx, { workspaceId: 'ws' });
+  await mod.methods.create(ctx, { workspaceId: 'ws' });
+  assert.equal(inserted.acpProfileId, 'codex');
+  assert.equal(inserted.approvalPolicy, 'autopilot');
+  assert.deepEqual(inserted.mcpSelection, []);
+  assert.deepEqual(inserted.config, { reasoning: 'medium', model: 'best' });
+  assert.equal(inserted.providerSessionId, undefined);
+  assert.notEqual(inserted.id, previous.id);
+  await mod.methods.create(ctx, { workspaceId: 'ws', profileId: 'claude' });
+  assert.deepEqual(inserted.config, {});
+});
+
+test('sessions search and both chat popovers use an opaque semantic background', async () => {
+  const mod = await load('modules/ui/ai/src/index.ts');
+  const view = { activeId: 'one', profiles: [{ id: 'codex', name: 'Codex' }], conversations: [{ id: 'one', title: 'Fix login', acpProfileId: 'codex' }, { id: 'two', title: 'Polish UI' }], workspace: { name: 'Hato' }, active: { conversation: { id: 'one' }, messages: [], live: { status: 'ready' } } };
+  const ctx = { state: { get: () => ({ id: 'ws' }), watch() {} }, events: { on() {}, emit() {} }, ui: { invalidate() {} }, modules: { async call() { return view; } } };
+  await mod.activate(ctx);
+  const walk = n => [n, ...(n.children || []).flatMap(walk)];
+  await mod.onEvent(ctx, { action: 'toggleHistory', inputs: {} });
+  await mod.onEvent(ctx, { action: 'searchSessions', value: 'codex', inputs: {} });
+  assert.deepEqual(walk(mod.render()).find(n => n.key === 'session-list').children.map(n => n.key), ['one']);
+  assert.equal(walk(mod.render()).find(n => n.key === 'one').selected, true);
+  for (const [action, key] of [['toggleModels', 'model-picker'], ['toggleMcpPicker', 'mcp-picker']]) {
+    await mod.onEvent(ctx, { action, inputs: {} });
+    assert.equal(walk(mod.render()).find(n => n.key === key).style.background, 'background');
+  }
+});
+
+test('chat MCP selections preserve other servers and connect configured transports with OAuth', async () => {
+  const mod = await load('modules/services/ai-sessions/src/index.ts');
+  let row = { id: 'mcp-chat', workspaceId: 'ws', acpProfileId: 'codex', mcpSelection: ['internal'], config: {} };
+  let start;
+  const ctx = { modules: { async call(target, method, args) {
+    if (method === 'conversations.get') return row;
+    if (method === 'messages.list') return [];
+    if (method === 'conversations.update') { row = { ...row, ...args.fields }; return; }
+    if (method === 'settings.get') return [
+      { id: 'remote', name: 'Remote', transport: 'http', url: 'https://example.com/mcp', auth: { type: 'oauth' } },
+      { id: 'off', name: 'Off', enabled: false },
+      { id: 'local', name: 'Local', command: 'node', args: ['server.js'], env: [] },
+    ];
+    if (method === 'authorization') { assert.equal(args.serverId, 'remote'); return 'Bearer fresh'; }
+    if (method === 'start') { start = args; return { sessionId: 'provider-session', configOptions: [] }; }
+    throw new Error(`${target}.${method}`);
+  } } };
+  await mod.methods.setMcp(ctx, { conversationId: row.id, serverId: 'remote', enabled: true });
+  await mod.methods.setMcp(ctx, { conversationId: row.id, serverId: 'local', enabled: true });
+  await mod.methods.setMcp(ctx, { conversationId: row.id, internal: false });
+  assert.deepEqual(row.mcpSelection, ['remote', 'local']);
+  await assert.rejects(mod.methods.setMcp(ctx, { conversationId: row.id, serverId: 'off', enabled: true }), /disabled/);
+  await mod.methods.connect(ctx, { conversationId: row.id });
+  assert.equal(start.mcp, false);
+  assert.deepEqual(start.mcpSelection, ['remote', 'local']);
+  assert.deepEqual(start.mcpServers, [
+    { type: 'http', name: 'Remote', url: 'https://example.com/mcp', headers: [{ name: 'Authorization', value: 'Bearer fresh' }] },
+    { name: 'Local', command: 'node', args: ['server.js'], env: [] },
+  ]);
+});
+
+test('chat catalog lists enabled configured servers without exposing credentials', async () => {
+  const mod = await load('modules/services/ai-sessions/src/index.ts');
+  const ctx = { modules: { async call(_, method) {
+    if (method === 'resolve') return { id: 'ws' };
+    if (method === 'conversations.list' || method === 'profiles') return [];
+    if (method === 'view.get' || method === 'authSettings') return {};
+    if (method === 'settings.get') return [
+      { id: 'remote', name: 'My server', transport: 'http', url: 'https://example.com', auth: { type: 'bearer', token: 'secret' } },
+      { id: 'disabled', name: 'Disabled', enabled: false },
+    ];
+    throw Error(method);
+  } } };
+  const view = await mod.methods.view(ctx, { workspaceId: 'ws' });
+  assert.deepEqual(view.mcpServers.map(m => m.id), ['internal', 'remote']);
+  assert.equal(JSON.stringify(view.mcpServers).includes('secret'), false);
+});
+
+test('switching providers preserves an active agent and selecting the same provider does nothing', async () => {
+  for (const status of ['busy', 'starting']) {
+    const mod = await load('modules/services/ai-sessions/src/index.ts');
+    const mutations = [];
+    const ctx = { modules: { async call(service, method, args) {
+      if (method === 'conversations.get') return { id: 'switch', workspaceId: 'ws', acpProfileId: 'codex' };
+      if (method === 'messages.list') return [];
+      if (method === 'state') return { status };
+      mutations.push(method);
+      throw new Error(`Unexpected mutation: ${method}`);
+    } } };
+    await mod.methods.setProfile(ctx, { conversationId: 'switch', profileId: 'codex' });
+    await assert.rejects(mod.methods.setProfile(ctx, { conversationId: 'switch', profileId: 'claude' }), /finish or stop/);
+    assert.deepEqual(mutations, []);
+  }
+});
+
+test('ACP reports a crashed turn once and suppresses errors for intentional stops', async () => {
+  for (const intentional of [false, true]) {
+    const mod = await load('modules/services/acp/src/index.ts');
+    let ended;
+    const events = [];
+    const ctx = { modules: { async call() { return [{ id: 'codex' }, { id: 'claude' }]; } },
+      log: { info() {}, warn() {} }, state: { get() {}, set() {}, watch() {} },
+      events: { emit: (topic, value) => events.push({ topic, value }) }, host: {
+        streams: { async listen(_, options, callback, onEnd) { if (options.channel === 'stdout') ended = onEnd; } },
+        process: { async write() {}, async closeStdin() { ended(); }, async terminate() {}, async wait() { return { code: 1 }; } }
+      } };
+    await mod.activate(ctx, { conns: [{ conversationId: 'exit', sessionId: 's', proc: 'p', status: 'ready', stderrTail: '', nextId: 1, commands: [] }] });
+    await mod.methods.prompt(ctx, { conversationId: 'exit', text: 'Continue' });
+    if (intentional) await mod.methods.stop(ctx, { conversationId: 'exit' });
+    else ended();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(events.filter(e => e.topic === 'acp.turnEnded').length, intentional ? 0 : 1);
+    if (!intentional) assert.equal(mod.methods.state(ctx, { conversationId: 'exit' }).status, 'exited');
+  }
 });

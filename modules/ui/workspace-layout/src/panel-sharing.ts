@@ -1,3 +1,4 @@
+import { SPACE_NAMES } from "./defaults";
 import { PANELS, dropPanel, homeOf, locate, moveTo, type Layout } from "./model";
 export type PanelSharing = Record<string, string>;
 export function normalizePanelSharing(value: unknown): PanelSharing {
@@ -6,7 +7,7 @@ export function normalizePanelSharing(value: unknown): PanelSharing {
 }
 export function sharingOptions(sharing: PanelSharing) {
   const ids = new Set([...Object.keys(PANELS).map((_, i) => `space-${i + 1}`), ...Object.values(sharing)]);
-  return [{ value: "", label: "Independent" }, ...[...ids].sort((a, b) => Number(a.slice(6)) - Number(b.slice(6))).map(value => ({ value, label: `Shared space ${value.slice(6)}` }))];
+  return [{ value: "", label: "Independent" }, ...[...ids].sort((a, b) => Number(a.slice(6)) - Number(b.slice(6))).map(value => ({ value, label: SPACE_NAMES[value] ? `${SPACE_NAMES[value]} (space ${value.slice(6)})` : `Shared space ${value.slice(6)}` }))];
 }
 export function visibleIn(l: Layout, id: string) {
   const place = locate(l, id);
