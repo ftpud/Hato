@@ -350,10 +350,11 @@ impl Shell {
                     let background = &n["backgroundImageStyle"];
                     let opacity = background["opacity"].as_f64().filter(|v| v.is_finite()).unwrap_or(1.0).clamp(0.0, 1.0) as f32;
                     let scale = background["scale"].as_f64().filter(|v| v.is_finite()).unwrap_or(1.0).clamp(1.0, 4.0) as f32;
+                    let offset_x = background["offsetX"].as_f64().filter(|v| v.is_finite()).unwrap_or(0.0).clamp(-1.0, 1.0) as f32;
                     let offset = (1.0 - scale) / 2.0;
                     d = d.relative().child(
                         div().absolute().inset_0().overflow_hidden().child(
-                            img(image).absolute().left(relative(offset)).top(relative(offset))
+                            img(image).absolute().left(relative(offset + offset_x)).top(relative(offset))
                                 .w(relative(scale)).h(relative(scale)).object_fit(ObjectFit::Cover).opacity(opacity)
                         )
                     );
