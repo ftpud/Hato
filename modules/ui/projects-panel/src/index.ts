@@ -3,6 +3,7 @@
 import type { AppModule, ModuleContext, TreeRow, UiNode } from "../../../../sdk/types";
 import { errMsg } from "../../../../sdk/runtime";
 import { uiIcons } from "../../../../sdk/ui-icons";
+import { projectsBranding } from "./branding";
 
 let tree: any[] = [];
 let selected: string | null = null;
@@ -12,6 +13,7 @@ let busy: string | null = null;
 let sshForm = false;
 let addForm = false;
 let filter = "";
+let backgroundOpacity = 0.12;
 let taskFormFor: string | null = null;
 // workspaceId -> number of working AI chats (ai-sessions) and background agents (persistent-agents).
 let chatBusy: Record<string, number> = {};
@@ -85,6 +87,12 @@ const mod: AppModule = {
     const sel: any = ctx.state.get("workspace.selected");
     selected = sel ? sel.id : null;
     ctx.state.watch("workspace.selected", (v: any) => { selected = v ? v.id : null; ctx.ui.invalidate(); });
+    const updateBackground = (value: any) => {
+      backgroundOpacity = typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 0.12;
+      ctx.ui.invalidate();
+    };
+    updateBackground(ctx.state.get("workspace-layout.projectsBackgroundOpacity"));
+    ctx.state.watch("workspace-layout.projectsBackgroundOpacity", updateBackground);
     chatBusy = asCounts(ctx.state.get("ai-sessions.busy"));
     agentBusy = asCounts(ctx.state.get("persistent-agents.busy"));
     ctx.state.watch("ai-sessions.busy", (v: any) => { chatBusy = asCounts(v); updateBusy(ctx); });
@@ -157,7 +165,8 @@ const mod: AppModule = {
         ] },
       ] });
     }
-    return { type: "column", key: "projects-root", gap: 4, padding: 6, grow: true, children };
+    return { type: "column", key: "projects-root", gap: 4, padding: 6, grow: true,
+      ...(backgroundOpacity > 0 ? { backgroundImage: projectsBranding, backgroundImageStyle: { opacity: backgroundOpacity, scale: 1.2 } } : {}), children };
   },
   async onEvent(ctx, ev) {
     const run = async (label: string, fn: () => Promise<any>) => {

@@ -32,6 +32,9 @@ const sizeOptions = [{ value: "14", label: "Small" }, { value: "15", label: "Com
 const weightOptions = [{ value: "400", label: "Regular" }, { value: "500", label: "Medium" }];
 let appearanceTheme = "classic";
 let panelOpacity = "balanced";
+let projectsBackground = "subtle";
+const projectsBackgroundOptions = [{ value: "off", label: "Off" }, { value: "subtle", label: "Subtle · 12%" }, { value: "visible", label: "Visible · 24%" }];
+const projectsBackgroundOpacity = () => projectsBackground === "off" ? 0 : projectsBackground === "visible" ? 0.24 : 0.12;
 const themeOptions = [{ value: "classic", label: "Classic" }, { value: "anime", label: "Anime · Sakura Twilight" }];
 const opacityOptions = [{ value: "airy", label: "Airy · 40%" }, { value: "balanced", label: "Balanced · 60%" }, { value: "solid", label: "Readable · 85%" }];
 let ws: any = null;
@@ -360,13 +363,15 @@ async function resetCustomization(ctx: ModuleContext) {
   const values: Record<string, any> = {
     "layout.v1": nextLayout, "activity-sidebar.v1": defaultSidebarButtons(), "sidebar-order.v1": defaultSidebarOrder(), "panel-sharing.v1": defaultPanelSharing(),
     "ui-tables.v1": nextTables, "appearance.fontFamily": "JetBrains Mono", "appearance.fontSize": "15",
-    "appearance.fontWeight": "400", "appearance.mode": "system", "appearance.theme": "classic", "appearance.panelOpacity": "balanced",
+    "appearance.fontWeight": "400", "appearance.mode": "system", "appearance.theme": "classic", "appearance.panelOpacity": "balanced", "appearance.projectsBackground": "subtle",
   };
   for (const [key, value] of Object.entries(values)) await ctx.modules.call("persistence", "settings.set", { key, value });
   sidebarButtons = defaultSidebarButtons(); sidebarOrder = defaultSidebarOrder(); panelSharing = defaultPanelSharing(); tableStyle = nextTables;
   groupBySpace = true; await ctx.modules.call("persistence", "settings.set", { key: "sidebar-grouping.v1", value: true });
   publishSharing(ctx);
   fontFamily = "JetBrains Mono"; fontSize = "15"; fontWeight = "400"; mode = "system"; appearanceTheme = "classic"; panelOpacity = "balanced";
+  projectsBackground = "subtle";
+  ctx.state.set("workspace-layout.projectsBackgroundOpacity", projectsBackgroundOpacity());
   ctx.state.set("workspace-layout.sidebarButtons", sidebarButtons);
   ctx.state.set("workspace-layout.sidebarOrder", sidebarOrder);
   ctx.state.set("workspace-layout.tableStyle", tableStyle);
@@ -413,11 +418,16 @@ const mod: AppModule = {
     appearanceTheme = themeOptions.some(option => option.value === savedTheme) ? savedTheme : "classic";
     const savedOpacity = await ctx.modules.call("persistence", "settings.get", { key: "appearance.panelOpacity" });
     panelOpacity = opacityOptions.some(option => option.value === savedOpacity) ? savedOpacity : "balanced";
+    const savedProjectsBackground = await ctx.modules.call("persistence", "settings.get", { key: "appearance.projectsBackground" });
+    projectsBackground = projectsBackgroundOptions.some(option => option.value === savedProjectsBackground) ? savedProjectsBackground : "subtle";
+    ctx.state.set("workspace-layout.projectsBackgroundOpacity", projectsBackgroundOpacity());
     publishSettings = exportSettings(ctx, () => [{ key: "appearance", title: "Appearance", group: "Appearance", layout: "table", fields: [
       { key: "theme", label: "Theme", type: "select", value: appearanceTheme, options: themeOptions,
         description: "Sakura Twilight pairs an original anime wallpaper with floating indigo glass and pink accents." },
       { key: "panelOpacity", label: "Anime panel opacity", type: "select", value: panelOpacity, options: opacityOptions,
         description: "Keep the scenery visible or increase opacity for easier reading." },
+      { key: "projectsBackground", label: "Projects background", type: "select", value: projectsBackground, options: projectsBackgroundOptions,
+        description: "A faint, oversized dove behind the project list." },
       { key: "mode", label: "Color mode", type: "select", value: mode, options: modeOptions,
         description: "Classic follows this color mode. Sakura Twilight uses its own twilight palette." },
     ] }, { key: "typography", title: "Typography", group: "Appearance", layout: "table", fields: [
@@ -498,6 +508,13 @@ const mod: AppModule = {
         return;
       }
       if (section === "appearance") {
+        if (key === "projectsBackground") {
+          if (!projectsBackgroundOptions.some(option => option.value === value)) throw new Error("Invalid background preference");
+          await ctx.modules.call("persistence", "settings.set", { key: "appearance.projectsBackground", value });
+          projectsBackground = String(value);
+          ctx.state.set("workspace-layout.projectsBackgroundOpacity", projectsBackgroundOpacity());
+          return;
+        }
         if (key === "theme" || key === "panelOpacity") {
           const options = key === "theme" ? themeOptions : opacityOptions;
           if (!options.some(option => option.value === value)) throw new Error("Invalid appearance preference");

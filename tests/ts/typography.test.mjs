@@ -72,6 +72,8 @@ test('appearance reset restores all UI preferences and keeps the top bar visible
   assert.equal(mod.render().children.find(n => n.type === 'theme').typography.fontSize, 15);
   assert.deepEqual(mod.methods.getLayout().mainSizes, [0.76, 0.24]);
   assert.equal(persisted.get('appearance.theme'), 'classic');
+  assert.equal(persisted.get('appearance.projectsBackground'), 'subtle');
+  assert.equal(state.get('workspace-layout.projectsBackgroundOpacity'), 0.12);
   assert.ok(emitted.includes('workspace-layout.tableStyleChanged'));
   assert.ok([...persisted.keys()].every(k => /^(appearance\.|layout\.|activity-sidebar\.|sidebar-order\.|panel-sharing\.|sidebar-grouping\.|ui-tables\.)/.test(k)));
 });

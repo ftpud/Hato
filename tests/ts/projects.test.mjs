@@ -5,7 +5,8 @@ const walk = n => [n, ...(n.children || []).flatMap(walk)];
 test('project filtering reveals matching tasks under collapsed parents and keeps forms out of the list', async () => {
   const built = await esbuild.build({ entryPoints: ['modules/ui/projects-panel/src/index.ts'], bundle: true, format: 'esm', write: false });
   const mod = (await import('data:text/javascript;base64,' + Buffer.from(built.outputFiles[0].text).toString('base64'))).default;
-  const ctx = { state: { get: () => ({ id: 'project:p:root' }), watch() {} }, events: { on() {} }, ui: { invalidate() {} }, modules: { async call() { return [
+  const watchers = new Map();
+  const ctx = { state: { get: () => ({ id: 'project:p:root' }), watch(key, fn) { watchers.set(key, fn); } }, events: { on() {} }, ui: { invalidate() {} }, modules: { async call() { return [
     { id: 'p', name: 'App', rootPath: '/workspace/app', kind: 'local', isGit: true, tasks: [{ id: 't', name: 'Fix login', branch: 'task/login', status: 'ready' }, { id: 'b', name: 'Fix billing', branch: 'task/billing', status: 'ready' }], expanded: false },
     { id: 'r', name: 'Remote', rootPath: '/srv/code', host: 'devbox', kind: 'ssh', tasks: [], expanded: false },
   ]; } } };
@@ -13,6 +14,14 @@ test('project filtering reveals matching tasks under collapsed parents and keeps
   const nodes = () => walk(mod.render());
   const rows = () => nodes().find(n => n.type === 'tree').rows;
   assert.deepEqual(rows().map(n => n.key), ['project:p:root', 'project:r:root']);
+  assert.equal(mod.render().backgroundImage.mimeType, 'image/png');
+  assert.deepEqual(mod.render().backgroundImageStyle, { opacity: 0.12, scale: 1.2 });
+  assert.equal(mod.render().style?.opacity, undefined);
+  watchers.get('workspace-layout.projectsBackgroundOpacity')(0);
+  assert.equal(mod.render().backgroundImage, undefined);
+  assert.deepEqual(rows().map(n => n.key), ['project:p:root', 'project:r:root']);
+  watchers.get('workspace-layout.projectsBackgroundOpacity')(0.24);
+  assert.equal(mod.render().backgroundImageStyle.opacity, 0.24);
   assert.ok(!nodes().some(n => n.key === 'local-path'));
   await mod.onEvent(ctx, { action: 'filter', value: 'app' });
   assert.equal(rows()[0].badge, '2 tasks');

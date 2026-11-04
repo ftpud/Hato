@@ -3,7 +3,7 @@ name = "hato"
 version = "0.1.0"
 edition = "2021"
 description = "Hato: self-modifying native desktop platform (Rust microkernel + hot-swappable TypeScript modules)"
-license = "MIT"
+license = "Apache-2.0"
 
 [[bin]]
 name = "hato"

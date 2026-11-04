@@ -123,7 +123,7 @@ test('new default-hidden panels stay hidden in older saved layouts instead of do
 test('anime appearance restores preferences and switches without changing panel layout', async () => {
   const built = await esbuild.build({ entryPoints: [path.join(root, 'modules/ui/workspace-layout/src/index.ts')], bundle: true, format: 'esm', write: false });
   const mod = (await import('data:text/javascript;base64,' + Buffer.from(built.outputFiles[0].text).toString('base64'))).default;
-  const settings = new Map([['appearance.theme', 'anime'], ['appearance.panelOpacity', 'airy']]);
+  const settings = new Map([['appearance.theme', 'anime'], ['appearance.panelOpacity', 'airy'], ['appearance.projectsBackground', 'visible']]);
   const events = new Map(), state = new Map();
   const ctx = { moduleId: 'workspace-layout', host: { plugins: pluginsHost() },
     modules: { async call(_, method, args) {
@@ -143,6 +143,12 @@ test('anime appearance restores preferences and switches without changing panel 
     await new Promise(resolve => setTimeout(resolve, 0));
     assert.equal(state.get('workspace-layout.settings').error, null);
   };
+  assert.equal(state.get('workspace-layout.projectsBackgroundOpacity'), 0.24);
+  await edit('projectsBackground', 'off');
+  assert.equal(settings.get('appearance.projectsBackground'), 'off');
+  assert.equal(state.get('workspace-layout.projectsBackgroundOpacity'), 0);
+  await edit('projectsBackground', 'subtle');
+  assert.equal(state.get('workspace-layout.projectsBackgroundOpacity'), 0.12);
   await edit('panelOpacity', 'solid');
   assert.equal(mod.render().children[0].palette.dark.panel, '#191c38d9');
   assert.equal(settings.get('appearance.panelOpacity'), 'solid');
