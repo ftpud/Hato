@@ -96,6 +96,35 @@ pub fn preview(value: &Value) -> Option<Arc<Image>> {
     Some(Arc::new(Image::from_bytes(format, bytes)))
 }
 
+fn background_bounds(container: gpui_kit::Bounds<gpui_kit::Pixels>, dimensions: (u32, u32), style: &Value) -> gpui_kit::Bounds<gpui_kit::Pixels> {
+    use gpui_kit::{point, px, size, Bounds};
+    let number = |key: &str| style[key].as_f64().filter(|v| v.is_finite()).map(|v| v as f32);
+    let scale = number("scale").unwrap_or(1.0).clamp(1.0, 4.0);
+    let offset_x = number("offsetX").unwrap_or(0.0).clamp(-1.0, 1.0);
+    let (iw, ih) = (dimensions.0.max(1) as f32, dimensions.1.max(1) as f32);
+    let (cw, ch) = (container.size.width.as_f32(), container.size.height.as_f32());
+    let factor = number("width").map(|w| w.clamp(16.0, 8192.0) / iw).unwrap_or_else(|| (cw / iw).max(ch / ih)) * scale;
+    let (width, height) = (iw * factor, ih * factor);
+    Bounds { origin: container.origin + point(px((cw - width) / 2.0 + cw * offset_x), px((ch - height) / 2.0)), size: size(px(width), px(height)) }
+}
+
+/// Lay out the full artwork at its real aspect ratio. `img(Cover)` in a shifted panel-sized
+/// box would crop at that box's edge before the panel can clip it at its own boundary.
+pub fn background(image: Arc<Image>, style: &Value) -> gpui_kit::AnyElement {
+    use gpui_kit::{canvas, img, size, AvailableSpace, IntoElement, ObjectFit, Styled, StyledImage};
+    let dimensions = image::ImageReader::new(std::io::Cursor::new(image.bytes())).with_guessed_format().ok()
+        .and_then(|reader| reader.into_dimensions().ok()).unwrap_or((1, 1));
+    let opacity = style["opacity"].as_f64().filter(|v| v.is_finite()).unwrap_or(1.0).clamp(0.0, 1.0) as f32;
+    let style = style.clone();
+    canvas(move |bounds, window, cx| {
+        let artwork = background_bounds(bounds, dimensions, &style);
+        let mut element = img(image).w(artwork.size.width).h(artwork.size.height).object_fit(ObjectFit::Fill).opacity(opacity).into_any_element();
+        element.layout_as_root(size(AvailableSpace::Definite(artwork.size.width), AvailableSpace::Definite(artwork.size.height)), window, cx);
+        element.prepaint_at(artwork.origin, window, cx);
+        element
+    }, |_, mut element, window, cx| element.paint(window, cx)).absolute().inset_0().into_any_element()
+}
+
 /// The module supplies the artwork; AppKit owns the process's Dock/app-switcher icon.
 /// Keep this separate from bundle metadata so unbundled development launches work too.
 pub fn application_icon(cx: &mut gpui_kit::App, value: &Value) {
@@ -133,6 +162,28 @@ pub fn application_icon(cx: &mut gpui_kit::App, value: &Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn shifted_background_uses_full_artwork_bounds() {
+        use gpui_kit::{point, px, size, Bounds};
+        let panel = Bounds { origin: point(px(20.0), px(10.0)), size: size(px(250.0), px(800.0)) };
+        let artwork = background_bounds(panel, (1280, 1280), &json!({"scale": 1.2, "offsetX": -0.35}));
+        assert!(artwork.origin.x + artwork.size.width > panel.origin.x + panel.size.width, "the image must not end inside the panel");
+        assert_eq!(artwork.size.width, artwork.size.height);
+    }
+
+    #[test]
+    fn fixed_background_size_survives_panel_height_changes() {
+        use gpui_kit::{point, px, size, Bounds};
+        let style = json!({"width": 640, "offsetX": -0.35});
+        let bounds = |height| Bounds { origin: point(px(0.0), px(0.0)), size: size(px(250.0), px(height)) };
+        let short = background_bounds(bounds(400.0), (1280, 1280), &style);
+        let tall = background_bounds(bounds(900.0), (1280, 1280), &style);
+        assert_eq!(short.size, size(px(640.0), px(640.0)));
+        assert_eq!(short.size, tall.size);
+        assert_eq!(short.origin.x, tall.origin.x);
+        let wide = background_bounds(bounds(400.0), (1280, 640), &style);
+        assert_eq!(wide.size, size(px(640.0), px(320.0)));
+    }
     #[test]
     fn converts_native_clipboard_bitmaps_to_png() {
         let mut bytes = std::io::Cursor::new(Vec::new());

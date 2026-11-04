@@ -290,6 +290,7 @@ export type UiNode =
   | (Base & { type: "row" | "column"; children: UiNode[]; /** Embedded wallpaper, cover-cropped behind children. */ backgroundImage?: ImageAttachment;
       /** Applies only to the wallpaper; foreground children retain full opacity. Defaults: opacity 1, scale 1. */
       backgroundImageStyle?: { opacity?: number; /** Centered zoom, clamped to 1–4. */ scale?: number;
+        /** Fixed artwork width in px, preserving its aspect ratio independently of container height. Otherwise cover-fit. */ width?: number;
         /** Horizontal shift as a fraction of the container width, clamped to -1–1. Negative moves left. */ offsetX?: number };
       align?: "start" | "center" | "end" | "stretch"; wrap?: boolean; scroll?: boolean })
   | (Base & { type: "split"; direction: "horizontal" | "vertical"; sizes?: number[]; children: UiNode[];
