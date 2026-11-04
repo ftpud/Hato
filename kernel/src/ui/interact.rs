@@ -10,7 +10,7 @@
 //!                  region under the pointer; on drop fires `action` with {payload, region, zone}.
 //! * `floating`   — `x`,`y`,`width`,`height`,`title`,`moveAction`. Native move (title bar) and
 //!                  resize (corner grip) inside the main window.
-//! * `window`     — `title`,`width`,`height`,`closeAction`. A real OS window rendering its children.
+//! * `window`     — `title`,`titlebar`,`width`,`height`,`closeAction`. A real OS window rendering its children.
 use super::*;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -81,6 +81,7 @@ pub(super) struct Layout {
     pub window_nodes: HashMap<String, (String, String, Value)>,
     pub windows: HashMap<String, AnyWindowHandle>,
     pub closed_by_user: HashSet<String>,
+    pub canvas: super::canvas::CanvasState,
 }
 
 fn f(n: &Value, k: &str) -> Option<f32> { n.get(k).and_then(|v| v.as_f64()).map(|v| v as f32) }
@@ -507,7 +508,7 @@ fn open_detached(shell: Entity<Shell>, _kernel: Arc<Kernel>, id: String, module:
         let bounds = Bounds::centered(None, size(px(w), px(h)), cx);
         let opts = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
-            titlebar: Some(TitlebarOptions { title: Some(title.into()), ..Default::default() }),
+            titlebar: if n["titlebar"].as_bool() == Some(false) { None } else { Some(TitlebarOptions { title: Some(title.into()), ..Default::default() }) },
             ..Default::default()
         };
         let id2 = id.clone();

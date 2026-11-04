@@ -2,9 +2,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as esbuild from 'esbuild';
 import { pluginsHost } from './plugin-fixture.mjs';
+let generation = 0;
 async function load(id, icons) {
   const built = await esbuild.build({ entryPoints: [`modules/ui/${id}/src/index.ts`], bundle: true, format: 'esm', write: false, plugins: icons ? [{ name: 'edited-icons', setup(build) { build.onLoad({ filter: /sidebar-icons\.ts$/ }, () => ({ contents: `export const sidebarIcons = ${JSON.stringify(icons)}`, loader: 'ts' })); } }] : [] });
-  return (await import('data:text/javascript;base64,' + Buffer.from(built.outputFiles[0].text).toString('base64'))).default;
+  return (await import('data:text/javascript;base64,' + Buffer.from(built.outputFiles[0].text).toString('base64') + '#' + generation++)).default;
 }
 test('separate sidebar toggles layout panels and reflects collapse, hide and restore state', async () => {
   const layout = await load('workspace-layout'), sidebar = await load('sidebar'), left = await load('left-sidebar');
@@ -13,7 +14,7 @@ test('separate sidebar toggles layout panels and reflects collapse, hide and res
     events: { on(key, fn) { events.set(key, fn); return () => {}; }, emit(key, value) { events.get(key)?.(value); } },
     modules: { async call(_, method) { if (method === 'list') return []; if (method === 'updates') return { modules: [], available: [], errors: [] }; } },
     ui: { invalidate() {} }, log: { warn() {} } };
-  await layout.activate(ctx);
+  await layout.activate(ctx, { sidebarButtons: {}, sidebarOrder: {}, panelSharing: {} });
   await sidebar.activate(ctx);
   await left.activate(ctx);
   assert.equal(sidebar.render().border, undefined);
@@ -50,7 +51,7 @@ test('sidebar drawings are module data and a new module build picks up edited SV
   const sidebar = await load('sidebar'), left = await load('left-sidebar');
   const ctx = { host: { plugins: pluginsHost() }, state: { get() {}, watch() {} }, events: { on() { return () => {}; } }, ui: { invalidate() {} }, log: { warn() {} } };
   await sidebar.activate(ctx); await left.activate(ctx);
-  assert.deepEqual(sidebar.render().children.map(n => n.key), ['projects', 'files', 'agents', 'mcps', 'git', 'git-changes', 'remote']);
+  assert.deepEqual(sidebar.render().children.map(n => n.key), ['projects', 'files', 'agents', 'workflows', 'mcps', 'git', 'git-changes', 'remote']);
   for (const node of [...sidebar.render().children, ...left.render().children]) {
     assert.equal(node.icon, undefined);
     assert.match(node.iconSvg, /<svg /);
@@ -63,4 +64,66 @@ test('sidebar drawings are module data and a new module build picks up edited SV
   await updated.activate(ctx);
   assert.equal(updated.render().children[0].iconSvg, changed);
   assert.equal(updated.render().children[1].iconSvg, originalFiles);
+});
+
+test('sidebar settings move, hide and persist buttons independently of panel docking', async t => {
+  const layout = await load('workspace-layout'), right = await load('sidebar'), left = await load('left-sidebar');
+  t.after(() => { layout.deactivate(); right.deactivate(); left.deactivate(); });
+  const stored = new Map([['activity-sidebar.v1', { files: 'left-bottom', ai: 'right-top', terminal: 'right-bottom', remote: 'hidden' }], ['sidebar-order.v1', {}]]);
+  const state = new Map(), watchers = new Map(), events = new Map();
+  let failSave = false;
+  const ctx = { moduleId: 'workspace-layout', host: { plugins: pluginsHost() },
+    state: { get: k => state.get(k), set(k, v) { state.set(k, v); for (const fn of watchers.get(k) || []) fn(v); }, watch(k, fn) { const list = watchers.get(k) || []; list.push(fn); watchers.set(k, list); } },
+    events: { on(k, fn) { const set = events.get(k) || new Set(); set.add(fn); events.set(k, set); return () => set.delete(fn); }, emit(k, v) { for (const fn of events.get(k) || []) fn(v); } },
+    modules: { async call(_id, method, args) {
+      if (method === 'settings.get') return stored.get(args.key);
+      if (method === 'settings.set') { if (failSave) throw new Error('Save failed'); stored.set(args.key, args.value); }
+      if (method === 'list') return [];
+      if (method === 'updates') return { modules: [], available: [], errors: [] };
+    } }, ui: { invalidate() {} }, log: { warn() {} },
+  };
+  await layout.activate(ctx); await right.activate(ctx); await left.activate(ctx);
+  const keys = mod => mod.render().children.map(n => n.key);
+  assert.ok(keys(left).indexOf('files') > keys(left).indexOf('sidebar-spacer'));
+  assert.ok(!keys(right).includes('files'));
+  assert.ok(keys(right).indexOf('ai') < keys(right).indexOf('sidebar-spacer'));
+  assert.ok(keys(right).indexOf('terminal') > keys(right).indexOf('sidebar-spacer'));
+  assert.ok(!keys(right).includes('remote'));
+  const settings = () => state.get('workspace-layout.settings');
+  const section = () => settings().sections.find(s => s.key === 'side-panels');
+  assert.deepEqual(section().fields.find(f => f.key === 'files').options.map(o => o.value), ['left-top', 'left-bottom', 'right-top', 'right-bottom', 'hidden']);
+  const before = JSON.stringify(layout.methods.getLayout());
+  const edit = async (key, value) => {
+    ctx.events.emit('settings.change', { module: 'workspace-layout', section: 'side-panels', key, value });
+    await new Promise(r => setImmediate(r));
+  };
+  await edit('files', 'left-top');
+  assert.ok(!keys(left).includes('sidebar-spacer'), 'only top buttons need no spacer');
+  assert.equal(stored.get('activity-sidebar.v1').files, 'left-top');
+  assert.equal(JSON.stringify(layout.methods.getLayout()), before, 'button placement leaves panel docking untouched');
+  await edit('files', 'hidden');
+  assert.ok(!keys(left).includes('files'));
+  await edit('files', 'right-bottom');
+  assert.ok(keys(right).indexOf('files') > keys(right).indexOf('sidebar-spacer'));
+  right.onEvent(ctx, { action: 'toggle', value: 'files' });
+  assert.equal(layout.methods.getLayout().collapsed.files, true, 'a moved button still controls its panel');
+  const orderField = state.get('workspace-layout.settings').sections.find(s => s.key === 'sidebar-order').fields.find(f => f.key === 'right-bottom');
+  const items = JSON.parse(orderField.value).reverse(); items.splice(1, 0, '@spacer:test');
+  ctx.events.emit('settings.change', { module: 'workspace-layout', section: 'sidebar-order', key: 'right-bottom', value: JSON.stringify(items) });
+  await new Promise(r => setImmediate(r));
+  const rendered = right.render().children;
+  const tail = rendered.slice(rendered.findIndex(n => n.key === 'sidebar-spacer') + 1);
+  assert.deepEqual(tail.map(n => n.key), items);
+  assert.equal(tail.find(n => n.key === '@spacer:test').height, 12);
+  assert.deepEqual(stored.get('sidebar-order.v1')['right-bottom'], items);
+  failSave = true;
+  await edit('files', 'left-bottom');
+  assert.equal(section().fields.find(f => f.key === 'files').value, 'right-bottom');
+  assert.equal(settings().error, 'Save failed');
+  assert.ok(keys(right).includes('files'), 'failed persistence leaves the current button in place');
+  failSave = false;
+  assert.equal(layout.snapshot().sidebarButtons.files, "right-bottom");
+  layout.deactivate();
+  await layout.activate(ctx);
+  assert.equal(state.get('workspace-layout.sidebarButtons').files, 'right-bottom', 'hot reload retains placement');
 });

@@ -22,7 +22,9 @@ export function panelSignature(): string {
   return JSON.stringify(Object.keys(PANELS).sort().map((id) => [id, PANELS[id].slot]));
 }
 
-export const BAR_ITEMS: Record<string, { title: string; grow?: boolean }> = {
+export const BAR_ITEMS: Record<string, { title: string; grow?: boolean; spacer?: boolean }> = {
+  toolbarGap: { title: "Toolbar gap", spacer: true },
+  toolbarSpace: { title: "Flexible toolbar space", spacer: true, grow: true },
   title: { title: "App title" },
   workspace: { title: "Active workspace", grow: true },
   layoutMenu: { title: "Layout menu" },
@@ -75,14 +77,14 @@ export function defaultLayout(): Layout {
     showRightSidebar: true,
     columns,
     bottom: { panels: bottom, sizes: bottom.map(() => 1 / bottom.length), collapsed: false },
-    mainSizes: [0.68, 0.32],
+    mainSizes: [0.76, 0.24],
     collapsed: {},
     floating: {},
     detached: {},
     hidden: Object.keys(PANELS).filter((id) => PANELS[id].defaultHidden),
     bars: {
-      top: { visible: true, items: ["title", "workspace", "layoutMenu", "modules", "settings"] },
-      bottom: { visible: true, items: ["machine", "versions", "approvals"] },
+      top: { visible: true, items: ["title", "workspace", "toolbarGap", "layoutMenu", "settings"] },
+      bottom: { visible: true, items: ["machine", "toolbarSpace", "approvals", "modules"] },
     },
   };
 }
@@ -230,6 +232,7 @@ export function repair(raw: any): Layout {
   }
   // Add Settings once to layouts saved before the Settings module existed.
   if (!raw.settingsButton && !l.bars.top.items.includes("settings") && !l.bars.bottom.items.includes("settings")) l.bars.top.items.push("settings");
+  l.bars.top.visible = true;
   l.settingsButton = true;
   l.showPanelControls = raw.showPanelControls !== false;
   l.showLeftSidebar = raw.showLeftSidebar !== false;

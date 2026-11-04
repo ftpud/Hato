@@ -5,11 +5,14 @@
 export function resolveWorkspaceLink(href: string, rootAbsolutePath: string | null | undefined, baseDir = ""): string | null {
   let raw = String(href || "").trim().replace(/^<|>$/g, "");
   if (!raw || raw.startsWith("#")) return null;
+  if (!rootAbsolutePath || !rootAbsolutePath.startsWith("/")) return null;
   let absolute = false;
   if (/^file:/i.test(raw)) {
+    const authority = /^file:\/\/([^/]*)/i.exec(raw)?.[1];
+    if (authority && authority.toLowerCase() !== "localhost") return null;
     raw = raw.replace(/^file:(\/\/[^/]*)?/i, "");
     absolute = true;
-  } else if (/^[a-z][a-z0-9+.-]*:/i.test(raw)) return null; // other schemes are not files
+  } else if (/^[a-z][a-z0-9+.-]*:/i.test(raw.replace(/:\d+(?::\d+)?(?:[?#].*)?$/, ""))) return null; // other schemes are not files
   raw = raw.replace(/[?#].*$/, "");
   try { raw = decodeURIComponent(raw); } catch { /* keep undecoded */ }
   raw = raw.replace(/:\d+(?::\d+)?$/, "");
@@ -20,8 +23,9 @@ export function resolveWorkspaceLink(href: string, rootAbsolutePath: string | nu
   else if (raw.startsWith("~")) return null;
   else full = normalize(`${root}/${baseDir}/${raw}`);
   if (!root || full === root) return null;
-  if (!full.startsWith(root + "/")) return null;
-  return full.slice(root.length + 1);
+  const prefix = root === "/" ? "/" : root + "/";
+  if (!full.startsWith(prefix)) return null;
+  return full.slice(prefix.length);
 }
 
 function normalize(path: string): string {

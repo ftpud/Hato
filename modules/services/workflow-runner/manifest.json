@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 2,
+  "id": "workflow-runner",
+  "name": "Workflow runtime",
+  "kind": "service",
+  "entry": "src/index.ts",
+  "moduleApiVersion": 1,
+  "dependencies": [],
+  "capabilities": [
+    "db:workflow-runner",
+    "process.scope",
+    "fs.scope",
+    "net.loopback"
+  ],
+  "calls": [
+    "agent-runner"
+  ],
+  "runsOn": "either",
+  "stateVersion": 1,
+  "description": "Runs visual workflows on the workspace machine's daemon: definitions, durable runs, scripts, Run App processes and the workflow MCP endpoint for agent blocks."
+}

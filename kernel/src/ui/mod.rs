@@ -3,6 +3,7 @@
 //! and owns the trusted chrome (approval dialogs, safe mode). Never blocks on JS: trees arrive
 //! asynchronously through the UI bridge and are cached.
 pub mod interact;
+mod canvas;
 pub mod terminal_view;
 mod theme;
 mod images;
@@ -68,6 +69,7 @@ pub struct Shell {
     scrolls: HashMap<String, transcript_scroll::TranscriptScroll>,
     toasts: Vec<(String, String, Instant)>,
     modals: Vec<(String, String, Value)>,
+    control_style: Value,
     approval_scroll: ScrollHandle,
     show_safe_mode: bool,
     submit_queue: Vec<(String, String, String)>,
@@ -113,6 +115,7 @@ impl Shell {
             scrolls: HashMap::new(),
             toasts: Vec::new(),
             modals: Vec::new(),
+            control_style: Value::Null,
             approval_scroll: ScrollHandle::new(),
             show_safe_mode: false,
             submit_queue: Vec::new(),
@@ -294,6 +297,12 @@ impl Shell {
             Some("right") => d.border_r_1().border_color(cx.theme().border),
             _ => d,
         };
+        if n["windowDrag"].as_bool().unwrap_or(false) {
+            d = d.cursor_move().on_mouse_down(MouseButton::Left, |_, window, cx| {
+                window.start_window_move();
+                cx.stop_propagation();
+            });
+        }
         style::apply(d, &n["style"], cx)
     }
 
@@ -315,7 +324,7 @@ impl Shell {
         let b = |k: &str| n.get(k).and_then(|v| v.as_bool()).unwrap_or(false);
         let theme_muted = cx.theme().muted_foreground;
         match ty {
-            "theme" => { theme::configure(cx, n, &self.kernel.cfg.data_dir); div().into_any_element() }
+            "theme" => { self.control_style = n["controls"].clone(); theme::configure(cx, n, &self.kernel.cfg.data_dir); div().into_any_element() }
             "row" | "column" => {
                 let mut d = if ty == "row" { h_flex() } else { v_flex() };
                 if ty == "row" {
@@ -359,6 +368,7 @@ impl Shell {
             "split" => self.render_split(module, n, &path, key, depth, window, cx),
             "dragHandle" => self.render_drag_handle(module, n, &path, key, window, cx),
             "dropZone" => self.render_drop_zone(module, n, &path, key, depth, window, cx),
+            "canvas" => self.render_canvas(module, n, &path, key, depth, window, cx),
             "floating" => {
                 self.lay.floats.push((module.to_string(), path.clone(), n.clone()));
                 div().into_any_element()
@@ -577,7 +587,7 @@ impl Shell {
                         let bg = n["style"]["background"].as_str().map(|c| theme::color(cx, c, cx.theme().background)).unwrap_or(cx.theme().background);
                         let row_h = n["rowHeight"].as_f64().unwrap_or(20.0).clamp(12.0, 48.0) as f32;
                         Textarea::new(e).text_sm().font_family(cx.theme().font_family.clone()).bg(bg).disabled(b("disabled"))
-                            .h(px(n.get("rows").and_then(|r| r.as_f64()).unwrap_or(3.0).clamp(1.0, 40.0) as f32 * row_h + 12.0)).into_any_element()
+                            .h(px(n.get("rows").and_then(|r| r.as_f64()).unwrap_or(3.0).clamp(1.0, 40.0) as f32 * row_h + 12.0)).when(b("fillHeight"), |area| area.h_full()).into_any_element()
                     }
                 };
                 let k = self.kernel.clone();
@@ -716,12 +726,12 @@ impl Shell {
                 let act_action = s("activateAction");
                 let inputs = self.module_inputs(module);
                 // Geometry is module data; defaults match a compact list.
-                let row_h = n["rowHeight"].as_f64().map(|h| h.clamp(12.0, 96.0) as f32);
+                let row_h = n["rowHeight"].as_f64().or_else(|| self.control_style["listRowHeight"].as_f64()).map(|h| h.clamp(12.0, 96.0) as f32);
                 let indent = n["indent"].as_f64().unwrap_or(14.0).clamp(0.0, 64.0) as f32;
                 let row_gap = n["rowGap"].as_f64().unwrap_or(1.0).clamp(0.0, 16.0) as f32;
                 let icon_size = n["iconSize"].as_f64().unwrap_or(16.0).clamp(8.0, 48.0) as f32;
                 let mut list = v_flex().w_full().min_w_0().gap(px(row_gap));
-                for r in rows.iter().take(5000) {
+                for (row_index, r) in rows.iter().take(5000).enumerate() {
                     let rk = r["key"].as_str().unwrap_or("").to_string();
                     let depth_ = r["depth"].as_u64().unwrap_or(0) as f32;
                     let selected = r["selected"].as_bool().unwrap_or(false);
@@ -755,6 +765,8 @@ impl Shell {
                             Self::fire(&k, &m, &inputs2, action, &key2, Some(rk2.clone()), Value::Null, cx)
                         });
                     if let Some(h) = row_h { row = row.h(px(h)).flex_shrink_0().py_0().gap(px(6.0)); }
+                    if self.control_style["rowDividers"].as_bool().unwrap_or(false) { row = row.border_b_1().border_color(cx.theme().border); }
+                    if self.control_style["stripedRows"].as_bool().unwrap_or(false) && row_index % 2 == 1 { row = row.bg(cx.theme().muted.opacity(0.35)); }
                     if selected {
                         row = row.bg(cx.theme().list_active);
                     }
@@ -1199,6 +1211,7 @@ pub fn run(cfg: Config) {
     let k2 = kernel.clone();
     app.run(move |cx| {
         gpui_kit::init(cx);
+        terminal_view::init(cx);
         theme::init(cx, &k2.cfg.data_dir);
         cx.on_app_quit({
             let k = k2.clone();

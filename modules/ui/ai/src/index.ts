@@ -45,6 +45,20 @@ function leaveBackground(ctx:ModuleContext) {
   background=null;backgroundPage=null;view=null;draft=normalDraft;attachments=normalAttachments;
   if(backgroundTimer)clearInterval(backgroundTimer);backgroundTimer=null;resetChatWindows();publishSession(ctx);
 }
+let composerFraction = 0.24;
+const composerFractions = new Map<string, number>();
+const clampComposerFraction = (value: unknown) => typeof value === "number" && Number.isFinite(value) ? Math.max(0.15, Math.min(0.65, value)) : 0.24;
+async function restoreComposer(ctx: ModuleContext) {
+  const id = ws?.id;
+  composerFraction = id ? composerFractions.get(id) ?? 0.24 : 0.24;
+  if (!id || composerFractions.has(id)) return;
+  try {
+    const saved: any = await ctx.modules.call("workspace", "view.get", { workspaceId: id });
+    const fraction = clampComposerFraction(saved?.ui?.aiComposerFraction);
+    if (!composerFractions.has(id)) composerFractions.set(id, fraction);
+    if (ws?.id === id) { composerFraction = composerFractions.get(id)!; ctx.ui.invalidate(); }
+  } catch { /* Keep the usable default if workspace preferences are unavailable. */ }
+}
 let ws: any = null;
 let view: any = null;
 let error: string | null = null;
@@ -199,19 +213,23 @@ const mod: AppModule = {
   id: "ai",
   moduleApiVersion: 1,
   async activate(ctx, prev) {
+    if (prev?.composerFractions) for (const [id, value] of prev.composerFractions) composerFractions.set(id, clampComposerFraction(value));
     if (prev?.attachments) attachments = imageAttachments(prev.attachments);
     if (prev && typeof prev.draft === "string") draft = prev.draft;
     refresh = debounce(() => load(ctx), 40);
     ws = ctx.state.get("workspace.selected") || null;
+    await restoreComposer(ctx);
     workspaceSkillState = ctx.state.get("files.skills") || null;
     ctx.state.watch("files.skills", (value: any) => { workspaceSkillState = value; ctx.ui.invalidate(); });
-    ctx.state.watch("workspace.selected", (v: any) => { const changed = ws?.id !== v?.id; ws = v; if(changed){if(background)leaveBackground(ctx);void load(ctx);} });
+    ctx.state.watch("workspace.selected", (v: any) => { const changed = ws?.id !== v?.id; ws = v; if(changed){void restoreComposer(ctx);if(background)leaveBackground(ctx);void load(ctx);} });
     ctx.events.on("persistent-agents.chatResponse",(response:any)=>{
       const pending=requests.get(response?.requestId);if(!pending)return;
       requests.delete(response.requestId);clearTimeout(pending.timer);
       if(response.error)pending.reject(new Error(response.error));else pending.resolve(response.value);
     });
     ctx.events.on("agents-panel.openChat",(selection:any)=>{void openBackground(ctx,selection);});
+    // Workflow block sessions and the workflow configurator are background agents too.
+    ctx.events.on("workflows-panel.openChat",(selection:any)=>{void openBackground(ctx,selection);});
     ctx.events.on("agents-panel.agentRemoved",(e:any)=>{if(e?.id){backgroundDrafts.delete(e.id);if(background?.id===e.id){leaveBackground(ctx);void load(ctx);}}});
     ctx.events.on("agents-panel.agentCleared",(e:any)=>{if(background?.id===e?.id){resetChatWindows();void load(ctx);}});
     ctx.events.on("ai-sessions.changed", () => refresh());
@@ -226,7 +244,7 @@ const mod: AppModule = {
     }else await load(ctx);
   },
   deactivate(){if(backgroundTimer)clearInterval(backgroundTimer);backgroundTimer=null;for(const p of requests.values()){clearTimeout(p.timer);p.reject(new Error("Chat module reloaded"));}requests.clear();},
-  snapshot: () => background ? ({ draft, attachments, background, normalDraft, normalAttachments }) : ({draft,attachments}),
+  snapshot: () => background ? ({ draft, attachments, background, normalDraft, normalAttachments, composerFractions: [...composerFractions] }) : ({draft,attachments,composerFractions: [...composerFractions]}),
   render(): UiNode {
     const active = view?.active;
     const conv = active?.conversation;
@@ -246,7 +264,7 @@ const mod: AppModule = {
     const iconButton = (key: string, icon: "sliders-horizontal" | "message-square" | "plus" | "x", action: string, tooltip: string): UiNode => ({ type: "button", key, text: "", iconSvg: uiIcons[icon], action, tooltip, style: chatStyle.iconControl, disabled: !ws });
     const header: UiNode = { type: "row", key: "hdr", style: chatStyle.toolbar, padding: 8, gap: 6, align: "center", children: [
       { type: "column", key: "provider-field", grow: true, minWidth: 100, gap: 0, children: [
-        { type: "select", key: "agent", buttonStyle: chatStyle.fieldControl, tooltip: "Provider", options: (view?.profiles || []).map((p: any) => ({ value: p.id, label: p.name.replace(/\s*\([^)]*\)$/, "") })), value: conv?.acpProfileId || null, action: "setProfile", disabled: !conv || !!background, placeholder: "Choose provider", grow: true },
+        { type: "select", key: "agent", height: 32, buttonStyle: { ...chatStyle.fieldControl, height: 32 }, tooltip: "Provider", options: (view?.profiles || []).map((p: any) => ({ value: p.id, label: p.name.replace(/\s*\([^)]*\)$/, "") })), value: conv?.acpProfileId || null, action: "setProfile", disabled: !conv || !!background, placeholder: "Choose provider" },
       ] },
       { type: "column", key: "model-field", grow: true, minWidth: 100, gap: 0, children: [
         { type: "button", key: "cfg-model", style: { ...chatStyle.control, fullWidth: true }, text: modelName + "  ⌄", action: "toggleModels", disabled: model.disabled, tooltip: "Choose model", grow: true },
@@ -331,7 +349,7 @@ const mod: AppModule = {
           { type: "image", key: "preview", image, width: 80, height: 64 },
           { type: "button", key: "remove", text: "× " + image.name, action: "removeImage", value: index, small: true, tooltip: "Remove picture" },
         ] })) });
-        composer.push({ type: "textInput", key: "prompt", style: chatStyle.textarea, changeAction:"draftChanged", pasteImageAction: background?undefined:"attachImages", maxFiles: 4, maxBytes: 5 * 1024 * 1024, placeholder: active.busy ? "Steer " + providerName + "…" : "Ask " + providerName + "…", multiline: true, rows: 2, submitAction: "send", value: draft });
+        composer.push({ type: "textInput", key: "prompt", style: chatStyle.textarea, changeAction:"draftChanged", pasteImageAction: background?undefined:"attachImages", maxFiles: 4, maxBytes: 5 * 1024 * 1024, placeholder: active.busy ? "Steer " + providerName + "…" : "Ask " + providerName + "…", multiline: true, fillHeight: true, grow: true, rows: 2, submitAction: "send", value: draft });
         if (mcpOpen) composer.push({ type: "column", key: "mcp-picker", gap: 8, padding: 12, border: true, children: [
           { type: "label", key: "title", text: "MCP servers", weight: "bold", size: "sm" },
           ...(view.mcpServers || [{ id: "internal", name: "Hato" }]).map((server: any): UiNode => ({ type: "toggle", key: "mcp-" + server.id, label: server.name, tooltip: server.description, checked: (conv.mcpSelection || []).includes(server.id), action: "toggleMcp:" + server.id })),
@@ -350,7 +368,12 @@ const mod: AppModule = {
           { type: "button", key: "send", text: "", iconSvg: uiIcons.send, action: "send", style: chatStyle.iconPrimary, variant: "primary", disabled: busy === "send", tooltip: active.busy ? "Steer agent" : "Send message" },
         ] });
         if(background){const actions=composer.find(n=>n.key==="act");if(actions&&"children" in actions)actions.children=(actions.children||[]).filter(n=>!["attach","mcp-toggle","skills-toggle","context-usage"].includes(n.key));}
-        kids.push({ type: "column", key: "composer", style: chatStyle.composer, gap: 6, padding: 8, children: composer });
+        const transcript = kids.pop()!;
+        kids.push({ type: "split", key: "chat-composer-split", direction: "vertical", grow: true,
+          sizes: [1 - composerFraction, composerFraction], minSize: 96, resizeAction: "resizeComposer",
+          children: [transcript, { type: "column", key: "composer", style: chatStyle.composer, grow: true, gap: 6, padding: 8, children: composer }],
+          tooltip: "Drag the divider above the input to resize it",
+        });
       }
       if (modelsOpen) {
         const filtered = model.options.filter((o) => `${o.label} ${modelDetails(o.value)?.description || ""}`.toLowerCase().includes(modelQuery.toLowerCase()));
@@ -374,6 +397,18 @@ const mod: AppModule = {
     return { type: "column", key: "ai-root", style: chatStyle.root, gap: 0, grow: true, children: kids };
   },
   async onEvent(ctx, ev) {
+    if (ev.action === "resizeComposer") {
+      const sizes = (ev.value as any)?.sizes;
+      if (!Array.isArray(sizes) || sizes.length !== 2 || sizes.some((n: any) => typeof n !== "number" || !Number.isFinite(n) || n <= 0)) return;
+      composerFraction = clampComposerFraction(sizes[1] / (sizes[0] + sizes[1]));
+      const id = ws?.id;
+      if (id) {
+        composerFractions.set(id, composerFraction);
+        try { await ctx.modules.call("workspace", "view.patch", { workspaceId: id, patch: { ui: { aiComposerFraction: composerFraction } } }); }
+        catch (e) { error = "Could not save input height: " + errMsg(e); }
+      }
+      ctx.ui.invalidate(); return;
+    }
     if(ev.action==="draftChanged"){draft=String(ev.value||"");ctx.ui.invalidate();return;}
     if(ev.action==="backToChats"){leaveBackground(ctx);await load(ctx);return;}
     if(background && !["toggleModels","searchModels","toggleSettings","openLink"].includes(ev.action)) {

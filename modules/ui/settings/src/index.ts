@@ -1,8 +1,11 @@
-import type { AppModule, ModuleContext, PluginInfo, SettingsExport, SettingsSection, UiNode } from "../../../../sdk/types";
+import type { AppModule, ModuleContext, PluginInfo, SettingsExport, SettingsSection, SettingField, UiNode } from "../../../../sdk/types";
+import { parseOrder, SPACER_PREFIX } from "../../../../sdk/settings-order";
+import { uiTable, normalizeTableStyle } from "../../../../sdk/ui-table";
 import { errMsg } from "../../../../sdk/runtime";
 
 let open = false;
 let selectedCategory = "";
+let query = "";
 let error: string | null = null;
 let providers: string[] = [];
 const subscriptions = new Map<string, () => void>();
@@ -51,10 +54,34 @@ function categories(ctx: ModuleContext): Category[] {
   }
   return result;
 }
+function categoryGroup(category: Category): string {
+  if (category.section?.group) return category.section.group;
+  if (category.key === "plugins") return "Advanced";
+  if (["appearance", "typography", "tables"].includes(category.section?.key || "")) return "Appearance";
+  if (["side-panels", "sidebar-order", "panel-sharing", "workspace-chrome"].includes(category.section?.key || "")) return "Workspace";
+  if (["viewer", "git-changes", "git-panel"].includes(category.module || "")) return "Editor & Git";
+  if ((category.module || "").includes("mcp")) return "AI & tools";
+  return "Tools & runtime";
+}
+function orderEditor(field: Extract<SettingField, { type: "order" }>, key: string): UiNode {
+  let items: string[];
+  try { items = parseOrder(field.value, field.items.map(i => i.id), field.allowSpacers); } catch { items = field.items.map(i => i.id); }
+  const button = (id: string, text: string, operation: string, index = -1, disabled = false): UiNode => ({ type: "button", key: id, text, action: `order:${operation}`, value: { field: key, index }, small: true, variant: "ghost", disabled });
+  return { type: "column", key, gap: 5, border: true, padding: 10, children: [
+    { type: "row", key: "heading", gap: 6, children: [{ type: "label", key: "title", text: field.label, weight: "semibold", grow: true }, ...(field.allowSpacers ? [button("add", "+ Spacer", "add")] : [])] },
+    ...items.map((id, index): UiNode => ({ type: "row", key: id, gap: 5, padding: 4, children: [
+      { type: "label", key: "name", text: id.startsWith(SPACER_PREFIX) ? "— Spacer —" : field.items.find(i => i.id === id)?.label || id, color: id.startsWith(SPACER_PREFIX) ? "muted" : "default", grow: true, size: "sm" },
+      button("up", "↑", "up", index, index === 0), button("down", "↓", "down", index, index === items.length - 1),
+      ...(id.startsWith(SPACER_PREFIX) ? [button("remove", "×", "remove", index)] : []),
+    ] })),
+    ...(!items.length ? [{ type: "label", key: "empty", text: "No buttons here. Choose positions on the Side panels page.", color: "muted", wrap: true, size: "xs" } as UiNode] : []),
+  ] };
+}
 const mod: AppModule = {
   id: "settings", moduleApiVersion: 1,
   async activate(ctx, prev) {
-    open = !!prev?.open;
+    open = !!prev?.open; query = prev?.query || "";
+    ctx.events.on("workspace-layout.tableStyleChanged", () => ctx.ui.invalidate());
     selectedCategory = typeof prev?.selectedCategory === "string" ? prev.selectedCategory : "";
     // Refresh disk discovery when the plugin/settings UI loads, including newly built panels.
     // This uses the existing plugin manager; no window restart or new native permission is needed.
@@ -63,18 +90,24 @@ const mod: AppModule = {
     await refresh(ctx);
   },
   deactivate() { for (const stop of subscriptions.values()) stop(); subscriptions.clear(); },
-  snapshot: () => ({ open, selectedCategory }),
+  snapshot: () => ({ open, selectedCategory, query }),
   methods: { async open(ctx, args) {
     open = true;
     if (typeof args?.module === "string" && typeof args?.section === "string") selectedCategory = JSON.stringify([args.module, args.section]);
     else if (args?.category === "plugins") selectedCategory = args.category;
+    if (args?.category || args?.module) query = "";
     ctx.ui.invalidate(); await refresh(ctx);
   } },
   render(ctx): UiNode {
     if (!open) return { type: "column", key: "settings-closed", children: [] };
-    const list = categories(ctx);
+    const all = categories(ctx), needle = query.trim().toLowerCase();
+    const list = all.filter(c => !needle || [c.title, c.section?.description, ...(c.section?.fields || []).flatMap(f => [f.label, f.description])].join(" ").toLowerCase().includes(needle));
+    if (!list.length) return { type: "modal", key: "settings-modal", title: "Settings", width: 960, closeAction: "close", children: [
+      { type: "textInput", key: "settings-search", value: query, changeAction: "search", placeholder: "Search settings…" },
+      { type: "label", key: "none", text: "No matching settings.", color: "muted" },
+    ] };
     // Default to the first module-contributed category (e.g. Appearance), else Plugins.
-    const active = list.find(category => category.key === selectedCategory) || list[1] || list[0];
+    const active = list.find(category => category.key === selectedCategory) || list.find(c => c.section?.key === "appearance") || list.find(c => c.key !== "plugins") || list[0];
     selectedCategory = active.key;
     const options: UiNode[] = [
       { type: "label", key: "category-title", text: active.title, weight: "semibold" },
@@ -82,28 +115,68 @@ const mod: AppModule = {
     if (active.key === "plugins") options.push(...pluginsPage());
     if (active.error) options.push({ type: "status", key: "category-error", text: active.error, level: "error" });
     if (active.section?.description) options.push({ type: "label", key: "category-description", text: active.section.description, size: "sm", color: "muted", wrap: true });
+    const tableRows: Parameters<typeof uiTable>[1] = [];
     for (const field of active.section?.fields || []) {
       if (!field || typeof field.key !== "string") continue;
       const fieldKey = JSON.stringify([active.module, active.section!.key, field.key]);
-      if (field.type === "toggle") options.push({ type: "toggle", key: fieldKey, label: field.label, checked: field.value, action: "change" });
-      else if (field.type === "select" && Array.isArray(field.options)) options.push(
-        { type: "label", key: `${fieldKey}:label`, text: field.label, size: "sm", weight: "medium" },
-        { type: "select", key: fieldKey, value: field.value, options: field.options, action: "change", grow: false },
-      );
-      if (field.description) options.push({ type: "label", key: `${fieldKey}:description`, text: field.description, size: "xs", color: "muted", wrap: true });
+      if (field.type === "order") { options.push(orderEditor(field, fieldKey)); continue; }
+      const control: UiNode = field.type === "toggle"
+        ? { type: "toggle", key: fieldKey, label: active.section?.layout === "table" ? "" : field.label, checked: field.value, action: "change" }
+        : { type: "select", key: fieldKey, value: field.value, options: field.options, action: "change", buttonStyle: { height: 32, fullWidth: true } };
+      if (active.section?.layout === "table") tableRows.push({ key: fieldKey, label: field.label, description: field.description, control });
+      else options.push({ type: "column", key: `${fieldKey}:field`, gap: 5, padding: 10, border: true, children: [
+        ...(field.type === "select" ? [{ type: "label", key: "label", text: field.label, size: "sm", weight: "medium" } as UiNode] : []), control,
+        ...(field.description ? [{ type: "label", key: "description", text: field.description, size: "xs", color: "muted", wrap: true } as UiNode] : []),
+      ] });
     }
-    return { type: "modal", key: "settings-modal", title: "Settings", closeAction: "close", children: [
+    if (tableRows.length) options.push(uiTable("preferences-table", tableRows, normalizeTableStyle(ctx.state.get("workspace-layout.tableStyle"))));
+    const resetLabel = active.module ? ctx.state.get<SettingsExport>(`${active.module}.settings`)?.resetLabel : null;
+    if (resetLabel) options.push({ type: "column", key: "reset-preferences", gap: 6, padding: 10, border: true, children: [
+      { type: "label", key: "description", text: "Restore default appearance, typography, panel placement, sharing, sidebar buttons, spacers and table styling. Workflows, chats and provider settings are preserved.", size: "sm", color: "muted", wrap: true },
+      { type: "button", key: "reset", text: resetLabel, action: "resetPreferences", value: active.module, variant: "danger", small: true },
+    ] });
+    const groups = ["Appearance", "Workspace", "Editor & Git", "AI & tools", "Tools & runtime", "Advanced"];
+    const navigation: UiNode[] = [];
+    for (const group of [...groups, ...new Set(list.map(categoryGroup).filter(g => !groups.includes(g)))]) {
+      const entries = list.filter(c => categoryGroup(c) === group); if (!entries.length) continue;
+      navigation.push({ type: "label", key: `group:${group}`, text: group.toUpperCase(), size: "xs", color: "muted", weight: "semibold", padding: 6 });
+      navigation.push(...entries.map((category): UiNode => ({ type: "choice", key: category.key, text: category.title, selected: active.key === category.key,
+        description: category.error ? "Needs attention" : undefined, action: "selectCategory", value: category.key })));
+    }
+    return { type: "modal", key: "settings-modal", title: "Settings", width: 960, closeAction: "close", children: [
       ...(error ? [{ type: "status", key: "error", text: error, level: "error" } as UiNode] : []),
-      { type: "row", key: "settings-content", height: 380, gap: 12, align: "stretch", children: [
-        { type: "column", key: "categories", width: 170, gap: 4, scroll: true, borderSide: "right", children: list.map(category => ({
-          type: "choice", key: category.key, text: category.title, selected: active.key === category.key,
-          description: category.error ? "Needs attention" : undefined, action: "selectCategory", value: category.key,
-        })) },
+      { type: "textInput", key: "settings-search", value: query, changeAction: "search", placeholder: "Search settings…" },
+      { type: "row", key: "settings-content", height: 520, gap: 12, align: "stretch", children: [
+        { type: "column", key: "categories", width: 200, gap: 4, scroll: true, borderSide: "right", children: navigation },
         { type: "column", key: `options:${active.key}`, gap: 10, grow: true, scroll: true, children: options },
       ] },
     ] };
   },
   async onEvent(ctx, event) {
+    if (event.action === "resetPreferences") {
+      const module = String(event.value || "");
+      if (providers.includes(module) && ctx.state.get<SettingsExport>(`${module}.settings`)?.resetLabel) ctx.events.emit("settings.reset", { module });
+      return;
+    }
+    if (event.action === "search") { query = String(event.value || ""); ctx.ui.invalidate(); return; }
+    if (event.action.startsWith("order:")) {
+      try {
+        const payload: any = event.value; if (!payload || typeof payload.field !== "string") return;
+        const [module, section, key] = JSON.parse(payload.field);
+        const field = categories(ctx).find(c => c.module === module && c.section?.key === section)?.section?.fields.find(f => f.key === key);
+        if (field?.type !== "order") return;
+        const items = parseOrder(field.value, field.items.map(i => i.id), field.allowSpacers), index = Number(payload.index);
+        const action = event.action.slice(6);
+        if (action === "add" && field.allowSpacers) items.push(SPACER_PREFIX + crypto.randomUUID());
+        else if (action === "remove" && items[index]?.startsWith(SPACER_PREFIX)) items.splice(index, 1);
+        else if (action === "up" && index > 0 && index < items.length) [items[index - 1], items[index]] = [items[index], items[index - 1]];
+        else if (action === "down" && index >= 0 && index + 1 < items.length) [items[index + 1], items[index]] = [items[index], items[index + 1]];
+        else return;
+        parseOrder(JSON.stringify(items), field.items.map(i => i.id), field.allowSpacers);
+        ctx.events.emit("settings.change", { module, section, key, value: JSON.stringify(items) });
+      } catch (e) { error = errMsg(e); ctx.ui.invalidate(); }
+      return;
+    }
     if (event.action === "close") { open = false; ctx.ui.invalidate(); return; }
     if (event.action === "plugin:toggle" && event.key.startsWith("enabled:")) { await togglePlugin(ctx, event.key.slice(8), !!event.value); return; }
     if (event.action.startsWith("plugin:")) { await pluginAction(ctx, event.action.slice(7), event.value); return; }

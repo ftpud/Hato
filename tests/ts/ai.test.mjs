@@ -38,6 +38,8 @@ test('chat auto-connects once and keeps secondary controls behind the cog', asyn
   const header = nodes.find(n => n.key === 'hdr');
   assert.deepEqual(header.children.slice(0, 3).map(n => n.key), ['provider-field', 'model-field', 'auto']);
   assert.equal(nodes.find(n => n.key === 'agent').label, undefined);
+  assert.equal(nodes.find(n => n.key === 'agent').height, 32);
+  assert.equal(nodes.find(n => n.key === 'agent').buttonStyle.height, nodes.find(n => n.key === 'cfg-model').style.height);
   assert.equal(nodes.find(n => n.key === 'cfg-model').label, undefined);
   assert.equal(header.children[2].type, 'switch');
   assert.ok(!nodes.some(n => n.key === 'policy'));
@@ -156,7 +158,8 @@ test('model picker searches advertised metadata, selects the right config and pr
   await mod.onEvent(ctx, { action: 'chooseModel', value: 'two', inputs: {} });
   assert.deepEqual(selected, { conversationId: 'picker', configId: 'agent-model', value: 'two' });
   assert.ok(!walk(mod.render()).some(n => n.key === 'model-picker'));
-  assert.deepEqual(mod.snapshot(), { draft: 'Keep my draft', attachments: [picture] });
+  assert.equal(mod.snapshot().draft, 'Keep my draft');
+  assert.deepEqual(mod.snapshot().attachments, [picture]);
   await mod.onEvent(ctx, { action: 'toggleSkills', inputs: {} });
   assert.ok(walk(mod.render()).some(n => n.key === 'skills-picker'));
 });
@@ -223,7 +226,7 @@ test('chat renders at most 20 cards, pages older messages and returns to latest 
   const walk = n => [n, ...(n.children || []).flatMap(walk)];
   const transcriptNode = () => walk(mod.render()).find(n => n.type === 'transcript');
   const transcript = () => { const t = transcriptNode(); return { ...t, messages: t.children.filter(c => c.key !== '__older') }; };
-  assert.equal(calls[0].args.messageLimit, 20);
+  assert.equal(calls.find(c => c.method === 'view').args.messageLimit, 20);
   assert.equal(transcript().messages.length, 20);
   assert.equal(transcript().messages[0].key, 'm181');
   assert.equal(transcript().loadOlderAction, 'revealOlder');
@@ -277,4 +280,39 @@ test('scroll history grows in batches, stays bounded to 60 and collapses to 20 a
   assert.equal(transcript().preserveScrollOnChange, false);
   assert.ok(transcript().scrollReset > 0);
   assert.equal(messages.length, 200);
+});
+
+test('chat composer divider restores workspace size and keeps draft across resizing and reload', async () => {
+  const mod = await load('modules/ui/ai/src/index.ts');
+  const view = { activeId: 'c', conversations: [{ id: 'c', title: 'Chat' }], profiles: [{ id: 'claude', provider: 'claude', name: 'Claude' }], workspace: { machineId: 'local', root: '/test' }, active: { conversation: { id: 'c', acpProfileId: 'claude' }, messages: [], live: { status: 'ready' } } };
+  const stored = new Map([['ws', 0.3], ['other', 0.2]]), watchers = new Map(), saved = [];
+  let workspace = { id: 'ws' };
+  const ctx = { state: { get: key => key === 'workspace.selected' ? workspace : null, watch: (key, fn) => watchers.set(key, fn) },
+    events: { on() {}, emit() {} }, ui: { invalidate() {} }, modules: { async call(_, method, args) {
+      if (method === 'view') return view;
+      if (method === 'view.get') return { ui: { aiComposerFraction: stored.get(args.workspaceId) } };
+      if (method === 'view.patch') { saved.push(args); stored.set(args.workspaceId, args.patch.ui.aiComposerFraction); }
+    } } };
+  const walk = n => [n, ...(n.children || []).flatMap(walk)];
+  const split = () => walk(mod.render()).find(n => n.key === 'chat-composer-split');
+  await mod.activate(ctx);
+  assert.deepEqual(split().sizes, [0.7, 0.3]);
+  assert.equal(split().resizeAction, 'resizeComposer');
+  const input = walk(mod.render()).find(n => n.key === 'prompt');
+  assert.equal(input.fillHeight, true);
+  await mod.onEvent(ctx, { action: 'draftChanged', value: 'Keep my draft', inputs: {} });
+  await mod.onEvent(ctx, { action: 'resizeComposer', value: { sizes: [0.6, 0.4] }, inputs: {} });
+  assert.deepEqual(split().sizes, [0.6, 0.4]);
+  assert.equal(walk(mod.render()).find(n => n.key === 'prompt').value, 'Keep my draft');
+  assert.equal(saved.at(-1).patch.ui.aiComposerFraction, 0.4);
+  const snapshot = mod.snapshot(); mod.deactivate();
+  await mod.activate(ctx, snapshot);
+  assert.equal(split().sizes[1], 0.4);
+  workspace = { id: 'other' }; watchers.get('workspace.selected')(workspace);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(split().sizes[1], 0.2);
+  const count = saved.length;
+  await mod.onEvent(ctx, { action: 'resizeComposer', value: { sizes: [NaN, 1] }, inputs: {} });
+  assert.equal(saved.length, count);
+  mod.deactivate();
 });

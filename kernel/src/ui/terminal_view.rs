@@ -15,6 +15,15 @@ use gpui_component::ActiveTheme;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
+pub(super) fn init(cx: &mut App) {
+    // Root binds these keys to focus traversal before on_key_down runs. Let the
+    // terminal's byte encoder receive them instead, including reverse Tab.
+    cx.bind_keys([
+        KeyBinding::new("tab", NoAction, Some("Terminal")),
+        KeyBinding::new("shift-tab", NoAction, Some("Terminal")),
+    ]);
+}
+
 pub struct TerminalView {
     pub session: Arc<PtySession>,
     focus: FocusHandle,
@@ -351,6 +360,7 @@ impl Render for TerminalView {
         let link_cursor = self.hover_link.is_some();
         let root = div()
             .id("terminal")
+            .key_context("Terminal")
             .track_focus(&self.focus)
             .size_full()
             .bg(default_bg);

@@ -30,7 +30,22 @@ are in `sdk/types.ts`.
 `either`; the remote-runtime service automatically pushes enabled workspace service plugins.
 `contributes` is module-interpreted data. See `sdk/plugins.ts` for panel, sidebar and overlay
 schemas, and built-in UI manifests for examples. Panels describe their title, dock and activity
-button. A provider of `shell.root` supplies the window composition; Settings can select an override.
+button. Settings → Side panels lets the user hide or place each button at left top, left bottom,
+right top or right bottom; choices override plugin defaults and persist in `activity-sidebar.v1`.
+Settings → Sidebar order & spacers supports reordering each sidebar group and inserting/removing
+fixed-height gaps; choices persist in `sidebar-order.v1`. Settings supports a reusable `order`
+field (JSON array of allowed item IDs plus optional spacer IDs), validated before owner edits.
+The searchable, grouped settings UI renders table-layout sections with module-supplied controls.
+Tables & lists configures density, alternating backgrounds and dividers; Bars & panel controls
+exposes sidebar/bar/header visibility. Table choices persist in `ui-tables.v1` and are passed to
+the native renderer as generic `theme.controls` data, with explicit panel row sizes taking priority.
+
+Settings → Panel sharing assigns panels to shared spaces (`panel-sharing.v1`): opening a member
+replaces the visible member in its existing dock slot or window geometry, preserving module state
+and kernel resources. Source-file selection reveals Source viewer if another panel occupies its
+shared space. Independent panels keep their separate placement.
+
+A provider of `shell.root` supplies the window composition; Settings can select an override.
 
 ## Lifecycle and permissions
 
@@ -90,6 +105,9 @@ UI plugins return generic nodes defined in `sdk/types.ts`. Compose panels using 
 layout, SVGs, geometry and style as data. `style` supports theme tokens or hex colors, padding,
 size, typography, justification, borders, positioning and shadows. A `theme` node selects mode,
 terminal palette and chrome. Use built-in UI modules for complete examples.
+
+Native `window` nodes accept `titlebar: false`; a dedicated row with `windowDrag: true` supplies
+a drag handle without native titlebar chrome. Keep close/move controls in the UI module.
 
 `sdk/ui-icons.ts`, `sdk/chat-style.ts`, `sdk/chat-transcript.ts` and `sdk/activity-sidebar.ts`
 provide reusable TypeScript presentation helpers. The native `transcript` node handles scrolling;

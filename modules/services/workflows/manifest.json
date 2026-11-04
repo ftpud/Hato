@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 2,
+  "id": "workflows",
+  "name": "Workflows",
+  "kind": "service",
+  "entry": "src/index.ts",
+  "moduleApiVersion": 1,
+  "dependencies": [
+    "workspace",
+    "persistence",
+    "persistent-agents",
+    "workflow-runner"
+  ],
+  "capabilities": [
+    "remote.daemon",
+    "ssh.connect"
+  ],
+  "calls": [
+    "workspace",
+    "persistence",
+    "persistent-agents"
+  ],
+  "provides": [
+    "workflows"
+  ],
+  "runsOn": "ui",
+  "stateVersion": 1,
+  "description": "Desktop gateway for visual workflows: installs the daemon workflow runtime, resolves providers, routes designer requests and contributes workflow self-configuration MCP commands."
+}

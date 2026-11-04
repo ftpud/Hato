@@ -39,7 +39,7 @@ test("float / detach / hide / back to bottom keep a single location", () => {
   l = M.moveTo(l, "ai", "detached");
   assert.ok(l.detached.ai && !l.floating.ai);
   l = M.moveTo(l, "ai", "hidden");
-  assert.deepEqual(l.hidden, ["agents", "git-changes", "git", "mcps", "remote", "ai"]); // git and remote are hidden by default
+  assert.deepEqual(l.hidden, ["agents", "git-changes", "git", "mcps", "remote", "workflows", "ai"]); // git and remote are hidden by default
   l = M.moveTo(l, "ai", "bottom");
   assert.deepEqual(l.bottom.panels, ["terminal", "ai"]);
   assert.deepEqual(all(l), Object.keys(M.PANELS).sort());
@@ -47,10 +47,10 @@ test("float / detach / hide / back to bottom keep a single location", () => {
 
 test("bar items move between bars and reorder", () => {
   let l = M.moveBarItem(M.defaultLayout(), "versions", "top", "workspace");
-  assert.deepEqual(l.bars.top.items, ["title", "versions", "workspace", "layoutMenu", "modules", "settings"]);
+  assert.deepEqual(l.bars.top.items, ["title", "versions", "workspace", "toolbarGap", "layoutMenu", "settings"]);
   assert.ok(!l.bars.bottom.items.includes("versions"));
   l = M.moveBarItem(l, "title", "bottom", "approvals", true);
-  assert.deepEqual(l.bars.bottom.items, ["machine", "approvals", "title"]);
+  assert.deepEqual(l.bars.bottom.items, ["machine", "toolbarSpace", "approvals", "title", "modules"]);
   l = M.removeBarItem(l, "title");
   assert.ok(![...l.bars.top.items, ...l.bars.bottom.items].includes("title"));
 });
@@ -114,7 +114,7 @@ test("collapsed panes use full-name restore buttons without reserving columns or
 test('new default-hidden panels stay hidden in older saved layouts instead of docking', () => {
   const saved = { v: 1, columns: [{ panels: ['projects', 'files', 'viewer', 'ai'], size: 1, sizes: [0.25, 0.25, 0.25, 0.25] }], bottom: { panels: ['terminal'], sizes: [1], collapsed: false }, hidden: [] };
   const l = M.repair(saved);
-  assert.deepEqual(l.hidden, ['agents', 'git-changes', 'git', 'mcps', 'remote']);
+  assert.deepEqual(l.hidden, ['agents', 'git-changes', 'git', 'mcps', 'remote', 'workflows']);
   assert.ok(!l.columns.some((c) => c.panels.includes('git')));
   const shown = M.dropPanel(l, 'git', 'files', 'bottom');
   assert.deepEqual(shown.columns[0].panels.slice(0, 3), ['projects', 'files', 'git']);
@@ -153,4 +153,11 @@ test('anime appearance restores preferences and switches without changing panel 
   assert.ok(mod.render().backgroundImage.data.length > 1000);
   assert.equal(JSON.stringify(mod.methods.getLayout()), original);
   mod.deactivate();
+});
+
+ test("repair restores the top bar from disabled persisted layouts", () => {
+  const saved = M.defaultLayout(); saved.bars.top.visible = false; saved.bars.bottom.visible = false;
+  const repaired = M.repair(saved);
+  assert.equal(repaired.bars.top.visible, true);
+  assert.equal(repaired.bars.bottom.visible, false);
 });

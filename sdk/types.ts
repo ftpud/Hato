@@ -259,11 +259,19 @@ export interface UiStyle {
   justify?: "start" | "center" | "end" | "between"; shadow?: "sm" | "md" | "lg"; opacity?: number;
   /** "relative" makes this box the positioning parent of popovers inside it. */ position?: "relative";
 }
-interface Base { style?: UiStyle; key: string; grow?: boolean; width?: number; height?: number; /** Cap height (px); the node may shrink below it and should scroll. */ maxHeight?: number; minWidth?: number; padding?: number; gap?: number; bg?: "panel" | "muted" | "accent" | "none"; border?: boolean; borderSide?: "left" | "right"; tooltip?: string }
+interface Base { /** Drag this region to move its native window. Use a dedicated noninteractive handle. */ windowDrag?: boolean; style?: UiStyle; key: string; grow?: boolean; width?: number; height?: number; /** Cap height (px); the node may shrink below it and should scroll. */ maxHeight?: number; minWidth?: number; padding?: number; gap?: number; bg?: "panel" | "muted" | "accent" | "none"; border?: boolean; borderSide?: "left" | "right"; tooltip?: string }
+/** A canvas item: fixed box with ordinary child nodes. `port` shows a connection handle on its right edge. */
+export interface CanvasItem { key: string; x: number; y: number; width: number; height: number; port?: boolean; style?: UiStyle;
+  /** Breathing glow ring in this color (e.g. a running step). */ pulse?: UiColor; children: UiNode[] }
+/** A painted connector between two canvas item keys. Sides default to right → left. */
+export interface CanvasEdge { key: string; from: string; to: string; fromSide?: "left" | "right" | "top" | "bottom"; toSide?: "left" | "right" | "top" | "bottom";
+  /** Optional Bezier handle length in canvas pixels; compact graphs can use shorter curves. */ curveOffset?: number;
+  color?: UiColor; width?: number; dashed?: boolean; arrow?: boolean; label?: string;
+  /** A spark travels along the connection (e.g. data in flight). */ active?: boolean; sparkColor?: UiColor }
 export type UiNode =
   /** Window-wide theme (normally from the root plugin). `mode` is the appearance preference;
    *  `terminal` overrides the 16 ANSI colors; `chrome` configures kernel chrome such as toasts. */
-  | (Base & { type: "theme"; palette: { light: Record<string, string>; dark: Record<string, string> }; mode?: "light" | "dark";
+  | (Base & { type: "theme"; controls?: { listRowHeight?: number; stripedRows?: boolean; rowDividers?: boolean }; palette: { light: Record<string, string>; dark: Record<string, string> }; mode?: "light" | "dark";
       typography?: { fontFamily?: string; monoFontFamily?: string; fontSize?: number; monoFontSize?: number; fontWeight?: number };
       terminal?: { light?: string[]; dark?: string[] };
       chrome?: { toasts?: { position?: "bottom-right" | "bottom-left" | "top-right" | "top-left"; width?: number; durationMs?: number; max?: number } } })
@@ -276,18 +284,26 @@ export type UiNode =
   /** Native drag source. A click (no movement) fires clickAction with `payload`. */
   | (Base & { type: "dragHandle"; payload: Json; label?: string; clickAction?: string; children?: UiNode[] })
   /** Native drop target; on drop fires `action` with {payload, region, zone}. */
+  /** Scrollable surface of absolutely positioned items (content px) joined by painted connectors.
+   *  Native code moves items and drags new connections; one event fires when a gesture ends:
+   *  `moveAction` {key,x,y}; `selectAction` {key} (click without moving); `connectAction` {from,to}
+   *  from an item's port onto another item ({from,to:null,x,y} on empty space); `edgeAction` {key}
+   *  from an edge label chip; `clickAction` {x,y} on empty space. `grid` draws guide lines (px).
+   *  Without `moveAction` the canvas is a read-only view (clicks still select); `height` fixes its size. */
+  | (Base & { type: "canvas"; items: CanvasItem[]; edges?: CanvasEdge[]; contentWidth?: number; contentHeight?: number; grid?: number; /** Space past the last item (px, default 240). */ margin?: number;
+      moveAction?: string; selectAction?: string; connectAction?: string; edgeAction?: string; clickAction?: string })
   | (Base & { type: "dropZone"; action: string; regions?: ("left" | "right" | "top" | "bottom" | "center")[]; children: UiNode[] })
   /** Panel floating inside the main window; native move/resize; fires moveAction {x,y,width,height}. */
   | (Base & { type: "floating"; x: number; y: number; width: number; height: number; title?: string; moveAction?: string; children: UiNode[] })
   /** A real OS window rendering `children`; closing it fires closeAction {width,height}. */
-  | (Base & { type: "window"; title?: string; width?: number; height?: number; closeAction?: string; children: UiNode[] })
+  | (Base & { type: "window"; /** Set false to omit native titlebar chrome. */ titlebar?: boolean; title?: string; width?: number; height?: number; closeAction?: string; children: UiNode[] })
   | (Base & { type: "scroll"; children: UiNode[] })
   | (Base & { type: "tabs"; tabs: { key: string; label: string }[]; active: string; action: string; children: UiNode[] })
   | (Base & { type: "slot"; module: string })
   | (Base & { type: "label"; text: string; size?: "xs" | "sm" | "md" | "lg"; weight?: "normal" | "medium" | "semibold" | "bold"; /** "default" or any UiColor. */ color?: UiColor; mono?: boolean; wrap?: boolean; /** Let the user select and copy the text. */ selectable?: boolean })
   | (Base & { type: "button"; text: string; /** Inline SVG drawing, bundled and hot reloaded with the module (see sdk/ui-icons.ts). */ iconSvg?: string; iconSize?: number; action: string; variant?: "primary" | "ghost" | "danger" | "default"; disabled?: boolean; value?: Json; small?: boolean;
       /** Copied to the clipboard natively on click (no round trip); `action` may be "". */ copyText?: string })
-  | (Base & { type: "textInput"; placeholder?: string; value?: string; submitAction?: string; changeAction?: string; /** Inline SVG shown before single-line input text. */ prefixSvg?: string; pasteImageAction?: string; /** Limits for pasted pictures. */ maxFiles?: number; maxBytes?: number; secret?: boolean; multiline?: boolean; rows?: number; rowHeight?: number; disabled?: boolean })
+  | (Base & { type: "textInput"; placeholder?: string; value?: string; submitAction?: string; changeAction?: string; /** Inline SVG shown before single-line input text. */ prefixSvg?: string; pasteImageAction?: string; /** Limits for pasted pictures. */ maxFiles?: number; maxBytes?: number; secret?: boolean; multiline?: boolean; /** Fill the available height instead of using a fixed row count. */ fillHeight?: boolean; rows?: number; rowHeight?: number; disabled?: boolean })
   | (Base & { type: "select"; options: { value: string; label: string; disabled?: boolean }[]; value: string | null; action: string; disabled?: boolean; placeholder?: string; label?: string; disabledReason?: string; /** Style of the dropdown button itself (`style` styles its wrapper). */ buttonStyle?: UiStyle })
   | (Base & { type: "choice"; text: string; description?: string; selected?: boolean; action: string; value: string; /** Glyph shown when selected (default ✓). */ mark?: string })
   | (Base & { type: "switch"; label: string; checked: boolean; action: string; disabled?: boolean; /** Track color when on. */ accent?: UiColor })
@@ -323,6 +339,7 @@ export interface ChatMessage { images?: ImageAttachment[]; key: string; role: "u
 /** Published at <moduleId>.settings; only the owning module can write it. */
 export type SettingField =
   | { key: string; label: string; description?: string; type: "toggle"; value: boolean }
-  | { key: string; label: string; description?: string; type: "select"; value: string; options: { value: string; label: string }[] };
-export interface SettingsSection { key: string; title: string; description?: string; fields: SettingField[] }
-export interface SettingsExport { sections: SettingsSection[]; error: string | null }
+  | { key: string; label: string; description?: string; type: "select"; value: string; options: { value: string; label: string }[] }
+  | { key: string; label: string; description?: string; type: "order"; value: string; items: { id: string; label: string }[]; allowSpacers?: boolean };
+export interface SettingsSection { key: string; title: string; group?: string; layout?: "table"; description?: string; fields: SettingField[] }
+export interface SettingsExport { sections: SettingsSection[]; error: string | null; resetLabel?: string }

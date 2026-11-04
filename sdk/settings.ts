@@ -1,3 +1,4 @@
+import { parseOrder } from "./settings-order";
 import type { ModuleContext, SettingsExport, SettingsSection } from "./types";
 
 /** Publish settings and handle edits without giving the menu access to provider internals.
@@ -8,10 +9,10 @@ export function exportSettings(
   ctx: ModuleContext,
   getSections: () => SettingsSection[],
   onChange: (section: string, key: string, value: boolean | string) => Promise<void> | void,
-  options: { invalidate?: boolean } = {},
+  options: { invalidate?: boolean; reset?: { label: string; run: () => Promise<void> | void } } = {},
 ) {
   const publish = (error: string | null = null) => {
-    const value: SettingsExport = { sections: getSections(), error };
+    const value: SettingsExport = { sections: getSections(), error, ...(options.reset ? { resetLabel: options.reset.label } : {}) };
     ctx.state.set(`${ctx.moduleId}.settings`, value);
   };
   let queue = Promise.resolve();
@@ -22,13 +23,22 @@ export function exportSettings(
         const section = getSections().find((s) => s.key === edit.section);
         const field = section?.fields.find((f) => f.key === edit.key);
         if (!field) throw new Error("Setting is no longer available");
-        if (field.type === "toggle" ? typeof edit.value !== "boolean" :
+        if (field.type === "order") parseOrder(edit.value, field.items.map(i => i.id), field.allowSpacers);
+        else if (field.type === "toggle" ? typeof edit.value !== "boolean" :
           typeof edit.value !== "string" || !field.options.some((o) => o.value === edit.value)) {
           throw new Error("Invalid setting value");
         }
         await onChange(section!.key, field.key, edit.value);
         publish();
       } catch (e) { publish(e instanceof Error ? e.message : String(e)); }
+      if (options.invalidate !== false) ctx.ui.invalidate();
+    });
+  });
+  if (options.reset) ctx.events.on("settings.reset", (event: any) => {
+    if (event?.module !== ctx.moduleId || !options.reset) return;
+    queue = queue.then(async () => {
+      try { await options.reset!.run(); publish(); }
+      catch (e) { publish(e instanceof Error ? e.message : String(e)); }
       if (options.invalidate !== false) ctx.ui.invalidate();
     });
   });

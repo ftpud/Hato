@@ -17,3 +17,12 @@ test('non-file and out-of-root links are rejected', () => {
   for (const href of ['#anchor', 'https://x.dev', 'vscode://file/x', '/etc/passwd', '../../outside.md', 'file:///tmp/x', '', '~/x']) assert.equal(r(href, root), null, href);
   assert.equal(r('a.md', null), null);
 });
+
+test('file links handle line suffixes, filesystem roots and remote authorities', () => {
+  assert.equal(r('index.ts:12:3', root), 'index.ts');
+  assert.equal(r('index.ts:12#section', root), 'index.ts');
+  assert.equal(r('/etc/hosts', '/'), 'etc/hosts');
+  assert.equal(r('etc/hosts', '/'), 'etc/hosts');
+  assert.equal(r('file://remote/Users/me/proj/x.ts', root), null);
+  assert.equal(r('x.ts', 'relative/root'), null);
+});

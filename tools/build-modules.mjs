@@ -35,12 +35,19 @@ async function buildOne(m) {
   const file = path.join(out, `${m.id}.mjs`);
   const prev = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : null;
   if (prev !== code) fs.writeFileSync(file, code);
-  return { id: m.id, bytes: code.length, changed: prev !== code };
+  return { id: m.id, bytes: Buffer.byteLength(code, "utf8"), changed: prev !== code };
 }
 
 const watch = process.argv.includes("--watch");
 const only = process.argv.filter((a) => !a.startsWith("--")).slice(2);
-const mods = discover().filter((m) => only.length === 0 || only.includes(m.id));
+const discovered = discover();
+const unknown = only.filter(id => !discovered.some(m => m.id === id));
+if (unknown.length) {
+  console.error(`Unknown module(s): ${unknown.join(", ")}`);
+  process.exit(1);
+}
+const selected = () => discover().filter(m => only.length === 0 || only.includes(m.id));
+const mods = discovered.filter(m => only.length === 0 || only.includes(m.id));
 let failed = 0;
 for (const m of mods) {
   try {
@@ -54,7 +61,29 @@ for (const m of mods) {
 if (watch) {
   console.log("watching modules/ and sdk/ for changes (rebuilds seeds; the running kernel only picks them up with --dev-watch)…");
   let timer = null;
-  const rebuild = () => { clearTimeout(timer); timer = setTimeout(async () => { for (const m of discover()) { try { const r = await buildOne(m); if (r.changed) console.log(`rebuilt ${m.id}`); } catch (e) { console.error(`FAILED ${m.id}: ${e.message}`); } } }, 150); };
+  let building = false;
+  let dirty = false;
+  const drain = async () => {
+    if (building) return;
+    building = true;
+    try {
+      while (dirty) {
+        dirty = false;
+        try {
+          for (const m of selected()) {
+            try {
+              const r = await buildOne(m);
+              if (r.changed) console.log(`rebuilt ${m.id}`);
+            } catch (e) { console.error(`FAILED ${m.id}: ${e.message}`); }
+          }
+        } catch (e) { console.error(`FAILED discovery: ${e.message}`); }
+      }
+    } finally { building = false; }
+  };
+  const rebuild = () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => { dirty = true; void drain(); }, 150);
+  };
   fs.watch(path.join(root, "modules"), { recursive: true }, rebuild);
   fs.watch(path.join(root, "sdk"), { recursive: true }, rebuild);
 } else if (failed) {

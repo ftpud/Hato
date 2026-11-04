@@ -77,7 +77,7 @@ const mod: AppModule = {
     async "view.patch"(ctx, a) {
       const v = await ctx.modules.call("persistence", "views.patch", { workspaceId: a.workspaceId, patch: a.patch });
       if (a.workspaceId === selectedId) await publish(ctx);
-      ctx.events.emit("workspace.viewChanged", { workspaceId: a.workspaceId });
+      ctx.events.emit("workspace.viewChanged", { workspaceId: a.workspaceId, changed: Object.keys(a.patch || {}), previewPath: a.patch?.previewPath });
       return v;
     },
     async refresh(ctx) { await publish(ctx); return null; },

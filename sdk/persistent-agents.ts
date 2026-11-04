@@ -3,7 +3,7 @@ export interface AgentProfile { id: string; provider: string; name: string; exec
 export interface AgentMcp { enabled?: boolean; id: string; name: string; command: string; args: string[]; env: {name:string; value:string}[] }
 export interface AgentSpec {
   id: string; name: string; workspaceId: string; workspaceName: string; root: string; machineId: string;
-  profile: AgentProfile; model: string; agentFile: string | null; skills: string[]; mcps: AgentMcp[];
+  profile: AgentProfile; model: string; reasoning?: string; agentFile: string | null; skills: string[]; mcps: AgentMcp[];
   claudeSubscription: boolean; workspaceMcp?: boolean; daemon?: {bin:string;dir:string};
   /** Approve the agent's tool permissions (allow-once) without asking, also while the desktop is closed. */
   autopilot?: boolean;

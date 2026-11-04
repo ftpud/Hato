@@ -2,6 +2,7 @@
 // in hatod, so protocol requests, permissions and history survive desktop disconnection.
 import type { AppModule, ModuleContext, Handle, ChatMessage, StreamSubscription } from "../../../../sdk/types";
 import { JsonRpcPeer, errMsg, rpcError } from "../../../../sdk/runtime";
+import { advertisedChoices } from "../../../../sdk/workflow-provider-options";
 import { modelChoices, relativeAgentPath, type AgentSpec, type AgentSession, type AgentPermission } from "../../../../sdk/persistent-agents";
 
 interface Live {
@@ -172,6 +173,12 @@ async function start(ctx:ModuleContext,s:AgentSession) {
       if(!choice)throw new Error(`Provider does not advertise model ${s.model}`);
       await config(ctx,c,choice.configId,choice.id);
     }
+    if(s.reasoning) {
+      const choices=advertisedChoices(s);
+      if(!choices.reasoningId||!choices.reasoning.some(o=>o.value===s.reasoning))throw new Error(`Provider does not advertise reasoning ${s.reasoning} for this model`);
+      const configured=await request(c,"session/set_config_option",{sessionId:s.sessionId,configId:choices.reasoningId,value:s.reasoning});
+      if(configured.configOptions)s.configOptions=configured.configOptions;
+    }
     await persist(ctx,s); return c;
   } catch(e) {
     if(c) { await stop(ctx,s.id); }
@@ -216,7 +223,7 @@ const mod:AppModule={
   },
   canSwap:()=>({ok:live.size===0,reason:"Stop persistent agents before replacing their runtime"}),
   methods:{
-    health:()=>({ok:true}),
+    health:()=>({ok:true,reasoning:true,connected:live.size}),
     async fork(ctx,a,meta) {
       if(!["internal-remote-mcp","daemon-client"].includes(meta.caller))throw new Error("Only workspace controllers can create child agents");
       const parent=session(a.parentId);
@@ -324,7 +331,7 @@ const mod:AppModule={
       s.name=name;
       if(configChanged) {
         Object.assign(s,{profile:p.profile,model:String(p.model||""),agentFile:p.agentFile||null,skills:p.skills,mcps:p.mcps,workspaceMcp:!!p.workspaceMcp,contextSent:false});
-        if(newProvider){s.sessionId=null;s.configOptions=[];s.models=null;}
+        if(newProvider){s.sessionId=null;s.configOptions=[];s.models=null;s.reasoning="";}
       }
       await persist(ctx,s);
       if(configChanged&&wasLive)await start(ctx,s);
