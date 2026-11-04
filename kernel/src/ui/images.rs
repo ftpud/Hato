@@ -105,7 +105,9 @@ fn background_bounds(container: gpui_kit::Bounds<gpui_kit::Pixels>, dimensions: 
     let (cw, ch) = (container.size.width.as_f32(), container.size.height.as_f32());
     let factor = number("width").map(|w| w.clamp(16.0, 8192.0) / iw).unwrap_or_else(|| (cw / iw).max(ch / ih)) * scale;
     let (width, height) = (iw * factor, ih * factor);
-    Bounds { origin: container.origin + point(px((cw - width) / 2.0 + cw * offset_x), px((ch - height) / 2.0)), size: size(px(width), px(height)) }
+    let left = number("left").map(|v| v.clamp(-8192.0, 8192.0)).unwrap_or((cw - width) / 2.0 + cw * offset_x);
+    let top = number("top").map(|v| v.clamp(-8192.0, 8192.0)).unwrap_or((ch - height) / 2.0);
+    Bounds { origin: container.origin + point(px(left), px(top)), size: size(px(width), px(height)) }
 }
 
 /// Lay out the full artwork at its real aspect ratio. `img(Cover)` in a shifted panel-sized
@@ -183,6 +185,23 @@ mod tests {
         assert_eq!(short.origin.x, tall.origin.x);
         let wide = background_bounds(bounds(400.0), (1280, 640), &style);
         assert_eq!(wide.size, size(px(640.0), px(320.0)));
+    }
+
+    #[test]
+    fn top_left_background_stays_fixed_when_panel_resizes_or_moves() {
+        use gpui_kit::{point, px, size, Bounds};
+        let style = json!({"width": 800, "left": -350, "top": 0});
+        let bounds = |width, height| Bounds { origin: point(px(20.0), px(30.0)), size: size(px(width), px(height)) };
+        let original = background_bounds(bounds(250.0, 800.0), (1280, 1280), &style);
+        assert_eq!(original.origin, point(px(-330.0), px(30.0)));
+        assert_eq!(original.size, size(px(800.0), px(800.0)));
+        for resized in [bounds(500.0, 800.0), bounds(250.0, 400.0), bounds(700.0, 1200.0)] {
+            assert_eq!(background_bounds(resized, (1280, 1280), &style), original);
+        }
+        let moved = Bounds { origin: point(px(100.0), px(150.0)), ..bounds(250.0, 800.0) };
+        let artwork = background_bounds(moved, (1280, 1280), &style);
+        assert_eq!(artwork.origin - moved.origin, original.origin - bounds(250.0, 800.0).origin);
+        assert_eq!(artwork.size, original.size);
     }
     #[test]
     fn converts_native_clipboard_bitmaps_to_png() {

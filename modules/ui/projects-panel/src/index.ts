@@ -166,7 +166,7 @@ const mod: AppModule = {
       ] });
     }
     return { type: "column", key: "projects-root", gap: 4, padding: 6, grow: true,
-      ...(backgroundOpacity > 0 ? { backgroundImage: projectsBranding, backgroundImageStyle: { opacity: backgroundOpacity, width: 640, offsetX: -0.35 } } : {}), children };
+      ...(backgroundOpacity > 0 ? { backgroundImage: projectsBranding, backgroundImageStyle: { opacity: backgroundOpacity, width: 800, left: -350, top: 0 } } : {}), children };
   },
   async onEvent(ctx, ev) {
     const run = async (label: string, fn: () => Promise<any>) => {
