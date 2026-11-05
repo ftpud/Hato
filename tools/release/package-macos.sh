@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Run after building desktop modules and downloading both Linux daemon artifacts.
 set -euo pipefail
-: "${RELEASE_VERSION:?}" "${NUMERIC_VERSION:?}" "${MACOS_ARCH:?}" "${SIGNING_IDENTITY:?}"
+: "${RELEASE_VERSION:?}" "${NUMERIC_VERSION:?}" "${MACOS_ARCH:?}" "${SIGNING_IDENTITY:?}" "${SIGNING_KEYCHAIN:?}"
 app="$PWD/dist/Hato.app"
 contents="$app/Contents"
+# Recreate generated staging directories on persistent runners.
+rm -rf "$app" "$PWD/dist/image"
 mkdir -p "$contents/MacOS" "$contents/Resources" "$contents/build" "$contents/node_modules/@esbuild"
 bash tools/release/build-icon.sh assets/hato-icon.png "$contents/Resources/Hato.icns"
 cp target/release/hato "$contents/MacOS/hato"
@@ -29,9 +31,9 @@ done
 /usr/libexec/PlistBuddy -c "Add :CFBundleShortVersionString string $NUMERIC_VERSION" "$contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string $GITHUB_RUN_NUMBER" "$contents/Info.plist"
 /usr/libexec/PlistBuddy -c 'Add :NSHighResolutionCapable bool true' "$contents/Info.plist"
-codesign --force --options runtime --timestamp --sign "$SIGNING_IDENTITY" "$contents/node_modules/@esbuild/darwin-$MACOS_ARCH/bin/esbuild"
-codesign --force --options runtime --timestamp --sign "$SIGNING_IDENTITY" "$contents/MacOS/hato"
-codesign --force --options runtime --timestamp --sign "$SIGNING_IDENTITY" "$app"
+codesign --keychain "$SIGNING_KEYCHAIN" --force --options runtime --timestamp --sign "$SIGNING_IDENTITY" "$contents/node_modules/@esbuild/darwin-$MACOS_ARCH/bin/esbuild"
+codesign --keychain "$SIGNING_KEYCHAIN" --force --options runtime --timestamp --sign "$SIGNING_IDENTITY" "$contents/MacOS/hato"
+codesign --keychain "$SIGNING_KEYCHAIN" --force --options runtime --timestamp --sign "$SIGNING_IDENTITY" "$app"
 codesign --verify --deep --strict --verbose=2 "$app"
 # Exercise packaged path discovery outside the checkout.
 (cd /private/tmp && HATO_RUNTIME_HOME="$RUNNER_TEMP/hato-runtimes" "$contents/MacOS/hato-launcher" --headless --data-dir "$RUNNER_TEMP/hato-smoke" --headless-script "$GITHUB_WORKSPACE/tools/release/smoke.js")
@@ -40,7 +42,7 @@ mv "$app" dist/image/
 ln -s /Applications dist/image/Applications
 dmg="$PWD/dist/Hato-$RELEASE_VERSION-macos-$MACOS_ARCH.dmg"
 hdiutil create -volname Hato -srcfolder dist/image -ov -format UDZO "$dmg"
-codesign --timestamp --sign "$SIGNING_IDENTITY" "$dmg"
+codesign --keychain "$SIGNING_KEYCHAIN" --timestamp --sign "$SIGNING_IDENTITY" "$dmg"
 xcrun notarytool submit "$dmg" --key "$NOTARY_KEY_PATH" --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER_ID" --wait --timeout 45m
 xcrun stapler staple "$dmg"
 xcrun stapler validate "$dmg"

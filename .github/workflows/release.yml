@@ -69,7 +69,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: macos-15
+          - runner: [self-hosted, macOS, ARM64, hato-local]
             arch: arm64
     runs-on: ${{ matrix.runner }}
     env:
@@ -77,6 +77,7 @@ jobs:
       NUMERIC_VERSION: ${{ needs.version.outputs.numeric }}
       MACOS_ARCH: ${{ matrix.arch }}
       MACOSX_DEPLOYMENT_TARGET: '12.0'
+      SIGNING_KEYCHAIN: ${{ runner.temp }}/signing.keychain-db
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -116,7 +117,6 @@ jobs:
           security unlock-keychain -p "$password" "$keychain"
           security import "$RUNNER_TEMP/certificate.p12" -k "$keychain" -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$password" "$keychain"
-          security list-keychains -d user -s "$keychain" login.keychain-db
       - name: Package, sign, and notarize DMG
         env:
           SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
