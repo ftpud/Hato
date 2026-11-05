@@ -257,7 +257,11 @@ const mod: AppModule = {
     list: (ctx) => ctx.host.modules.list(),
     describe: async (ctx, a) => {
       const d: any = await ctx.host.modules.describe(String(a.id));
-      return { ...d, lastBuild: lastBuild.get(String(a.id)) || null };
+      const env = ctx.host.env.info();
+      const source = await ctx.host.modules.sourceInfo();
+      return { ...d, runtime: { repoRoot: env.repoRoot, modulesRoot: source.modulesRoot, buildTool: source.buildTool,
+        pluginsDir: `${env.dataDir}/plugins`, artifactsDir: `${env.dataDir}/artifacts`, dataDir: env.dataDir },
+        lastBuild: lastBuild.get(String(a.id)) || null };
     },
     logs: (ctx, a) => ctx.host.modules.logs(String(a.id), Number(a.limit) || 100),
 

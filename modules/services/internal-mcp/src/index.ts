@@ -7,6 +7,7 @@
 import { McpRegistry } from "./registry";
 import type { AppModule, Handle, ModuleContext } from "../../../../sdk/types";
 import { errMsg, JsonRpcPeer, rpcError, sshConnect, type WorkspaceDescriptor } from "../../../../sdk/runtime";
+import skSelfConfigure from "../skills/self-configure.md";
 import skInspect from "../skills/inspect-module.md";
 import skPatch from "../skills/patch-module.md";
 import skBuild from "../skills/build-and-test-module.md";
@@ -16,7 +17,7 @@ import skRollback from "../skills/rollback-module.md";
 const SERVER_VERSION = "1.0.0";
 const PROXY_VERSION = "v1";
 const SUPPORTED_PROTOCOLS = ["2025-06-18", "2025-03-26", "2024-11-05"];
-const SKILLS: Record<string, string> = { "inspect-module": skInspect, "patch-module": skPatch, "build-and-test-module": skBuild, "activate-and-verify": skActivate, "rollback-module": skRollback };
+const SKILLS: Record<string, string> = { "self-configure": skSelfConfigure, "inspect-module": skInspect, "patch-module": skPatch, "build-and-test-module": skBuild, "activate-and-verify": skActivate, "rollback-module": skRollback };
 
 export const PROXY_SOURCE = `#!/usr/bin/env node
 // hato-mcp-proxy ${PROXY_VERSION}: forwards newline-delimited MCP JSON-RPC between stdio and a loopback
@@ -47,8 +48,8 @@ let localProxyPath: string | null = null;
 let stats = { connections: 0, toolCalls: 0, authFailures: 0 };
 
 const TOOLS = [
-  { name: "modules_list", title: "modules.list", description: "List Hato application modules with active/staged generations, versions and health.", inputSchema: { type: "object", properties: {}, additionalProperties: false }, annotations: { readOnlyHint: true } },
-  { name: "modules_describe", title: "modules.describe", description: "Describe one module: static manifest, capabilities, dependencies, source dir, diagnostics, last build.", inputSchema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] }, annotations: { readOnlyHint: true } },
+  { name: "modules_list", title: "modules.list", description: "List Hato application modules, active builds, imported seed (bundled baseline), saved build origins and health. Local module build numbers are not app release versions.", inputSchema: { type: "object", properties: {}, additionalProperties: false }, annotations: { readOnlyHint: true } },
+  { name: "modules_describe", title: "modules.describe", description: "Describe one module: static manifest, capabilities, dependencies, source directory, exact runtime/build-tool/storage paths, saved versions and their origins, diagnostics, last build. Inspect before editing; the running app may use a different source tree from the workspace checkout.", inputSchema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] }, annotations: { readOnlyHint: true } },
   { name: "modules_read_source", title: "modules.read_source", description: "Read allowlisted module source. Without `path` lists files; with `path` (module-relative, e.g. src/index.ts) returns its text.", inputSchema: { type: "object", properties: { id: { type: "string" }, path: { type: "string" } }, required: ["id"] }, annotations: { readOnlyHint: true } },
   { name: "modules_apply_patch", title: "modules.apply_patch", description: "Apply a change to a module's source (unified diff in `patch`, or `edits` [{path, oldText, newText}], or `path`+`content`). Requires explicit native user approval of the exact diff; a backup is kept.", inputSchema: { type: "object", properties: { id: { type: "string" }, patch: { type: "string" }, edits: { type: "array", items: { type: "object", properties: { path: { type: "string" }, oldText: { type: "string" }, newText: { type: "string" } }, required: ["path", "oldText", "newText"] } }, path: { type: "string" }, content: { type: "string" }, reason: { type: "string" } }, required: ["id"] }, annotations: { destructiveHint: true } },
   { name: "modules_build", title: "modules.build", description: "Build a module with esbuild into a new versioned artifact and stage it (isolated evaluation, not active). Returns compiler diagnostics on failure. Requires native approval.", inputSchema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] } },
@@ -70,7 +71,7 @@ async function callTool(ctx: ModuleContext, conn: McpConn, name: string, args: a
   switch (name) {
     case "modules_list": {
       const all: any[] = await md("list", {});
-      return all.map((m) => ({ id: m.id, kind: m.kind, active: m.active ? m.active.label : null, previous: m.previous, lastError: m.lastError, versions: m.versions.map((v: any) => `${v.version}:${v.status}`) }));
+      return all.map((m) => ({ id: m.id, kind: m.kind, active: m.active ? m.active.label : null, seedVersion: m.seedVersion ?? null, savedBuilds: m.versions.map((v: any) => ({ version: v.version, origin: v.origin, status: v.status })), previous: m.previous, lastError: m.lastError, versions: m.versions.map((v: any) => `${v.version}:${v.status}`) }));
     }
     case "modules_describe": return md("describe", { id });
     case "modules_read_source": return md("readSource", { id, path: args.path });
@@ -99,7 +100,7 @@ function makePeer(ctx: ModuleContext, conn: McpConn) {
           protocolVersion: v,
           capabilities: { tools: { listChanged: true }, prompts: { listChanged: false }, resources: { listChanged: false } },
           serverInfo: { name: "hato-internal", title: "Hato internal modules", version: SERVER_VERSION },
-          instructions: "Module-contributed commands are workspace-bound and individually controlled in Settings. Module maintenance tools inspect and evolve hot-swappable TypeScript modules: read the skills (skills_get or prompts) first. Module maintenance mutations require native user approval; contributed commands retain their provider module's existing capability checks.",
+          instructions: "Module-contributed commands are workspace-bound and individually controlled in Settings. Module maintenance tools inspect and evolve hot-swappable TypeScript modules: read skills_get self-configure first, then the task-specific skill. Describe the target module to discover the running runtime paths; workspace checkout edits may not affect a packaged app. Patch → build/stage → activate → verify; a build alone is not live. Bundled/Updated selects saved JavaScript builds, not native app releases. New plugins install through Settings → Plugins from a manifest and runnable JavaScript; maintenance patch tools only edit existing module source. Native changes need a rebuilt app and relaunch. Never replace a daemon that has active work. Module maintenance mutations require native user approval; contributed commands retain their provider module's existing capability checks.",
         };
       }
       case "ping": return {};

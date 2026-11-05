@@ -91,7 +91,7 @@ test("collapsed panes use full-name restore buttons without reserving columns or
   const layout = M.defaultLayout();
   layout.collapsed = { projects: true, files: true, viewer: true };
   const originalSizes = layout.columns.map(c => c.size);
-  const ctx = { host: { plugins: pluginsHost() }, modules: { async call(_, method) { if (method === 'list') return []; if (method === 'updates') return { modules: [], available: [], errors: [] }; } }, state: { get() { return null; }, set() {}, watch() {} }, events: { on() { return () => {}; } }, ui: { invalidate() {} }, log: { warn() {} } };
+  const ctx = { host: { env: { info: () => ({ repoRoot: "/runtime", dataDir: "/data" }) }, plugins: pluginsHost() }, modules: { async call(_, method) { if (method === 'list') return []; if (method === 'updates') return { modules: [], available: [], errors: [] }; } }, state: { get() { return null; }, set() {}, watch() {} }, events: { on() { return () => {}; } }, ui: { invalidate() {} }, log: { warn() {} } };
   const walk = node => [node, ...(node.children || []).flatMap(walk)];
   await mod.activate(ctx, { layout });
   let nodes = walk(mod.render());
@@ -126,7 +126,7 @@ test('anime appearance restores preferences and switches without changing panel 
   const mod = (await import('data:text/javascript;base64,' + Buffer.from(built.outputFiles[0].text).toString('base64'))).default;
   const settings = new Map([['appearance.theme', 'anime'], ['appearance.panelOpacity', 'airy'], ['appearance.projectsBackground', 'visible']]);
   const events = new Map(), state = new Map();
-  const ctx = { moduleId: 'workspace-layout', host: { plugins: pluginsHost() },
+  const ctx = { moduleId: 'workspace-layout', host: { env: { info: () => ({ repoRoot: "/runtime", dataDir: "/data" }) }, plugins: pluginsHost() },
     modules: { async call(_, method, args) {
       if (method === 'settings.get') return settings.get(args.key);
       if (method === 'settings.set') { settings.set(args.key, args.value); return; }

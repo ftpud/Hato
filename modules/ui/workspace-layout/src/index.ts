@@ -12,6 +12,7 @@ import { fontOptions, typography } from "../../../../sdk/typography";
 import { animePalette, animeTerminal } from "./anime";
 import { animeWallpaper } from "./anime-wallpaper";
 import { applicationIcon } from "./application-icon";
+import { moduleVersions } from "./module-versions";
 import { colorScheme } from "../../../../sdk/color-scheme";
 import { debounce, errMsg } from "../../../../sdk/runtime";
 import { BAR_ITEMS, PANELS, setContributedBarItems, defaultLayout, dropPanel, homeOf, locate, moveBarItem, moveTo, panelSignature, removeBarItem, repair, setPanels, type BarId, type Layout, type PanelDef } from "./model";
@@ -38,6 +39,7 @@ const projectsBackgroundOptions = [{ value: "off", label: "Off" }, { value: "sub
 const projectsBackgroundOpacity = () => projectsBackground === "off" ? 0 : projectsBackground === "visible" ? 0.24 : 0.12;
 const themeOptions = [{ value: "classic", label: "Classic" }, { value: "anime", label: "Anime · Sakura Twilight" }];
 const opacityOptions = [{ value: "airy", label: "Airy · 40%" }, { value: "balanced", label: "Balanced · 60%" }, { value: "solid", label: "Readable · 85%" }];
+let runtimePaths: { repoRoot: string; dataDir: string } | null = null;
 let ws: any = null;
 let modules: any[] = [];
 let showModules = false;
@@ -310,23 +312,40 @@ function modulesModal(): UiNode {
   const sorted = [...modules].sort((a, b) => rank(a) - rank(b) || a.id.localeCompare(b.id));
   const rows: UiNode[] = sorted.map((m) => {
     const u = upd[m.id];
-    const st = !u ? { t: "checking…", c: "muted" } : u.status === "update-available" ? { t: "● update available (source changed)", c: "warning" } : u.status === "build-error" ? { t: `✖ source does not build: ${(u.diagnostics || "").split("\n")[0]}`, c: "danger" } : { t: "up to date", c: "success" };
+    const versions = moduleVersions(m);
+    const selected = m.active?.version === versions.bundled ? "bundled" : m.active?.version === versions.updated ? "updated" : "other";
+    const st = !u ? { t: "checking…", c: "muted" } : u.status === "update-available" ? { t: "● local source differs", c: "warning" } : u.status === "build-error" ? { t: `✖ build failed: ${(u.diagnostics || "").split("\n")[0]}`, c: "danger" } : { t: "matches local source", c: "success" };
     return { type: "row", key: "m-" + m.id, gap: 6, align: "center", children: [
       { type: "label", key: "n", text: m.active ? m.active.label : `${m.id} (inactive)`, mono: true, size: "sm", width: 210 },
+      { type: "select", key: `module-version:${m.id}`, value: selected, action: "moduleVersion", width: 170,
+        options: [
+          ...(versions.bundled !== undefined ? [{ value: "bundled", label: `${m.versions.find((v: any) => v.version === versions.bundled)?.origin === "plugin" ? "Installed" : "Bundled"} @${versions.bundled}` }] : []),
+          ...(versions.updated !== undefined ? [{ value: "updated", label: `Updated @${versions.updated}` }] : []),
+          ...(selected === "other" ? [{ value: "other", label: m.active ? `Saved @${m.active.version}` : "Inactive" }] : []),
+        ], disabled: !!busy || m.id === "workspace-layout" || !m.active || versions.bundled === undefined || versions.updated === undefined,
+        tooltip: m.id === "workspace-layout" ? "The Modules panel stays updated so this switch remains available." : "Switch saved builds without compiling. Bundled is this runtime's imported seed; Updated is its latest successfully activated custom build. Local source files are kept." } as UiNode,
       { type: "label", key: "k", text: m.kind, size: "xs", color: "muted", width: 50 },
-      { type: "label", key: "u", text: st.t, size: "xs", color: st.c as any, width: 230 },
+      { type: "label", key: "u", text: st.t, size: "xs", color: st.c as any, width: 230, tooltip: u?.diagnostics || st.t },
       { type: "label", key: "e", text: m.lastError ? `⚠ ${m.lastError}` : `${m.versions.length} version(s); previous: ${m.previous.slice(-3).join(",") || "-"}`, size: "xs", color: m.lastError ? "danger" : "muted", grow: true },
-      { type: "button", key: "b", text: u && u.status === "update-available" ? "Update" : "Rebuild & activate", action: "rebuild", value: m.id, small: true, variant: u && u.status === "update-available" ? "primary" : "default", disabled: !!busy },
+      { type: "button", key: "b", text: "Build & activate", action: "rebuild", value: m.id, small: true, variant: u && u.status === "update-available" ? "primary" : "default", disabled: !!busy },
       { type: "button", key: "r", text: "Rollback", action: "rollback", value: m.id, small: true, disabled: !!busy || !(m.previous && m.previous.length) },
     ] } as UiNode;
   });
   return { type: "modal", key: "modules-modal", title: "Modules (hot-swappable TypeScript)", closeAction: "toggleModules", children: [
-    { type: "label", key: "hint", text: "Edit sources under modules/, then Rebuild & activate. Builds, activation and rollback each require native approval; the Rust kernel is never rebuilt.", size: "xs", color: "muted", wrap: true },
+    { type: "label", key: "hint", text: "These are local module builds, not app-release updates. Build & activate compiles the source used by this launch and replaces the active JavaScript after approval. A failed build keeps the active version running. Native app updates require a new app build and relaunch.", size: "xs", color: "muted", wrap: true },
+    { type: "label", key: "version-hint", text: "Use Bundled / Updated on each module to switch saved builds without compiling. Updated means the latest custom build that activated successfully. Switching keeps source files and app data. The Modules panel stays updated to keep these controls available. In development, Bundled refers to the imported seed build.", size: "xs", color: "muted", wrap: true },
+    ...(runtimePaths ? [
+      { type: "label", key: "source-path", text: `Editable built-in sources: ${runtimePaths.repoRoot}/modules`, size: "xs", mono: true, wrap: true } as UiNode,
+      { type: "label", key: "plugin-path", text: `Installed plugins: ${runtimePaths.dataDir}/plugins`, size: "xs", mono: true, wrap: true } as UiNode,
+      { type: "label", key: "artifact-path", text: `Saved module builds: ${runtimePaths.dataDir}/artifacts`, size: "xs", mono: true, wrap: true } as UiNode,
+    ] : []),
+    { type: "label", key: "storage-hint", text: "The app bundle supplies the native executable, tools and initial modules. Packaged launches copy module sources into a writable runtime. Installed plugins are managed in Settings → Plugins; a plugin folder needs manifest.json and runnable JavaScript. Workflow scripts are commands saved with workflow definitions, executed on the workspace machine.", size: "xs", color: "muted", wrap: true },
     { type: "row", key: "upd-bar", gap: 6, align: "center", children: [
-      { type: "label", key: "upd-sum", text: scanningUpd ? "Checking module sources for updates…" : updSummary.available.length ? `${updSummary.available.length} module(s) with updates: ${updSummary.available.join(", ")}` : "All modules match their sources.", size: "sm", color: updSummary.available.length ? "warning" : "muted", grow: true },
-      { type: "button", key: "upd-all", text: `Activate all updates (${updSummary.available.length})`, action: "activateAll", small: true, variant: "primary", disabled: !!busy || !updSummary.available.length },
+      { type: "label", key: "upd-sum", text: scanningUpd ? "Checking module sources for updates…" : updSummary.available.length ? `${updSummary.available.length} local build(s) differ from active modules` : updSummary.errors.length ? "No local changes ready to activate." : "All modules match their local sources.", size: "sm", color: updSummary.available.length ? "warning" : "muted", grow: true },
+      { type: "button", key: "upd-all", text: `Build & activate changes (${updSummary.available.length})`, action: "activateAll", small: true, variant: "primary", disabled: !!busy || !updSummary.available.length },
       { type: "button", key: "upd-scan", text: "Rescan", action: "rescan", small: true, disabled: scanningUpd || !!busy, tooltip: "Rebuild every module in memory and compare with the active version" },
     ] },
+    ...updSummary.errors.map((id): UiNode => ({ type: "status", key: `build-error:${id}`, level: "error", text: `${id}: ${upd[id]?.diagnostics || "Build failed"}. The active module has been kept.` })),
     ...(busy ? [{ type: "progress", key: "busy", indeterminate: true, label: busy } as UiNode] : []),
     ...(diag ? [{ type: "status", key: "diag", text: diag, level: diag.startsWith("✓") ? "success" : "error" } as UiNode] : []),
     { type: "column", key: "list", gap: 2, scroll: true, children: rows },
@@ -384,6 +403,7 @@ const mod: AppModule = {
   id: "workspace-layout",
   moduleApiVersion: 1,
   async activate(ctx, prev) {
+    runtimePaths = ctx.host.env.info();
     save = debounce(() => { ctx.modules.call("persistence", "settings.set", { key: "layout.v1", value: layout as any }).catch((e) => ctx.log.warn("save layout", errMsg(e))); }, 300);
     if (prev) { showModules = !!prev.showModules; showLayout = !!prev.showLayout; }
     // Panels must be known before a persisted layout is repaired against them.
@@ -714,6 +734,21 @@ const mod: AppModule = {
         busy = null;
         await loadModules(ctx);
         await loadUpdates(ctx, true);
+        break;
+      }
+      case "moduleVersion": {
+        const id = ev.key.slice("module-version:".length);
+        if (!ev.key.startsWith("module-version:") || id === "workspace-layout" || busy || !["bundled", "updated"].includes(v)) break;
+        const current = (await ctx.modules.call("module-dev", "list")).find((m: any) => m.id === id);
+        if (!current?.active) break;
+        const target = moduleVersions(current)[v as "bundled" | "updated"];
+        if (target === undefined || target === current.active.version) break;
+        busy = `Switching ${id} to ${v}…`; diag = null; ctx.ui.invalidate();
+        try {
+          const r = await ctx.modules.call("module-dev", "rollback", { id, toVersion: target }, { timeoutMs: 900000 });
+          diag = `✓ ${r.label || id} active (${v})`;
+        } catch (e) { diag = `${id}: ${errMsg(e)}`; }
+        finally { busy = null; await loadModules(ctx); }
         break;
       }
       case "rebuild":

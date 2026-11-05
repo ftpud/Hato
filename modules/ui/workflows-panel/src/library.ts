@@ -120,7 +120,7 @@ function workflowCard(w: Summary, maximized: boolean): UiNode {
   const sb = selectedBlock && graph.blocks.find(b => b.id === selectedBlock);
   if (sb) {
     const st = run?.blocks.find(s => s.blockId === sb.id);
-    children.push(card(`detail:${sb.id}`, st && run && (st.status !== "idle" || st.log?.length || st.meeting) ? blockRunView(run, sb, st, "detail", false) : [
+    children.push(card(`detail:${sb.id}`, st && run && (sb.type === "chatbox" || st.status !== "idle" || st.log?.length || st.meeting) ? blockRunView(run, sb, st, "detail", false) : [
       { type: "row", key: "h", gap: 6, children: [
         { type: "button", key: "i", text: "", iconSvg: blockIcon[sb.type], iconSize: 14, action: "", small: true, variant: "ghost", style: { color: blockColor[sb.type] } } as UiNode,
         text("n", sb.label, { weight: "semibold", grow: true }), muted("s", run ? "Not run" : "Ready", { wrap: false }),

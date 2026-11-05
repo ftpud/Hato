@@ -83,6 +83,8 @@ async function startRun(ctx: ModuleContext, wf: string, startBlockId: string | u
   const def = definitionOf(wf) || (await call(ctx, "get", { id: wf })).definition;
   const r = await call(ctx, "run", { id: wf, input, startBlockId: startBlockId || undefined });
   S.cardRun.set(wf, r.id); S.open.add(wf); S.starting = null; S.quick = null; S.defs.set(wf, def);
+  const chatbox = def.blocks.find((b: { id: string; type: string }) => b.type === "chatbox" && !def.edges.some((e: { to: string }) => e.to === b.id));
+  if (!startBlockId && !input.trim() && !def.blocks.some(isStartBlock) && chatbox) S.cardBlock.set(wf, chatbox.id);
   S.startText.delete(`${wf}:${startBlockId || ""}`);
   await refreshRuns(ctx); await refreshDetails(ctx);
 }

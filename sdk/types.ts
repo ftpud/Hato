@@ -192,6 +192,8 @@ export interface EnvInfo {
 export interface ModuleStatus {
   id: string; kind: "service" | "ui";
   active: { version: number; generation: number; label: string; sha256: string; capabilities: string[] } | null;
+  /** Imported seed build (the supplied baseline for this runtime). Absent on older kernels. */
+  seedVersion?: number | null;
   lastKnownGood: number | null; previous: number[];
   versions: { version: number; sha256: string; created: string; origin: string; status: string; note: string }[];
   generations: { generation: number; version: number; status: string; inflight: number; errors: number; subscriptions: number }[];

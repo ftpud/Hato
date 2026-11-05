@@ -220,3 +220,29 @@ test('Chatbox shows streamed reasoning and tool status in chat with a compact st
   assert.ok(status.text.length <= 100);
   assert.ok(!status.text.includes('\n'));
 });
+
+
+test('an unstarted Chatbox exposes its composer after an empty run', async t => {
+  const mod = (await load('modules/ui/workflows-panel/src/index.ts')).default;
+  t.after(() => mod.deactivate());
+  const def = { id: 'chatflow', name: 'Chat', blocks: [block('chat', 'chatbox')], edges: [] };
+  let started = false, sent = '';
+  const summary = { id: 'empty-chat-run', workflowId: 'chatflow', status: 'succeeded', createdAt: new Date().toISOString() };
+  const ctx = { events: { on() {} }, state: { get: k => k === 'workspace.selected' ? { id: 'ws' } : { workflows: true }, watch() {} }, ui: { invalidate() {} }, modules: { call: async (_id, method, args) => {
+    if (method === 'catalog') return {};
+    if (method === 'list') return [{ id: def.id, name: def.name, blocks: 1 }];
+    if (method === 'runs') return started ? [summary] : [];
+    if (method === 'get') return { definition: def };
+    if (method === 'run') { started = true; return summary; }
+    if (method === 'runDetail') return { ...summary, definition: def, blocks: [{ blockId: 'chat', status: 'idle', runs: 0, log: [] }] };
+    if (method === 'chat') { sent = args.text; return {}; }
+    throw new Error(method);
+  } } };
+  await mod.activate(ctx);
+  await mod.onEvent(ctx, { action: 'startInput', key: 'go', value: 'chatflow:' });
+  const composer = walk(mod.render()).find(n => n.key === 'chat:empty-chat-run:chat');
+  assert.ok(composer, 'empty run selects the Chatbox and displays its composer');
+  assert.equal(walk(mod.render()).find(n => n.action === 'chatSend').disabled, false);
+  await mod.onEvent(ctx, { action: 'chatSend', key: composer.key, inputs: { [composer.key]: 'Hello' } });
+  assert.equal(sent, 'Hello');
+});

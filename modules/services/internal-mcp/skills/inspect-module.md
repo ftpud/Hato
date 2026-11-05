@@ -1,6 +1,6 @@
 ---
 name: inspect-module
-version: 1
+version: 2
 description: Inspect a Hato application module before changing it.
 ---
 # Inspect a Hato module
@@ -12,3 +12,7 @@ description: Inspect a Hato application module before changing it.
 UI modules export `render(ctx)` returning a keyed UI tree (`row`, `column`, `label`, `button`, `tree`, …) and
 `onEvent(ctx, event)` handling `event.action`. Services export `methods`. Modules never import each other at
 runtime; they call `ctx.modules.call(id, method, args)`.
+
+Read `self-configure` for packaged launches and storage. `modules_describe.runtime` identifies the
+actual editable source tree, compiler and data folders; a workspace checkout can be a different copy.
+Inspect saved build origins/status and `seedVersion` before choosing a recovery build.

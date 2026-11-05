@@ -227,25 +227,78 @@ pub fn run_collect(p: &Arc<ProcessRes>, stdin: Option<&[u8]>, timeout: Duration,
         let _ = p.write(data);
     }
     p.close_stdin();
-    let exit = match p.wait(Some(timeout)) {
-        Some(e) => e,
-        None => {
+    let started = Instant::now();
+    let mut out = Vec::new();
+    let mut err = Vec::new();
+    let mut truncated = false;
+    let drain = |stream: &ByteStream, output: &mut Vec<u8>, truncated: &mut bool| {
+        let chunk = stream.take_all();
+        let keep = chunk.len().min(limit.saturating_sub(output.len()));
+        *truncated |= keep < chunk.len();
+        output.extend_from_slice(&chunk[..keep]);
+    };
+    // Drain while the child runs: waiting for exit first deadlocks when stdout fills
+    // its bounded stream buffer (for example, an esbuild bundle with image assets).
+    let exit = loop {
+        drain(&p.stdout, &mut out, &mut truncated);
+        drain(&p.stderr, &mut err, &mut truncated);
+        if let Some(exit) = p.exit.lock().clone() { break exit; }
+        let remaining = timeout.saturating_sub(started.elapsed());
+        if remaining.is_zero() {
             let _ = p.terminate(Some("KILL"));
             return Err(HostError::new("ETIMEDOUT", format!("command timed out after {}ms: {}", timeout.as_millis(), p.description)));
         }
+        let _ = p.wait(Some(remaining.min(Duration::from_millis(5))));
     };
-    // Give pipe readers a moment to observe EOF.
+    // Pipe readers may still have bytes after the exit notification.
     let t0 = Instant::now();
-    while (!p.stdout.is_eof() || !p.stderr.is_eof()) && t0.elapsed() < Duration::from_millis(1500) {
+    loop {
+        drain(&p.stdout, &mut out, &mut truncated);
+        drain(&p.stderr, &mut err, &mut truncated);
+        if (p.stdout.is_eof() && p.stderr.is_eof()) || t0.elapsed() >= Duration::from_millis(1500) { break; }
         std::thread::sleep(Duration::from_millis(5));
     }
-    let mut out = p.stdout.take_all();
-    let mut err = p.stderr.take_all();
-    let truncated = out.len() > limit || err.len() > limit;
-    out.truncate(limit);
-    err.truncate(limit);
     Ok(json!({
         "code": exit.code, "signal": exit.signal,
         "stdout": String::from_utf8_lossy(&out), "stderr": String::from_utf8_lossy(&err), "truncated": truncated,
     }))
+}
+
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    fn command(script: &str) -> Arc<ProcessRes> {
+        spawn(SpawnSpec { target: Target::Local, ssh: None, executable: "/bin/sh".into(),
+            args: vec!["-c".into(), script.into()], cwd: "/tmp".into(), env: vec![],
+            env_remove: vec![], login_shell: false, persist: None }).unwrap()
+    }
+
+    #[test]
+    fn collect_drains_output_larger_than_stream_capacity() {
+        let p = command("head -c 6291456 /dev/zero; printf done >&2");
+        let r = run_collect(&p, None, Duration::from_secs(10), 8 * 1024 * 1024).unwrap();
+        assert_eq!(r["code"], 0);
+        assert_eq!(r["stdout"].as_str().unwrap().len(), 6 * 1024 * 1024);
+        assert_eq!(r["stderr"], "done");
+        assert_eq!(r["truncated"], false);
+    }
+
+    #[test]
+    fn collect_keeps_draining_after_output_limit() {
+        let p = command("head -c 6291456 /dev/zero; printf done >&2");
+        let r = run_collect(&p, None, Duration::from_secs(10), 1024).unwrap();
+        assert_eq!(r["code"], 0);
+        assert_eq!(r["stdout"].as_str().unwrap().len(), 1024);
+        assert_eq!(r["stderr"], "done");
+        assert_eq!(r["truncated"], true);
+    }
+
+    #[test]
+    fn collect_still_times_out_a_running_child() {
+        let p = command("exec sleep 10");
+        let e = run_collect(&p, None, Duration::from_millis(25), 1024).unwrap_err();
+        assert!(e.to_string().contains("ETIMEDOUT"));
+    }
 }

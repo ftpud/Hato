@@ -135,3 +135,33 @@ previously disabled automatic refresh stays disabled. Manual refresh remains ava
 
 Independent background agents and the desktop/workspace MCP split are documented in
 [PERSISTENT_AGENTS.md](PERSISTENT_AGENTS.md).
+
+## Self-configuration and saved builds
+
+For packaged launches, the macOS app supplies the native executable, compiler, remote binaries and
+initial module seeds. Its launcher creates an editable runtime under
+`~/Library/Application Support/Hato/runtimes/<release>/`. A development launch can use a checkout
+instead. `module-dev.describe.runtime` reports the actual source, compiler and data locations;
+never assume the current workspace checkout is the running app's editable tree.
+
+The Modules panel shows runtime paths and a per-module saved-build selector. Bundled is the imported
+seed recorded by the kernel (`seedVersion`); for a user plugin, the baseline is labeled Installed.
+Updated is the latest custom build that successfully activated. Staged and failed builds are excluded.
+Switching uses the existing native-approved rollback/activation protocol without compiling or erasing
+sources. Saved custom artifacts remain available when switching back to the baseline. The layout
+module stays updated to keep the selector available. In development, the baseline is the imported
+seed, not a separately installed release. Older kernels use seed-origin history as a fallback.
+
+Selections persist in the artifact registry while the supplied seed is unchanged. A new seed can
+replace the baseline on startup. A module build number is not an app-release number; local source
+changes may remain after switching an active artifact. Native changes require a rebuilt app/relaunch.
+Keep workspace-daemon upgrades separate and preserve live agents/workflows.
+
+The internal MCP server advertises `skills_get self-configure` plus focused inspect, patch, build,
+activate/verify and rollback guides. These Markdown guides are bundled into internal-mcp; rebuild
+and activate that module after editing them. Reconnect MCP clients if their advertised instructions
+are cached. Updating internal-mcp over its own MCP connection cannot activate mid-call: stage it,
+then activate from the Modules panel once the call ends. Its in-flight guard stays in place.
+Source patch tools edit existing modules only. To add a new plugin, prepare a manifest
+and runnable JavaScript bundle, install its folder through Settings → Plugins, then enable it and
+approve its permissions. Installation does not run npm or compile TypeScript automatically.

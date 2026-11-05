@@ -1004,6 +1004,7 @@ impl Kernel {
                 "id": id,
                 "kind": manifest.as_ref().map(|m| m.kind.clone()),
                 "active": active.as_ref().map(|g| json!({"version": g.version, "generation": g.gen_id, "label": g.label(), "sha256": g.hash, "capabilities": g.caps.caps.iter().cloned().collect::<Vec<_>>()})),
+                "seedVersion": rec.seed_hash.as_ref().and_then(|hash| rec.versions.iter().rev().find(|v| &v.sha256 == hash).map(|v| v.version)),
                 "lastKnownGood": rec.last_known_good,
                 "previous": rec.previous,
                 "versions": rec.versions,
