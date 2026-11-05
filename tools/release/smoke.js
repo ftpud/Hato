@@ -14,6 +14,10 @@ export default {
     await T("test.approvals", { policy: "allow" });
     const built = await ctx.modules.call("module-dev", "build", { id: "workspace-layout" }, { timeoutMs: 150000 });
     if (!built.ok || !built.stageId) throw new Error(`Packaged self-configuration build failed: ${built.error || built.diagnostics || "no staged artifact"}`);
+    const scan = await ctx.modules.call("module-dev", "scanUpdates", { full: true }, { timeoutMs: 300000 });
+    const checkedLayout = scan.modules.find(m => m.id === "workspace-layout");
+    if (!checkedLayout?.builtHash || checkedLayout.builtHash !== baseline.active.sha256)
+      throw new Error(`Packaged module rescan failed: ${checkedLayout?.diagnostics || "incorrect bundle hash"}`);
     // A new JavaScript plugin must install and load without Node or npm.
     const id = "hato-release-smoke";
     const source = `${ctx.host.env.info().dataDir}/smoke-source/${id}`;
@@ -26,6 +30,6 @@ export default {
     const health = await ctx.modules.call(id, "health", {});
     if (!health?.ok) throw new Error("Installed JavaScript plugin did not respond");
     await T("test.pluginUninstall", { id });
-    await T("test.done", { ok: true, report: { moduleBuild: built.label, javascriptPlugin: "installed, enabled, called and removed" } });
+    await T("test.done", { ok: true, report: { moduleBuild: built.label, rescan: "large bundle checked within QuickJS limits", javascriptPlugin: "installed, enabled, called and removed" } });
   },
 };

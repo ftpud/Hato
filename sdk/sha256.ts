@@ -7,21 +7,16 @@ const K = new Uint32Array([
 ]);
 
 export function sha256Hex(text: string): string {
-  const msg = new TextEncoder().encode(text);
-  const len = msg.length;
-  const total = ((len + 9 + 63) >> 6) << 6;
-  const buf = new Uint8Array(total);
-  buf.set(msg);
-  buf[len] = 0x80;
-  const bits = len * 8;
-  const hi = Math.floor(bits / 0x100000000);
+  // Feed UTF-8 directly into a single compression block. The embedded TextEncoder
+  // uses a plain JS array, which can exhaust QuickJS's heap on multi-MB bundles.
+  const buf = new Uint8Array(64);
   const view = new DataView(buf.buffer);
-  view.setUint32(total - 8, hi >>> 0);
-  view.setUint32(total - 4, bits >>> 0);
+  let used = 0;
+  let length = 0;
   const H = new Uint32Array([0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19]);
   const W = new Uint32Array(64);
-  for (let off = 0; off < total; off += 64) {
-    for (let i = 0; i < 16; i++) W[i] = view.getUint32(off + i * 4);
+  const compress = () => {
+    for (let i = 0; i < 16; i++) W[i] = view.getUint32(i * 4);
     for (let i = 16; i < 64; i++) {
       const a = W[i - 15], b = W[i - 2];
       const s0 = ((a >>> 7) | (a << 25)) ^ ((a >>> 18) | (a << 14)) ^ (a >>> 3);
@@ -40,7 +35,30 @@ export function sha256Hex(text: string): string {
     }
     H[0] = (H[0] + a) >>> 0; H[1] = (H[1] + b) >>> 0; H[2] = (H[2] + c) >>> 0; H[3] = (H[3] + d) >>> 0;
     H[4] = (H[4] + e) >>> 0; H[5] = (H[5] + f) >>> 0; H[6] = (H[6] + g) >>> 0; H[7] = (H[7] + h) >>> 0;
+  };
+  const byte = (b: number) => {
+    buf[used++] = b;
+    length++;
+    if (used === 64) { compress(); used = 0; }
+  };
+  for (let i = 0; i < text.length; i++) {
+    let c = text.charCodeAt(i);
+    if (c >= 0xd800 && c <= 0xdbff) {
+      const d = text.charCodeAt(i + 1);
+      if (d >= 0xdc00 && d <= 0xdfff) { c = 0x10000 + ((c - 0xd800) << 10) + d - 0xdc00; i++; }
+      else c = 0xfffd;
+    } else if (c >= 0xdc00 && c <= 0xdfff) c = 0xfffd;
+    if (c < 0x80) byte(c);
+    else if (c < 0x800) { byte(0xc0 | (c >> 6)); byte(0x80 | (c & 63)); }
+    else if (c < 0x10000) { byte(0xe0 | (c >> 12)); byte(0x80 | ((c >> 6) & 63)); byte(0x80 | (c & 63)); }
+    else { byte(0xf0 | (c >> 18)); byte(0x80 | ((c >> 12) & 63)); byte(0x80 | ((c >> 6) & 63)); byte(0x80 | (c & 63)); }
   }
+  const bits = length * 8;
+  byte(0x80);
+  while (used !== 56) byte(0);
+  view.setUint32(56, Math.floor(bits / 0x100000000));
+  view.setUint32(60, bits >>> 0);
+  compress();
   let out = "";
   for (let i = 0; i < 8; i++) out += H[i].toString(16).padStart(8, "0");
   return out;

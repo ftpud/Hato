@@ -151,8 +151,8 @@ async function compile(ctx: ModuleContext, id: string): Promise<{ ok: boolean; c
   const t0 = Date.now();
   try {
     const r = await ctx.host.process.run(g.grant, { executable: info.buildTool, args: [entry, ...BUILD_ARGS], cwd: info.repoRoot }, { timeoutMs: 120000, limitBytes: 8 * 1024 * 1024 });
-    const ok = r.code === 0 && !!r.stdout.trim();
-    return { ok, code: r.stdout, diagnostics: r.stderr.trim(), ms: Date.now() - t0, error: ok ? undefined : `build failed (exit ${r.code})` };
+    const ok = r.code === 0 && !r.truncated && !!r.stdout.trim();
+    return { ok, code: r.stdout, diagnostics: r.stderr.trim(), ms: Date.now() - t0, error: ok ? undefined : r.truncated ? "Compiler output exceeded the 8 MB capture limit" : `build failed (exit ${r.code})` };
   } finally {
     await ctx.host.capabilities.release(g.grant).catch(() => {});
   }
@@ -212,9 +212,14 @@ async function scan(ctx: ModuleContext, full: boolean): Promise<UpdateInfo[]> {
       try { fp = await fingerprint(ctx, m.id); } catch { fp = "?"; }
       if (!full && prev && prev.fingerprint === fp && prev.activeHash === activeHash) continue;
       const c = await compile(ctx, m.id).catch((e) => ({ ok: false, code: "", diagnostics: "", ms: 0, error: errMsg(e) }));
-      const builtHash = c.ok ? sha256Hex(c.code) : null;
-      const status: UpdateInfo["status"] = !c.ok ? "build-error" : !activeHash ? "update-available" : builtHash === activeHash ? "current" : "update-available";
-      const info: UpdateInfo = { id: m.id, kind: m.kind, active: m.active ? m.active.label : null, status, builtHash, activeHash, diagnostics: c.ok ? c.diagnostics : `${c.error || ""}\n${c.diagnostics}`.trim(), fingerprint: fp, checkedAt: Date.now() };
+      let builtHash: string | null = null;
+      let hashError = "";
+      if (c.ok) {
+        try { builtHash = sha256Hex(c.code); }
+        catch (e) { hashError = `Cannot check compiled module: ${errMsg(e)}`; }
+      }
+      const status: UpdateInfo["status"] = !c.ok || hashError ? "build-error" : !activeHash ? "update-available" : builtHash === activeHash ? "current" : "update-available";
+      const info: UpdateInfo = { id: m.id, kind: m.kind, active: m.active ? m.active.label : null, status, builtHash, activeHash, diagnostics: hashError || (c.ok ? c.diagnostics : `${c.error || ""}\n${c.diagnostics}`.trim()), fingerprint: fp, checkedAt: Date.now() };
       if (!prev || prev.status !== info.status || prev.builtHash !== info.builtHash || prev.active !== info.active) changed = true;
       updates.set(m.id, info);
     }
