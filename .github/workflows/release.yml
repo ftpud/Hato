@@ -13,7 +13,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   version:
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, macOS, ARM64, hato-local]
     outputs:
       version: ${{ steps.version.outputs.version }}
       numeric: ${{ steps.version.outputs.numeric }}
@@ -32,31 +32,35 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: ubuntu-24.04
-            arch: x86_64
-          - runner: ubuntu-24.04-arm
-            arch: aarch64
-    runs-on: ${{ matrix.runner }}
+          - arch: x86_64
+          - arch: aarch64
+    runs-on: [self-hosted, macOS, ARM64, hato-local]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.arch }}-unknown-linux-musl
-      - run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: Check cross-compilation tools
+        run: |
+          zig version
+          cargo zigbuild --help > /dev/null
       - uses: Swatinem/rust-cache@v2
         with:
           key: linux-${{ matrix.arch }}
-      - name: Build and smoke-test static daemon
+      - name: Cross-build static Linux daemon
         env:
           RELEASE_VERSION: ${{ needs.version.outputs.version }}
           ARCH: ${{ matrix.arch }}
           NUMERIC_VERSION: ${{ needs.version.outputs.numeric }}
         run: |
           python3 tools/release/set-build-version.py
-          cargo build --release --locked --no-default-features --target "$ARCH-unknown-linux-musl"
+          cargo zigbuild --release --locked --no-default-features --target "$ARCH-unknown-linux-musl"
           mkdir -p dist
           cp "target/$ARCH-unknown-linux-musl/release/hato" dist/hatod
-          dist/hatod --help
+          # Linux binaries cannot execute on the macOS runner.
+          file dist/hatod | tee dist/hatod-file.txt
+          grep -q 'ELF 64-bit' dist/hatod-file.txt
+          grep -q 'static' dist/hatod-file.txt
           tar -czf "dist/hatod-$RELEASE_VERSION-linux-$ARCH.tar.gz" -C dist hatod
       - uses: actions/upload-artifact@v4
         with:
@@ -136,7 +140,7 @@ jobs:
           if-no-files-found: error
   publish:
     needs: [version, macos, linux]
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, macOS, ARM64, hato-local]
     permissions:
       contents: write
     steps:
@@ -152,7 +156,7 @@ jobs:
           PRERELEASE: ${{ needs.version.outputs.prerelease }}
         run: |
           cd release-artifacts
-          sha256sum *.dmg *.tar.gz > SHA256SUMS
+          shasum -a 256 *.dmg *.tar.gz > SHA256SUMS
           flags=()
           if [ "$PRERELEASE" = true ]; then flags+=(--prerelease); fi
           gh release create "$RELEASE_VERSION" --target "$GITHUB_SHA" --title "Hato $RELEASE_VERSION" --generate-notes "${flags[@]}" ./*.dmg ./*.tar.gz SHA256SUMS

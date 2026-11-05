@@ -6,9 +6,9 @@ The optional version accepts `Beta-0.0.1`, `0.2.0`, or `0.2.0-beta.1`. Empty mea
 
 ## Self-hosted Mac runner
 
-The macOS job runs on a registered runner with labels `self-hosted`, `macOS`, `ARM64`, and `hato-local`. Linux builds and release publishing remain on GitHub-hosted runners.
+All jobs run on a registered Mac runner with labels `self-hosted`, `macOS`, `ARM64`, and `hato-local`. The Mac cross-compiles both Linux daemons with Zig and cargo-zigbuild, builds the ARM64 desktop app, and publishes the release. A single runner executes the jobs sequentially.
 
-In repository **Settings → Actions → Runners → New self-hosted runner**, select macOS ARM64 and follow the generated setup commands in a separate runner directory. Add the custom label `hato-local` during registration. The Mac needs Xcode and its command-line tools installed and configured. Start the runner with `caffeinate -i ./run.sh` and keep it running while releasing, then trigger **Build signed release** as usual. The runner uses its own checkout, separate from your development checkout.
+In repository **Settings → Actions → Runners → New self-hosted runner**, select macOS ARM64 and follow the generated setup commands in a separate runner directory. Add the custom label `hato-local` during registration. The Mac needs Xcode and its command-line tools installed and configured, plus Python 3, GitHub CLI (`gh`), Zig and cargo-zigbuild (`brew install gh zig` and `cargo install --locked cargo-zigbuild`). Rust is configured by the workflow. Start the runner with `caffeinate -i ./run.sh` and keep it running while releasing, then trigger **Build signed release** as usual. The runner uses its own checkout, separate from your development checkout.
 
 Existing repository secrets provide signing and notarization credentials. Signing selects the temporary keychain explicitly without replacing the user's keychain search list. Packaging recreates generated app/image staging directories on each run. The workflow does not run the TypeScript test suite; use `npm test` locally.
 
@@ -37,4 +37,4 @@ Existing staging, approval, activation, rollback, and application data persisten
 
 ## Local checks
 
-Use `bash -n tools/release/{launcher,package-macos}.sh`, run `tools/release/version.py` with `RELEASE_VERSION` set, and run `actionlint` against the workflow. The Mac job builds modules, signs the bundle, boots the packaged app outside the checkout with a headless module smoke test, and validates the stapled DMG. Linux jobs execute the compiled binaries' help command on their native architecture. Full release verification requires GitHub runners, signing credentials, and Apple's notarization service.
+Use `bash -n tools/release/{launcher,package-macos}.sh`, run `tools/release/version.py` with `RELEASE_VERSION` set, and run `actionlint` against the workflow. The Mac job builds modules, signs the bundle, boots the packaged app outside the checkout with a headless module smoke test, and validates the stapled DMG. Linux jobs verify the output is a static 64-bit ELF binary; execution checks require a Linux machine. Full release verification requires the registered Mac runner, signing credentials, and Apple's notarization service.
