@@ -10,7 +10,7 @@ All jobs run on a registered Mac runner with labels `self-hosted`, `macOS`, `ARM
 
 In repository **Settings → Actions → Runners → New self-hosted runner**, select macOS ARM64 and follow the generated setup commands in a separate runner directory. Add the custom label `hato-local` during registration. The Mac needs Xcode and its command-line tools installed and configured, plus Python 3, GitHub CLI (`gh`), Zig and cargo-zigbuild (`brew install gh zig` and `cargo install --locked cargo-zigbuild`). Rust is configured by the workflow. Start the runner with `caffeinate -i ./run.sh` and keep it running while releasing, then trigger **Build signed release** as usual. The runner uses its own checkout, separate from your development checkout.
 
-Existing repository secrets provide signing and notarization credentials. Signing selects the temporary keychain explicitly without replacing the user's keychain search list. Packaging recreates generated app/image staging directories on each run. The workflow does not run the TypeScript test suite; use `npm test` locally.
+Existing repository secrets provide signing and notarization credentials. The workflow selects the single valid Developer ID Application identity from the imported keychain by certificate hash, avoiding non-ASCII name mismatches; `MACOS_SIGNING_IDENTITY` is no longer needed. Signing selects the temporary keychain explicitly without replacing the user's keychain search list. Packaging recreates generated app/image staging directories on each run. The workflow does not run the TypeScript test suite; use `npm test` locally.
 
 ## GitHub Actions secrets
 
@@ -20,7 +20,6 @@ Configure these under repository **Settings → Secrets and variables → Action
 | --- | --- |
 | `MACOS_CERTIFICATE_BASE64` | Base64 of an exported **Developer ID Application** `.p12`, including its private key. On macOS: `base64 -i certificate.p12 | pbcopy`. |
 | `MACOS_CERTIFICATE_PASSWORD` | Password protecting that `.p12`. |
-| `MACOS_SIGNING_IDENTITY` | Full identity, e.g. `Developer ID Application: Your Name (TEAMID)`. Find it with `security find-identity -v -p codesigning`. |
 | `APPLE_API_PRIVATE_KEY` | Raw contents of an App Store Connect API `.p8` key authorized for notarization. |
 | `APPLE_API_KEY_ID` | That API key's ID. |
 | `APPLE_API_ISSUER_ID` | That API key's issuer UUID. This workflow uses a team API key. |

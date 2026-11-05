@@ -120,9 +120,10 @@ jobs:
           security unlock-keychain -p "$password" "$keychain"
           security import "$RUNNER_TEMP/certificate.p12" -k "$keychain" -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$password" "$keychain"
+          identity="$(python3 tools/release/signing-identity.py "$keychain")"
+          echo "SIGNING_IDENTITY=$identity" >> "$GITHUB_ENV"
       - name: Package, sign, and notarize DMG
         env:
-          SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
           NOTARY_KEY_PATH: ${{ runner.temp }}/notary.p8
