@@ -7,7 +7,7 @@ test('font preferences restore, apply immediately, persist, and keep the confirm
   const mod = (await import('data:text/javascript;base64,' + Buffer.from(built.outputFiles[0].text).toString('base64'))).default;
   const state = new Map(), listeners = new Map(), calls = [];
   let fail = false;
-  const ctx = { moduleId: 'workspace-layout', state: { get: key => state.get(key), set: (key, value) => state.set(key, value), watch() {} },
+  const ctx = { moduleId: 'workspace-layout', host: { env: { info: () => ({ repoRoot: '/runtime', dataDir: '/data' }) } }, state: { get: key => state.get(key), set: (key, value) => state.set(key, value), watch() {} },
     events: { on: (key, fn) => listeners.set(key, fn), emit() {} }, ui: { invalidate() {} }, log: { warn() {} },
     modules: { async call(_, method, args) {
       if (method === 'list') return [];
@@ -47,7 +47,7 @@ test('appearance reset restores all UI preferences and keeps the top bar visible
   const built = await esbuild.build({ entryPoints: ['modules/ui/workspace-layout/src/index.ts'], bundle: true, format: 'esm', write: false });
   const mod = (await import('data:text/javascript;base64,' + Buffer.from(built.outputFiles[0].text).toString('base64'))).default;
   const state = new Map(), listeners = new Map(), persisted = new Map(), emitted = [];
-  const ctx = { moduleId: 'workspace-layout', state: { get: k => state.get(k), set: (k, v) => state.set(k, v), watch() {} },
+  const ctx = { moduleId: 'workspace-layout', host: { env: { info: () => ({ repoRoot: '/runtime', dataDir: '/data' }) } }, state: { get: k => state.get(k), set: (k, v) => state.set(k, v), watch() {} },
     events: { on: (k, fn) => listeners.set(k, fn), emit: (k, v) => emitted.push(k) }, ui: { invalidate() {} }, log: { warn() {} },
     modules: { async call(_, method, args) {
       if (method === 'list') return [];

@@ -10,7 +10,7 @@ async function load(id, icons) {
 test('separate sidebar toggles layout panels and reflects collapse, hide and restore state', async () => {
   const layout = await load('workspace-layout'), sidebar = await load('sidebar'), left = await load('left-sidebar');
   const values = new Map(), watches = new Map(), events = new Map();
-  const ctx = { host: { plugins: pluginsHost() }, state: { get: key => values.get(key), set(key, value) { values.set(key, value); for (const fn of watches.get(key) || []) fn(value); }, watch(key, fn) { watches.set(key, [...(watches.get(key) || []), fn]); } },
+  const ctx = { host: { env: { info: () => ({ repoRoot: '/runtime', dataDir: '/data' }) }, plugins: pluginsHost() }, state: { get: key => values.get(key), set(key, value) { values.set(key, value); for (const fn of watches.get(key) || []) fn(value); }, watch(key, fn) { watches.set(key, [...(watches.get(key) || []), fn]); } },
     events: { on(key, fn) { events.set(key, fn); return () => {}; }, emit(key, value) { events.get(key)?.(value); } },
     modules: { async call(_, method) { if (method === 'list') return []; if (method === 'updates') return { modules: [], available: [], errors: [] }; } },
     ui: { invalidate() {} }, log: { warn() {} } };
@@ -73,7 +73,7 @@ test('sidebar settings move, hide and persist buttons independently of panel doc
   const stored = new Map([['activity-sidebar.v1', { files: 'left-bottom', ai: 'right-top', terminal: 'right-bottom', remote: 'hidden' }], ['sidebar-order.v1', {}]]);
   const state = new Map(), watchers = new Map(), events = new Map();
   let failSave = false;
-  const ctx = { moduleId: 'workspace-layout', host: { plugins: pluginsHost() },
+  const ctx = { moduleId: 'workspace-layout', host: { env: { info: () => ({ repoRoot: '/runtime', dataDir: '/data' }) }, plugins: pluginsHost() },
     state: { get: k => state.get(k), set(k, v) { state.set(k, v); for (const fn of watchers.get(k) || []) fn(v); }, watch(k, fn) { const list = watchers.get(k) || []; list.push(fn); watchers.set(k, list); } },
     events: { on(k, fn) { const set = events.get(k) || new Set(); set.add(fn); events.set(k, set); return () => set.delete(fn); }, emit(k, v) { for (const fn of events.get(k) || []) fn(v); } },
     modules: { async call(_id, method, args) {
