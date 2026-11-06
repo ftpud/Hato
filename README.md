@@ -40,3 +40,5 @@ adapter on the machine where the agent will run.
 ## License
 
 [Apache License 2.0](LICENSE).
+
+On Windows, the app window runs natively and projects live in WSL or on Linux hosts: see [docs/WINDOWS.md](docs/WINDOWS.md).

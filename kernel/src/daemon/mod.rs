@@ -10,7 +10,12 @@
 //!
 //! SSH is the authentication boundary: the socket directory is 0700 and the daemon checks that
 //! the peer has its own uid. The daemon knows nothing about what plugins or processes mean.
+//!
+//! The daemon runs on Unix only: a Windows desktop runs its workspaces in WSL or on Linux hosts,
+//! with the Linux daemon there. `watch` and `forward` are not tied to the daemon socket.
+#[cfg(unix)]
 pub mod client;
+#[cfg(unix)]
 pub mod server;
 
 use std::io::{self, Read, Write};
@@ -117,32 +122,45 @@ impl Args {
 pub fn main(args: &[String]) -> i32 {
     let cmd = args.first().map(|s| s.as_str()).unwrap_or("help");
     let a = Args::parse(args.get(1..).unwrap_or(&[]));
+    #[cfg_attr(not(unix), allow(unused_variables))]
     let home = home_dir(a.get("dir"));
     let r = match cmd {
+        #[cfg(unix)]
         "serve" => server::serve(&home, a.get("idle-exit-secs").and_then(|s| s.parse().ok()).unwrap_or(6 * 3600)),
+        #[cfg(unix)]
         "ensure" => client::ensure(&home, a.has("force")),
+        #[cfg(unix)]
         "ctl" => client::ctl(&home),
+        #[cfg(unix)]
         "stop" => client::request(&home, &serde_json::json!({"op": "shutdown"})).map(|v| println!("{v}")),
+        #[cfg(unix)]
         "status" => client::request(&home, &serde_json::json!({"op": "hello"})).map(|v| println!("{v}")),
+        #[cfg(unix)]
         "pty-attach" => client::pty_attach(&home, &a),
+        #[cfg(unix)]
         "proc-attach" => client::proc_attach(&home, &a),
         "watch" => match a.get("path") { Some(path) => crate::host::watch::run(path, !a.has("non-recursive")), None => Err(anyhow::anyhow!("missing --path")) },
+        #[cfg(unix)]
         "bridge" => client::bridge(&home, &a),
+        #[cfg(not(unix))]
+        "serve" | "ensure" | "ctl" | "stop" | "status" | "pty-attach" | "proc-attach" | "bridge" => Err(anyhow::anyhow!("not available on {}: run the daemon on the workspace's Linux machine or WSL distribution", std::env::consts::OS)),
+        "forward" => crate::host::relay::serve_stdio(),
         _ => {
-            eprintln!("usage: hato daemon <serve|ensure|ctl|stop|status|pty-attach|proc-attach|bridge|watch> [--dir DIR] …");
+            eprintln!("usage: hato daemon <serve|ensure|ctl|stop|status|pty-attach|proc-attach|bridge|watch|forward> [--dir DIR] …");
             return 2;
         }
     };
     match r {
         Ok(()) => 0,
         // An attached process's own exit status is passed through silently.
-        Err(e) => match e.downcast_ref::<client::ExitCode>() {
-            Some(c) => c.0,
-            None => {
-                eprintln!("hato daemon {cmd}: {e:#}");
-                1
+        Err(e) => {
+            #[cfg(unix)]
+            if let Some(c) = e.downcast_ref::<client::ExitCode>() {
+                return c.0;
             }
-        },
+            eprintln!("hato daemon {cmd}: {e:#}");
+            1
+        }
     }
 }
 

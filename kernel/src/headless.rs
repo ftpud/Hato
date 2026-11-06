@@ -113,9 +113,40 @@ pub fn driver_op(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: &Value)
         "test.state" => Ok(k.state.values.lock().get(arg_str(args, "key")?).cloned().unwrap_or(Value::Null)),
         "test.env" => Ok(std::env::var(arg_str(args, "name")?).map(Value::String).unwrap_or(Value::Null)),
         "test.readFile" => Ok(json!(std::fs::read_to_string(arg_str(args, "path")?).map_err(HostError::from)?)),
+        // A loopback line service on this machine, reached from the workspace machine by forward.
+        "test.forwardProbe" => {
+            let c: Arc<crate::ops::SshConnRef> = k.handles.get(arg_str(args, "connection")?, "ssh", &gen.module_id)?;
+            let l = std::net::TcpListener::bind(("127.0.0.1", 0)).map_err(HostError::from)?;
+            let local = l.local_addr().map_err(HostError::from)?.port();
+            std::thread::spawn(move || {
+                use std::io::{BufRead, Write};
+                for mut s in l.incoming().flatten() {
+                    let mut line = String::new();
+                    let Ok(clone) = s.try_clone() else { continue };
+                    if std::io::BufReader::new(clone).read_line(&mut line).is_ok() {
+                        let _ = s.write_all(format!("pong:{line}").as_bytes());
+                    }
+                }
+            });
+            let remote = crate::host::daemon_link::forward_reverse(&c.master, local, &k.cfg.data_dir, &k.cfg.repo_root)?;
+            Ok(json!({"remotePort": remote, "localPort": local}))
+        }
+        "test.forwardClose" => {
+            let c: Arc<crate::ops::SshConnRef> = k.handles.get(arg_str(args, "connection")?, "ssh", &gen.module_id)?;
+            c.master.cancel_reverse(args["port"].as_u64().unwrap_or(0) as u16, 0);
+            Ok(Value::Null)
+        }
+        "test.writeFile" => {
+            let path = std::path::Path::new(arg_str(args, "path")?);
+            if let Some(dir) = path.parent() {
+                std::fs::create_dir_all(dir).map_err(HostError::from)?;
+            }
+            std::fs::write(path, arg_str(args, "text")?).map_err(HostError::from)?;
+            Ok(Value::Null)
+        }
         "test.exec" => {
             let argv: Vec<String> = args.get("argv").and_then(|a| a.as_array()).map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default();
-            let out = std::process::Command::new(&argv[0]).args(&argv[1..]).current_dir(arg_str(args, "cwd").unwrap_or(".")).output().map_err(HostError::from)?;
+            let out = crate::util::command(&argv[0]).args(&argv[1..]).current_dir(arg_str(args, "cwd").unwrap_or(".")).output().map_err(HostError::from)?;
             Ok(json!({"code": out.status.code(), "stdout": String::from_utf8_lossy(&out.stdout), "stderr": String::from_utf8_lossy(&out.stderr)}))
         }
         "test.done" => {

@@ -23,8 +23,8 @@ export default {
     const source = `${ctx.host.env.info().dataDir}/smoke-source/${id}`;
     const manifest = JSON.stringify({ schemaVersion: 2, id, kind: "service", entry: "index.mjs", moduleApiVersion: 1 });
     const code = 'export default { id: "hato-release-smoke", moduleApiVersion: 1, methods: { health: () => ({ ok: true }) } };';
-    const written = await T("test.exec", { argv: ["/bin/sh", "-c", 'mkdir -p "$1" && printf "%s" "$2" > "$1/manifest.json" && printf "%s" "$3" > "$1/index.mjs"', "hato-smoke", source, manifest, code] });
-    if (written.code !== 0) throw new Error(`Cannot create smoke plugin: ${written.stderr}`);
+    await T("test.writeFile", { path: `${source}/manifest.json`, text: manifest });
+    await T("test.writeFile", { path: `${source}/index.mjs`, text: code });
     await T("test.pluginInstall", { path: source });
     await T("test.pluginEnable", { id });
     const health = await ctx.modules.call(id, "health", {});

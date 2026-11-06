@@ -1,4 +1,5 @@
 //! Kernel configuration: paths and command-line flags. No application semantics.
+use crate::util::canonical_string;
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug)]
@@ -61,16 +62,16 @@ impl Config {
                 .or_else(|| std::env::current_exe().ok().and_then(|e| find_repo_root(&e)))
                 .ok_or_else(|| anyhow::anyhow!("cannot locate repository root containing modules/; pass --repo-root"))?,
         };
-        let repo_root = repo_root.canonicalize()?;
+        let repo_root = PathBuf::from(canonical_string(&repo_root)?);
         let data_dir = match data_dir {
             Some(p) => p,
             None => dirs::data_dir().unwrap_or_else(|| cwd.join(".dev-data")).join("Hato"),
         };
         std::fs::create_dir_all(&data_dir)?;
-        let data_dir = data_dir.canonicalize()?;
+        let data_dir = PathBuf::from(canonical_string(&data_dir)?);
         let initial_root = Some(root.map(|r| if r.is_absolute() { r } else { cwd.join(r) }).unwrap_or_else(|| cwd.clone()));
         let initial_root = match initial_root {
-            Some(r) => Some(r.canonicalize()?),
+            Some(r) => Some(PathBuf::from(canonical_string(&r)?)),
             None => None,
         };
         let cfg = Config { repo_root, data_dir, initial_root, safe_mode, dev_watch, headless, headless_script };
@@ -80,27 +81,27 @@ impl Config {
         Ok(cfg)
     }
 
-    pub fn modules_dir(&self) -> PathBuf { self.repo_root.join("modules") }
-    pub fn seed_dir(&self) -> PathBuf { self.repo_root.join("build").join("modules") }
-    pub fn artifacts_dir(&self) -> PathBuf { self.data_dir.join("artifacts") }
-    pub fn registry_file(&self) -> PathBuf { self.data_dir.join("module-registry.json") }
-    pub fn approved_grants_file(&self) -> PathBuf { self.data_dir.join("approved-grants.json") }
-    pub fn logs_dir(&self) -> PathBuf { self.data_dir.join("logs") }
-    pub fn sqlite_dir(&self) -> PathBuf { self.data_dir.join("sqlite") }
-    pub fn ssh_dir(&self) -> PathBuf { self.data_dir.join("ssh") }
-    pub fn shared_dir(&self) -> PathBuf { self.data_dir.join("shared") }
+    pub fn modules_dir(&self) -> PathBuf { under(&self.repo_root, "modules") }
+    pub fn seed_dir(&self) -> PathBuf { under(&self.repo_root, "build/modules") }
+    pub fn artifacts_dir(&self) -> PathBuf { under(&self.data_dir, "artifacts") }
+    pub fn registry_file(&self) -> PathBuf { under(&self.data_dir, "module-registry.json") }
+    pub fn approved_grants_file(&self) -> PathBuf { under(&self.data_dir, "approved-grants.json") }
+    pub fn logs_dir(&self) -> PathBuf { under(&self.data_dir, "logs") }
+    pub fn sqlite_dir(&self) -> PathBuf { under(&self.data_dir, "sqlite") }
+    pub fn ssh_dir(&self) -> PathBuf { under(&self.data_dir, "ssh") }
+    pub fn shared_dir(&self) -> PathBuf { under(&self.data_dir, "shared") }
     /// User-installed plugins: `<data>/plugins/<id>/manifest.json` (+ prebuilt artifact).
-    pub fn plugins_dir(&self) -> PathBuf { self.data_dir.join("plugins") }
+    pub fn plugins_dir(&self) -> PathBuf { under(&self.data_dir, "plugins") }
     /// Kernel-owned plugin preferences (enabled state, root override).
-    pub fn plugin_registry_file(&self) -> PathBuf { self.data_dir.join("plugins.json") }
+    pub fn plugin_registry_file(&self) -> PathBuf { under(&self.data_dir, "plugins.json") }
 
     /// esbuild native binary used by the `build` scope grant (developer tool, not needed at runtime).
     pub fn build_tool(&self) -> Option<PathBuf> {
         let candidates = [
-            self.repo_root.join("node_modules/@esbuild").join(esbuild_platform_pkg()).join("bin/esbuild"),
-            self.repo_root.join("node_modules/esbuild/bin/esbuild"),
+            under(&self.repo_root, &format!("node_modules/@esbuild/{}/{}", esbuild_platform_pkg(), if cfg!(windows) { "esbuild.exe" } else { "bin/esbuild" })),
+            under(&self.repo_root, "node_modules/esbuild/bin/esbuild"),
         ];
-        candidates.into_iter().find(|p| p.is_file()).and_then(|p| p.canonicalize().ok())
+        candidates.into_iter().find(|p| p.is_file()).and_then(|p| canonical_string(&p).ok()).map(PathBuf::from)
     }
 
     /// Directories module scope grants may never cover (kernel-owned state).
@@ -118,8 +119,12 @@ impl Config {
     }
 }
 
+/// `Path::join` would write `\\` on Windows, and scope checks compare these paths as strings in the
+/// `/`-separated form of `util::canonical_string`.
+fn under(base: &Path, rel: &str) -> PathBuf { PathBuf::from(format!("{}/{rel}", base.display())) }
+
 fn esbuild_platform_pkg() -> String {
-    let os = match std::env::consts::OS { "macos" => "darwin", o => o };
+    let os = match std::env::consts::OS { "macos" => "darwin", "windows" => "win32", o => o };
     let arch = match std::env::consts::ARCH { "aarch64" => "arm64", "x86_64" => "x64", a => a };
     format!("{os}-{arch}")
 }

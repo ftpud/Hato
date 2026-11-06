@@ -4,6 +4,7 @@
 use crate::approvals::{ApprovalOption, Decision};
 use crate::bridge::UiMsg;
 use crate::grants::{join_relative, normalize_posix, path_within, ScopeGrant, ScopeKind, Target};
+use crate::util::canonical_string;
 use crate::host::daemon_link;
 use crate::host::db::DbRes;
 use crate::host::fs as hfs;
@@ -437,15 +438,16 @@ fn dispatch(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: &Value) -> H
             let persist = persist_target(k, gen, req, &g.target)?;
             let spec = match &g.target {
                 Target::Local => {
-                    let real = std::fs::canonicalize(cwd).map_err(HostError::from)?.to_string_lossy().into_owned();
+                    let real = canonical_string(std::path::Path::new(cwd)).map_err(HostError::from)?;
                     if !path_within(&g.root, &real) {
                         return Err(HostError::denied("terminal cwd outside granted root"));
                     }
-                    let sh = shell.map(|s| s.to_string()).or_else(|| std::env::var("SHELL").ok()).unwrap_or_else(|| "/bin/sh".into());
+                    let sh = shell.map(|s| s.to_string()).or_else(|| std::env::var("SHELL").ok()).unwrap_or_else(|| if cfg!(windows) { "powershell.exe".into() } else { "/bin/sh".into() });
+                    let login = if cfg!(windows) { vec![] } else { vec!["-l".to_string()] };
                     match &persist {
                         Some(p) => PtySpec { program: p.bin.clone(), args: vec!["daemon".into(), "pty-attach".into(), "--dir".into(), p.dir.clone(), "--key".into(), p.key.clone(), "--cwd".into(), real.clone(), "--shell".into(), sh],
                             cwd: Some(real.clone()), env: env_pairs(req)?, cols, rows, machine_id: "local".into(), display_cwd: real, answer_queries: false },
-                        None => PtySpec { program: sh, args: vec!["-l".into()], cwd: Some(real.clone()), env: env_pairs(req)?, cols, rows, machine_id: "local".into(), display_cwd: real, answer_queries: true },
+                        None => PtySpec { program: sh, args: login, cwd: Some(real.clone()), env: env_pairs(req)?, cols, rows, machine_id: "local".into(), display_cwd: real, answer_queries: true },
                     }
                 }
                 Target::Ssh { machine_id, .. } => {
@@ -461,7 +463,8 @@ fn dispatch(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: &Value) -> H
                             shell.map(|s| format!(" --shell {}", sh_quote(s))).unwrap_or_default()),
                         None => crate::quoting::remote_shell(&real, shell),
                     };
-                    PtySpec { program: "ssh".into(), args: master.pty_argv(&remote), cwd: None, env: vec![], cols, rows, machine_id: machine_id.clone(), display_cwd: real, answer_queries: persist.is_none() }
+                    let (program, pty_args) = master.pty_command(&remote);
+                    PtySpec { program, args: pty_args, cwd: None, env: vec![], cols, rows, machine_id: machine_id.clone(), display_cwd: real, answer_queries: persist.is_none() }
                 }
             };
             let sess = pty::open(spec)?;
@@ -522,8 +525,12 @@ fn dispatch(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: &Value) -> H
                     h
                 }
             };
-            k.audit.record(owner, gen.gen_id, "ssh.connect", &profile.destination(), "ok", None);
+            k.audit.record(owner, gen.gen_id, "ssh.connect", &profile.label(), "ok", None);
             Ok(json!({"connection": h, "machineId": profile.machine_id(), "home": home}))
+        }
+        "ssh.wslDistributions" => {
+            gen.caps.require("ssh.connect")?;
+            Ok(json!(crate::host::wsl::distributions()?))
         }
         "ssh.status" => {
             let c: Arc<SshConnRef> = k.handles.get(arg_str(args, "connection")?, "ssh", owner)?;
@@ -541,7 +548,7 @@ fn dispatch(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: &Value) -> H
             let c: Arc<SshConnRef> = k.handles.get(arg_str(args, "connection")?, "ssh", owner)?;
             let lh = arg_str(args, "listener")?;
             let l: Arc<NetListener> = k.handles.get(lh, "listener", owner)?;
-            let rport = c.master.forward_reverse(l.port)?;
+            let rport = daemon_link::forward_reverse(&c.master, l.port, &k.cfg.data_dir, &k.cfg.repo_root)?;
             let f = Arc::new(Forward { master: c.master.clone(), remote_port: rport, local_port: l.port });
             let h = k.handles.insert("forward", owner, format!("{}:127.0.0.1:{rport}->127.0.0.1:{}", c.master.profile.machine_id(), l.port), f);
             k.audit.record(owner, gen.gen_id, "ssh.forwardLoopback", &format!("{} remote 127.0.0.1:{rport} -> local 127.0.0.1:{}", c.master.profile.machine_id(), l.port), "ok", None);
@@ -961,8 +968,8 @@ fn spawn_spec(k: &Kernel, g: &ScopeGrant, req: &Value) -> HResult<SpawnSpec> {
                 }
                 if !a.starts_with('-') {
                     let p = k.cfg.repo_root.join(a);
-                    let real = std::fs::canonicalize(&p).map_err(|_| HostError::not_found(format!("entry {a} not found")))?;
-                    if !real.starts_with(k.cfg.modules_dir()) {
+                    let real = canonical_string(&p).map_err(|_| HostError::not_found(format!("entry {a} not found")))?;
+                    if !path_within(&k.cfg.modules_dir().to_string_lossy(), &real) {
                         return Err(HostError::denied("build entry must be inside modules/"));
                     }
                 }
@@ -975,7 +982,7 @@ fn spawn_spec(k: &Kernel, g: &ScopeGrant, req: &Value) -> HResult<SpawnSpec> {
     }
     let cwd = match &g.target {
         Target::Local => {
-            let real = std::fs::canonicalize(&cwd).map_err(|e| HostError::new("ENOENT", format!("cwd {cwd}: {e}")))?.to_string_lossy().into_owned();
+            let real = canonical_string(std::path::Path::new(&cwd)).map_err(|e| HostError::new("ENOENT", format!("cwd {cwd}: {e}")))?;
             if !path_within(&g.root, &real) {
                 return Err(HostError::denied(format!("cwd {real} is outside the granted root {}", g.root)));
             }
@@ -1065,7 +1072,7 @@ fn request_grant(k: &Arc<Kernel>, gen: &Arc<Generation>, args: &Value) -> HResul
     let (target, root) = match kind {
         ScopeKind::Source => {
             gen.caps.require(if write { "modules.source.write" } else { "modules.source.read" })?;
-            (Target::Local, k.cfg.modules_dir().canonicalize().map_err(HostError::from)?.to_string_lossy().into_owned())
+            (Target::Local, canonical_string(&k.cfg.modules_dir()).map_err(HostError::from)?)
         }
         ScopeKind::Build => {
             gen.caps.require("process.build")?;
@@ -1077,12 +1084,13 @@ fn request_grant(k: &Arc<Kernel>, gen: &Arc<Generation>, args: &Value) -> HResul
             let t = args.get("target").cloned().unwrap_or(json!({"kind": "local"}));
             match t.get("kind").and_then(|x| x.as_str()) {
                 Some("local") | None => {
-                    let real = std::fs::canonicalize(root).map_err(|e| HostError::new("ENOENT", format!("root {root}: {e}")))?;
+                    let rs = canonical_string(std::path::Path::new(root)).map_err(|e| HostError::new("ENOENT", format!("root {root}: {e}")))?;
+                    let real = std::path::Path::new(&rs);
                     if !real.is_dir() {
                         return Err(HostError::invalid("root must be a directory"));
                     }
-                    let rs = real.to_string_lossy().into_owned();
-                    if rs == "/" {
+                    // `/`, or a Windows drive root.
+                    if real.parent().is_none() {
                         return Err(HostError::denied("the filesystem root cannot be granted"));
                     }
                     if protected(k, &rs) {
@@ -1116,7 +1124,7 @@ fn request_grant(k: &Arc<Kernel>, gen: &Arc<Generation>, args: &Value) -> HResul
         }
     };
     if write && kind == ScopeKind::Fs {
-        let shared = k.cfg.shared_dir().canonicalize().map_err(HostError::from)?.to_string_lossy().into_owned();
+        let shared = canonical_string(&k.cfg.shared_dir()).map_err(HostError::from)?;
         let inside_shared = target == Target::Local && path_within(&shared, &root);
         if !inside_shared {
             let purpose = arg_opt_str(args, "purpose").unwrap_or("");

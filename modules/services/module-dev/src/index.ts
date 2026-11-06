@@ -5,7 +5,7 @@
 // natively). The kernel itself knows nothing about TypeScript or esbuild.
 import type { AppModule, ModuleContext } from "../../../../sdk/types";
 import { errMsg } from "../../../../sdk/runtime";
-import { sha256Hex } from "../../../../sdk/sha256";
+import { sha256HexAsync } from "../../../../sdk/sha256";
 
 const BUILD_ARGS = ["--bundle", "--format=esm", "--platform=neutral", "--target=es2020", "--log-level=warning", "--charset=utf8", "--legal-comments=none", "--loader:.sql=text", "--loader:.md=text"];
 let srcRead: Promise<string> | null = null;
@@ -215,7 +215,7 @@ async function scan(ctx: ModuleContext, full: boolean): Promise<UpdateInfo[]> {
       let builtHash: string | null = null;
       let hashError = "";
       if (c.ok) {
-        try { builtHash = sha256Hex(c.code); }
+        try { builtHash = await sha256HexAsync(c.code); }
         catch (e) { hashError = `Cannot check compiled module: ${errMsg(e)}`; }
       }
       const status: UpdateInfo["status"] = !c.ok || hashError ? "build-error" : !activeHash ? "update-available" : builtHash === activeHash ? "current" : "update-available";

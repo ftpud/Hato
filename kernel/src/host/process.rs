@@ -9,7 +9,7 @@ use crate::util::{HResult, HostError};
 use parking_lot::{Condvar, Mutex};
 use serde_json::{json, Value};
 use std::io::{Read, Write};
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{Child, ChildStdin, Stdio};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -60,12 +60,12 @@ pub fn spawn(spec: SpawnSpec) -> HResult<Arc<ProcessRes>> {
             let p = spec.persist.clone().unwrap();
             let sh = quoting::remote_command(&spec.cwd, &spec.executable, &spec.args, &spec.env, &spec.env_remove, spec.login_shell)
                 .map_err(HostError::invalid)?;
-            let mut c = Command::new(&p.bin);
+            let mut c = crate::util::command(&p.bin);
             c.args(["daemon", "proc-attach", "--dir", &p.dir, "--key", &p.key, "--cwd", &spec.cwd, "--sh", &sh]);
             c
         }
         Target::Local => {
-            let mut c = Command::new(&spec.executable);
+            let mut c = crate::util::command(&spec.executable);
             c.args(&spec.args).current_dir(&spec.cwd);
             for (k, v) in &spec.env {
                 c.env(k, v);
@@ -83,9 +83,7 @@ pub fn spawn(spec: SpawnSpec) -> HResult<Arc<ProcessRes>> {
             if let Some(p) = &spec.persist {
                 remote = format!("{} daemon proc-attach --dir {} --key {} --cwd {} --sh {}", quoting::sh_quote(&p.bin), quoting::sh_quote(&p.dir), quoting::sh_quote(&p.key), quoting::sh_quote(&spec.cwd), quoting::sh_quote(&remote));
             }
-            let mut c = ssh.client_command(&["-T"]);
-            c.arg("--").arg(remote);
-            c
+            ssh.remote_command(&remote)
         }
     };
     cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
@@ -189,9 +187,16 @@ impl ProcessRes {
         }
         #[cfg(not(unix))]
         {
+            // No signals here: every request ends the process and its children.
             let _ = signal;
-            if let Some(c) = self.child.lock().as_mut() {
-                let _ = c.kill();
+            if self.exit.lock().is_none() {
+                let tree = crate::util::command(crate::util::system32("taskkill.exe")).args(["/T", "/F", "/PID", &self.pid.to_string()])
+                    .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status();
+                if !matches!(tree, Ok(s) if s.success()) {
+                    if let Some(c) = self.child.lock().as_mut() {
+                        let _ = c.kill();
+                    }
+                }
             }
             Ok(())
         }

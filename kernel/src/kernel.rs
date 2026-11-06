@@ -539,7 +539,7 @@ impl Kernel {
 
     /// Copy a plugin folder into the kernel-owned plugins dir (disabled until enabled).
     pub fn install_plugin(&self, requester: &Generation, from: &str) -> HResult<Value> {
-        let src = std::fs::canonicalize(from).map_err(|e| HostError::new("ENOENT", format!("{from}: {e}")))?;
+        let src = std::path::PathBuf::from(crate::util::canonical_string(std::path::Path::new(from)).map_err(|e| HostError::new("ENOENT", format!("{from}: {e}")))?);
         let m = plugins::read_manifest(&src).map_err(|e| HostError::invalid(format!("not a plugin folder: {e}")))?;
         if self.plugin_source(&m.id) == Some(Source::Builtin) {
             return Err(HostError::invalid(format!("'{}' is a built-in plugin id", m.id)));

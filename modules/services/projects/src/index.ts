@@ -1,7 +1,7 @@
 // projects: registration of local and SSH projects, Git detection on the project's own machine,
 // and the project/task tree model. Persistence goes through the `persistence` service.
 import type { AppModule, ModuleContext } from "../../../../sdk/types";
-import { errMsg, targetFor, workspaceGrant, type WorkspaceDescriptor } from "../../../../sdk/runtime";
+import { errMsg, sshFromProfile, targetFor, workspaceGrant, wslLocation, type WorkspaceDescriptor } from "../../../../sdk/runtime";
 
 interface GitInfo { isGit: boolean; topLevel: string | null; hasCommits: boolean; error?: string; checkedAt: number }
 const gitCache = new Map<string, GitInfo>();
@@ -12,7 +12,7 @@ function projectDesc(p: any, ssh: any): WorkspaceDescriptor {
     id: `project:${p.id}:root`, projectId: p.id, name: p.name, location: p.kind,
     machineId: p.kind === "ssh" ? `ssh:${p.sshProfileId}` : "local",
     rootAbsolutePath: p.rootPath, connectionRef: p.sshProfileId,
-    ssh: ssh ? { profileId: ssh.id, host: ssh.host, port: ssh.port, user: ssh.user, identityFile: ssh.authRef && ssh.authRef !== "agent" ? ssh.authRef : null } : null,
+    ssh: ssh ? sshFromProfile(ssh) : null,
   };
 }
 
@@ -48,6 +48,21 @@ async function refreshGit(ctx: ModuleContext, projectId: string) {
 
 function basename(p: string) { const parts = p.replace(/\/+$/, "").split("/"); return parts[parts.length - 1] || p; }
 
+const isWindows = (ctx: ModuleContext) => ctx.host.env.info().platform === "windows";
+
+/** Verify the root on its machine (connects + realpaths there), then add the project once. */
+async function registerRemote(ctx: ModuleContext, profile: any, remotePath: string, name?: string) {
+  const desc: WorkspaceDescriptor = projectDesc({ id: "pending", name: "pending", kind: "ssh", rootPath: remotePath, sshProfileId: profile.id }, profile);
+  const g = await workspaceGrant(ctx, desc, "fs");
+  const existing = await ctx.modules.call("persistence", "projects.findByRoot", { rootPath: g.root, sshProfileId: profile.id });
+  if (existing) return existing;
+  const id = crypto.randomUUID();
+  await ctx.modules.call("persistence", "projects.insert", { project: { id, name: String(name || `${basename(g.root)} (${profile.host})`), kind: "ssh", rootPath: g.root, sshProfileId: profile.id } });
+  await refreshGit(ctx, id);
+  ctx.events.emit("projects.changed", { projectId: id });
+  return ctx.modules.call("persistence", "projects.get", { id });
+}
+
 const mod: AppModule = {
   id: "projects",
   moduleApiVersion: 1,
@@ -57,7 +72,8 @@ const mod: AppModule = {
     const list = await ctx.modules.call("persistence", "projects.list");
     if (list.length === 0) {
       const root = ctx.host.env.info().initialRoot;
-      if (root) {
+      // On Windows the process cwd only names a project when it is inside a WSL distribution.
+      if (root && (!isWindows(ctx) || wslLocation(root))) {
         try {
           await mod.methods!.addLocal(ctx, { path: root }, { caller: "projects" });
           ctx.log.info("registered initial project", root);
@@ -83,7 +99,8 @@ const mod: AppModule = {
         const ssh: any = p.kind === "ssh" ? byProfile.get(p.sshProfileId) : null;
         return {
           id: p.id, name: p.name, kind: p.kind, rootPath: p.rootPath, expanded: p.expanded,
-          host: ssh ? `${ssh.user}@${ssh.host}${ssh.port !== 22 ? ":" + ssh.port : ""}` : null,
+          host: ssh ? (ssh.transport === "wsl" ? ssh.host : `${ssh.user}@${ssh.host}${ssh.port !== 22 ? ":" + ssh.port : ""}`) : null,
+          transport: ssh ? ssh.transport : null,
           isGit: git ? git.isGit : null, hasCommits: git ? git.hasCommits : null,
           offline: offline.get(p.id) || null,
           tasks: tasks.filter((t: any) => t.projectId === p.id).map((t: any) => ({ id: t.id, name: t.name, branch: t.branch, worktreePath: t.worktreePath, status: t.status })),
@@ -100,6 +117,11 @@ const mod: AppModule = {
 
     async addLocal(ctx, a) {
       const path = String(a.path || "").trim();
+      if (isWindows(ctx)) {
+        const wsl = wslLocation(path);
+        if (!wsl) throw new Error("On Windows, Hato opens projects in WSL or on a Linux host. Choose a folder under \\\\wsl.localhost, or add a WSL project.");
+        return mod.methods!.addWsl(ctx, { ...wsl, name: a.name }, { caller: "projects" });
+      }
       if (!path.startsWith("/")) throw new Error("project path must be absolute");
       // The kernel canonicalizes and validates the root when granting.
       const g = await ctx.host.capabilities.request({ kind: "fs", root: path, target: { kind: "local" } });
@@ -135,15 +157,25 @@ const mod: AppModule = {
         profile = { id: crypto.randomUUID(), host, port, user, authRef: identityFile || "agent" };
         await ctx.modules.call("persistence", "ssh.upsert", { profile });
       }
-      const desc: WorkspaceDescriptor = projectDesc({ id: "pending", name: "pending", kind: "ssh", rootPath: remotePath, sshProfileId: profile.id }, profile);
-      const g = await workspaceGrant(ctx, desc, "fs"); // connects + realpaths on the remote machine
-      const existing = await ctx.modules.call("persistence", "projects.findByRoot", { rootPath: g.root, sshProfileId: profile.id });
-      if (existing) return existing;
-      const id = crypto.randomUUID();
-      await ctx.modules.call("persistence", "projects.insert", { project: { id, name: String(a.name || `${basename(g.root)} (${host})`), kind: "ssh", rootPath: g.root, sshProfileId: profile.id } });
-      await refreshGit(ctx, id);
-      ctx.events.emit("projects.changed", { projectId: id });
-      return ctx.modules.call("persistence", "projects.get", { id });
+      return registerRemote(ctx, profile, remotePath, a.name);
+    },
+
+    /** Installed WSL distributions (Windows), the default first. */
+    wslDistributions: async (ctx) => ctx.host.ssh.wslDistributions(),
+
+    /** Register a project inside a WSL distribution. It behaves like an SSH project, without SSH. */
+    async addWsl(ctx, a) {
+      const distro = String(a.distro || "").trim();
+      const remotePath = String(a.remotePath || "").trim();
+      if (!distro || !remotePath.startsWith("/")) throw new Error("a WSL distribution and an absolute Linux path are required");
+      const profiles = await ctx.modules.call("persistence", "ssh.list");
+      let profile = profiles.find((p: any) => p.transport === "wsl" && p.host === distro);
+      if (!profile) {
+        // `user` is required by the profile schema; WSL channels run as the distribution's default user.
+        profile = { id: crypto.randomUUID(), host: distro, port: 22, user: "default", authRef: "agent", transport: "wsl" };
+        await ctx.modules.call("persistence", "ssh.upsert", { profile });
+      }
+      return registerRemote(ctx, profile, remotePath, a.name);
     },
 
     async setExpanded(ctx, a) {

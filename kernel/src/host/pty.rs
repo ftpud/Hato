@@ -82,6 +82,7 @@ pub struct PtySpec {
 }
 
 pub fn open(spec: PtySpec) -> HResult<Arc<PtySession>> {
+    let spec_answers = spec.answer_queries;
     let sys = native_pty_system();
     let cols = spec.cols.clamp(10, 1000);
     let rows = spec.rows.clamp(3, 500);
@@ -124,6 +125,9 @@ pub fn open(spec: PtySpec) -> HResult<Arc<PtySession>> {
         bytes_in: Default::default(),
     });
     let s2 = sess.clone();
+    // ConPTY opens with a cursor position query and stays silent until it is answered. The session
+    // answers it unless it is a relay, whose far end cannot: it only answers for the far program.
+    let mut conpty_query_pending = cfg!(windows) && !spec_answers;
     std::thread::Builder::new()
         .name("pty-reader".into())
         .spawn(move || {
@@ -131,7 +135,13 @@ pub fn open(spec: PtySpec) -> HResult<Arc<PtySession>> {
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) => break,
-                    Ok(n) => s2.feed(&buf[..n]),
+                    Ok(n) => {
+                        if conpty_query_pending && buf[..n].windows(4).any(|w| w == b"\x1b[6n") {
+                            conpty_query_pending = false;
+                            let _ = s2.write(b"\x1b[1;1R");
+                        }
+                        s2.feed(&buf[..n]);
+                    }
                     Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
                     Err(_) => break,
                 }

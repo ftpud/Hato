@@ -1,3 +1,5 @@
+// No console window for the desktop app on Windows; output still reaches pipes and the log file.
+#![cfg_attr(all(windows, feature = "gui"), windows_subsystem = "windows")]
 use hato_kernel::bridge::UiBridge;
 use hato_kernel::config::Config;
 use hato_kernel::kernel::Kernel;

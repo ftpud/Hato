@@ -158,9 +158,52 @@ pub fn utf8_split(buf: &[u8]) -> (String, Vec<u8>) {
     }
 }
 
+/// A child process command. A Windows GUI app would otherwise flash a console for each child.
+pub fn command(program: impl AsRef<std::ffi::OsStr>) -> std::process::Command {
+    #[allow(unused_mut)]
+    let mut c = std::process::Command::new(program);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        c.creation_flags(CREATE_NO_WINDOW);
+    }
+    c
+}
+
+/// Absolute path of a Windows system tool.
+#[cfg(windows)]
+pub fn system32(tool: &str) -> String {
+    let root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
+    format!(r"{root}\System32\{tool}")
+}
+
+/// Canonical path as the kernel's scope checks compare it: symlinks resolved and, on Windows,
+/// `/`-separated without the `\\?\` prefix (`C:/x`, `//server/share/x`).
+pub fn canonical_string(p: &std::path::Path) -> std::io::Result<String> {
+    let real = std::fs::canonicalize(p)?.to_string_lossy().into_owned();
+    Ok(if cfg!(windows) { plain_windows_path(&real) } else { real })
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn plain_windows_path(p: &str) -> String {
+    let plain = match (p.strip_prefix(r"\\?\UNC\"), p.strip_prefix(r"\\?\")) {
+        (Some(unc), _) => format!(r"\\{unc}"),
+        (None, Some(local)) => local.to_string(),
+        (None, None) => p.to_string(),
+    };
+    plain.replace('\\', "/")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn plain_windows_paths() {
+        assert_eq!(plain_windows_path(r"\\?\C:\Users\me\My Project"), "C:/Users/me/My Project");
+        assert_eq!(plain_windows_path(r"\\?\UNC\wsl.localhost\Ubuntu\home"), "//wsl.localhost/Ubuntu/home");
+        assert_eq!(plain_windows_path(r"C:\x"), "C:/x");
+    }
     #[test]
     fn redacts() {
         assert_eq!(redact("token=abc123 ok"), "token=[REDACTED] ok");

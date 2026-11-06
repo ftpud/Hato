@@ -1,7 +1,7 @@
 // workspace: the sole resolver of WorkspaceDescriptors (project root or task worktree), active
 // selection and per-workspace view state. The kernel never constructs or parses descriptors.
 import type { AppModule, ModuleContext } from "../../../../sdk/types";
-import type { WorkspaceDescriptor } from "../../../../sdk/runtime";
+import { sshFromProfile, type WorkspaceDescriptor } from "../../../../sdk/runtime";
 
 let selectedId: string | null = null;
 
@@ -24,7 +24,7 @@ async function resolve(ctx: ModuleContext, workspaceId: string): Promise<Workspa
   if (project.kind === "ssh") {
     const p = await ctx.modules.call("persistence", "ssh.get", { id: project.sshProfileId });
     if (!p) throw new Error(`SSH profile ${project.sshProfileId} missing`);
-    ssh = { profileId: p.id, host: p.host, port: p.port, user: p.user, identityFile: p.authRef && p.authRef !== "agent" ? p.authRef : null };
+    ssh = sshFromProfile(p);
   }
   return {
     id: task ? `task:${task.id}` : `project:${project.id}:root`,

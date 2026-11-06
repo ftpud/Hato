@@ -7,7 +7,9 @@ pub mod process;
 pub mod pty;
 mod pty_output;
 pub mod sftp;
+pub mod relay;
 pub mod ssh;
+pub mod wsl;
 pub mod streams;
 
 pub mod watch;

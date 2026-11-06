@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -61,8 +61,8 @@ pub fn binary_for(data_dir: &std::path::Path, repo_root: &std::path::Path, os: &
 }
 
 fn run_ssh(master: &SshMaster, remote: &str, stdin: Option<&[u8]>, timeout: Duration) -> HResult<(i32, String, String)> {
-    let mut c = master.client_command(&["-T"]);
-    c.arg("--").arg(remote).stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() }).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut c = master.remote_command(remote);
+    c.stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() }).stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = c.spawn().map_err(|e| HostError::new("ENOEXEC", format!("ssh: {e}")))?;
     if let (Some(data), Some(mut w)) = (stdin, child.stdin.take()) {
         let data = data.to_vec();
@@ -74,10 +74,8 @@ fn run_ssh(master: &SshMaster, remote: &str, stdin: Option<&[u8]>, timeout: Dura
     Ok((out.status.code().unwrap_or(-1), String::from_utf8_lossy(&out.stdout).into_owned(), String::from_utf8_lossy(&out.stderr).into_owned()))
 }
 
-/// Install (if needed) and start the daemon on an SSH machine.
-pub fn ensure_ssh(table: &DaemonTable, master: &Arc<SshMaster>, data_dir: &std::path::Path, repo_root: &std::path::Path) -> HResult<DaemonInfo> {
-    master.ensure_alive()?;
-    let machine_id = master.profile.machine_id();
+/// Upload the matching daemon binary if the machine lacks it. Returns (binary, daemon home).
+fn install(master: &Arc<SshMaster>, data_dir: &std::path::Path, repo_root: &std::path::Path) -> HResult<(String, String)> {
     let (code, uname, err) = run_ssh(master, "uname -sm", None, Duration::from_secs(30))?;
     if code != 0 {
         return Err(HostError::new("EREMOTE", format!("uname failed: {err}")));
@@ -106,6 +104,14 @@ pub fn ensure_ssh(table: &DaemonTable, master: &Arc<SshMaster>, data_dir: &std::
             return Err(HostError::new("EREMOTE", format!("uploading the daemon failed: {}", err.trim())));
         }
     }
+    Ok((bin, dir))
+}
+
+/// Install (if needed) and start the daemon on an SSH machine.
+pub fn ensure_ssh(table: &DaemonTable, master: &Arc<SshMaster>, data_dir: &std::path::Path, repo_root: &std::path::Path) -> HResult<DaemonInfo> {
+    master.ensure_alive()?;
+    let machine_id = master.profile.machine_id();
+    let (bin, dir) = install(master, data_dir, repo_root)?;
     let (code, out, err) = run_ssh(master, &format!("{} daemon ensure --dir {}", sh_quote(&bin), sh_quote(&dir)), None, Duration::from_secs(60))?;
     if code != 0 {
         return Err(HostError::new("EREMOTE", format!("starting the daemon failed: {}", err.trim())));
@@ -116,11 +122,40 @@ pub fn ensure_ssh(table: &DaemonTable, master: &Arc<SshMaster>, data_dir: &std::
     Ok(info)
 }
 
+/// Reverse loopback forward: remote 127.0.0.1:<allocated> reaches local 127.0.0.1:<local_port>.
+/// WSL shares no loopback with Windows, so its leg goes through a relay process in Linux.
+pub fn forward_reverse(master: &Arc<SshMaster>, local_port: u16, data_dir: &std::path::Path, repo_root: &std::path::Path) -> HResult<u16> {
+    if master.is_wsl() {
+        let (bin, _) = install(master, data_dir, repo_root)?;
+        return master.relay_from_wsl(local_port, &bin);
+    }
+    #[cfg(windows)]
+    {
+        let hop = SshMaster::new(crate::host::ssh::SshProfile { profile_id: "wsl-default".into(), host: String::new(), port: 22, user: "default".into(), identity_file: None, transport: Some("wsl".into()) });
+        hop.connect_default_distribution()?;
+        let (bin, _) = install(&hop, data_dir, repo_root)?;
+        let hop_port = hop.relay_from_wsl(local_port, &bin)?;
+        return master.forward_through_wsl(hop, hop_port);
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (data_dir, repo_root);
+        master.forward_reverse(local_port)
+    }
+}
+
 /// Start the daemon on this machine (terminals/processes then survive app restarts).
+#[cfg(windows)]
+pub fn ensure_local(_table: &DaemonTable) -> HResult<DaemonInfo> {
+    Err(HostError::new("ENOTSUP", "persistent resources need a Linux machine: open the workspace in WSL or over SSH"))
+}
+
+/// Start the daemon on this machine (terminals/processes then survive app restarts).
+#[cfg(not(windows))]
 pub fn ensure_local(table: &DaemonTable) -> HResult<DaemonInfo> {
     let exe = std::env::current_exe().map_err(HostError::io)?;
     let dir = crate::daemon::home_dir(None).to_string_lossy().into_owned();
-    let out = Command::new(&exe).args(["daemon", "ensure", "--dir", &dir]).stdin(Stdio::null()).output().map_err(HostError::io)?;
+    let out = crate::util::command(&exe).args(["daemon", "ensure", "--dir", &dir]).stdin(Stdio::null()).output().map_err(HostError::io)?;
     if !out.status.success() {
         return Err(HostError::new("EDAEMON", String::from_utf8_lossy(&out.stderr).trim().to_string()));
     }
@@ -136,7 +171,7 @@ pub fn request(info: &DaemonInfo, master: Option<&Arc<SshMaster>>, req: &Value) 
     let (code, out, err) = match master {
         Some(m) => run_ssh(m, &format!("{} daemon ctl --dir {}", sh_quote(&info.bin), sh_quote(&info.dir)), Some(&input), Duration::from_secs(600))?,
         None => {
-            let mut child = Command::new(&info.bin).args(["daemon", "ctl", "--dir", &info.dir]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())
+            let mut child = crate::util::command(&info.bin).args(["daemon", "ctl", "--dir", &info.dir]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())
                 .spawn().map_err(HostError::io)?;
             if let Some(mut w) = child.stdin.take() {
                 let _ = w.write_all(&input);

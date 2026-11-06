@@ -69,14 +69,14 @@ test("persistence: migrations are transactional, idempotent and owned by TS", as
       openNamespace: async (ns) => { assert.equal(ns, "persistence"); return "h_db"; },
       exec: async (_h, sql) => { execs.push(sql); return { changes: 0 }; },
       query: async (_h, sql) => (sql.includes("schema_migrations") ? applied.map((v) => ({ version: v })) : [{ v: applied.length }]),
-      transaction: async (_h, stmts) => { assert.match(stmts[0].sql, /CREATE TABLE|CREATE INDEX/); applied.push(stmts[1].params[0]); return { changes: 1 }; },
+      transaction: async (_h, stmts) => { assert.match(stmts[0].sql, /CREATE TABLE|CREATE INDEX|ALTER TABLE/); applied.push(stmts[1].params[0]); return { changes: 1 }; },
     },
   };
   const ctx = { host, log: { info() {}, warn() {} } };
   await m.activate(ctx);
-  assert.deepEqual(applied, [1, 2, 3]);
+  assert.deepEqual(applied, [1, 2, 3, 4]);
   await m.activate(ctx);
-  assert.deepEqual(applied, [1, 2, 3], "re-activation must not re-apply migrations");
+  assert.deepEqual(applied, [1, 2, 3, 4], "re-activation must not re-apply migrations");
 });
 
 test("persistence refuses private key material", async () => {

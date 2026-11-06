@@ -1,6 +1,6 @@
 // Shared helpers bundled (statically, at build time) into modules. Not a live module: nothing
 // here is imported at runtime from another module's generation.
-import type { ExecutionTarget, Handle, ModuleContext, ScopeGrant } from "./types";
+import type { ExecutionTarget, Handle, ModuleContext, ScopeGrant, SshProfileSpec } from "./types";
 
 /** Workspace descriptor produced by the `workspace` service (the kernel never parses it). */
 export interface WorkspaceDescriptor {
@@ -12,7 +12,7 @@ export interface WorkspaceDescriptor {
   machineId: string; // local | ssh:<profileId>
   rootAbsolutePath: string; // path ON that machine
   connectionRef?: string | null; // ssh profile id (no credentials)
-  ssh?: { profileId: string; host: string; port: number; user: string; identityFile?: string | null } | null;
+  ssh?: { profileId: string; host: string; port: number; user: string; identityFile?: string | null; transport?: "ssh" | "wsl" } | null;
   isGit?: boolean;
   status?: string;
 }
@@ -20,13 +20,30 @@ export interface WorkspaceDescriptor {
 const grantCache = new Map<string, Promise<ScopeGrant>>();
 const sshCache = new Map<string, Promise<{ connection: Handle; machineId: string; home: string | null }>>();
 
+/** Connection parameters of a workspace's machine. */
+export function sshProfileSpec(ssh: NonNullable<WorkspaceDescriptor["ssh"]>): SshProfileSpec {
+  return { profileId: ssh.profileId, host: ssh.host, port: ssh.port, user: ssh.user, identityFile: ssh.identityFile ?? null, transport: ssh.transport ?? "ssh" };
+}
+
+/** Descriptor field for a persisted machine profile. */
+export function sshFromProfile(p: { id: string; host: string; port: number; user: string; authRef?: string | null; transport?: "ssh" | "wsl" }): NonNullable<WorkspaceDescriptor["ssh"]> {
+  return { profileId: p.id, host: p.host, port: p.port, user: p.user, identityFile: p.authRef && p.authRef !== "agent" ? p.authRef : null, transport: p.transport ?? "ssh" };
+}
+
+/** A Windows path into a WSL distribution (`\\\\wsl.localhost\\Ubuntu\\home\\me`) as its distribution and Linux path. */
+export function wslLocation(path: string): { distro: string; remotePath: string } | null {
+  const m = /^[\\/]{2}(?:\?[\\/]UNC[\\/])?(?:wsl\.localhost|wsl\$)[\\/]([^\\/]+)(?:[\\/](.*))?$/i.exec(path.trim());
+  if (!m) return null;
+  return { distro: m[1], remotePath: "/" + (m[2] || "").replace(/\\/g, "/").replace(/\/+$/, "") };
+}
+
 /** Connect (or reuse) the SSH master for a workspace's machine. Errors are surfaced, never masked. */
 export function sshConnect(ctx: ModuleContext, desc: WorkspaceDescriptor) {
   if (desc.location !== "ssh" || !desc.ssh) throw new Error("not an SSH workspace");
   const key = desc.machineId;
   let p = sshCache.get(key);
   if (!p) {
-    p = ctx.host.ssh.connect({ profileId: desc.ssh.profileId, host: desc.ssh.host, port: desc.ssh.port, user: desc.ssh.user, identityFile: desc.ssh.identityFile ?? null });
+    p = ctx.host.ssh.connect(sshProfileSpec(desc.ssh));
     sshCache.set(key, p);
     p.catch(() => sshCache.delete(key));
   }

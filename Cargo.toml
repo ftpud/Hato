@@ -52,6 +52,10 @@ gui = ["dep:gpui-kit", "dep:gpui-component", "dep:image", "dep:objc2-app-kit", "
 [dev-dependencies]
 tempfile = "3"
 
+# Local patch: lets Linux cross-builds use prebuilt shaders (see vendor/gpui-pre-windows/build.rs).
+[patch.crates-io]
+gpui-pre-windows = { path = "vendor/gpui-pre-windows" }
+
 [profile.dev]
 opt-level = 1
 

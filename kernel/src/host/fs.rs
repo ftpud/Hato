@@ -1,8 +1,8 @@
 //! Filesystem primitives for scope grants: local (std::fs with canonicalization) and remote (SFTP).
 //! Every path is resolved (symlinks included) and checked against the grant's canonical root.
-use crate::grants::{join_relative, path_within, ScopeGrant, Target};
+use crate::grants::{join_local, join_relative, path_within, ScopeGrant, Target};
 use crate::host::ssh::SshMaster;
-use crate::util::{HResult, HostError};
+use crate::util::{canonical_string, HResult, HostError};
 use serde_json::{json, Value};
 use std::path::Path;
 use std::sync::Arc;
@@ -22,16 +22,19 @@ pub fn backend(g: &ScopeGrant, ssh: Option<Arc<SshMaster>>) -> HResult<FsBackend
 /// Resolve `rel` against the grant root, following symlinks, and verify containment.
 /// For non-existent targets (writes), the parent directory is resolved instead.
 pub fn resolve(g: &ScopeGrant, be: &FsBackend, rel: &str, must_exist: bool) -> HResult<String> {
-    let lexical = join_relative(&g.root, rel)?;
+    let lexical = match be {
+        FsBackend::Local => join_local(&g.root, rel)?,
+        FsBackend::Remote(_) => join_relative(&g.root, rel)?,
+    };
     let real = match be {
-        FsBackend::Local => match std::fs::canonicalize(&lexical) {
-            Ok(p) => p.to_string_lossy().into_owned(),
+        FsBackend::Local => match canonical_string(Path::new(&lexical)) {
+            Ok(p) => p,
             Err(e) if !must_exist && e.kind() == std::io::ErrorKind::NotFound => {
                 let p = Path::new(&lexical);
                 let parent = p.parent().ok_or_else(|| HostError::invalid("no parent"))?;
                 let name = p.file_name().ok_or_else(|| HostError::invalid("no file name"))?.to_string_lossy().into_owned();
-                let rp = std::fs::canonicalize(parent)?;
-                format!("{}/{}", rp.to_string_lossy().trim_end_matches('/'), name)
+                let rp = canonical_string(parent)?;
+                format!("{}/{}", rp.trim_end_matches('/'), name)
             }
             Err(e) => return Err(e.into()),
         },

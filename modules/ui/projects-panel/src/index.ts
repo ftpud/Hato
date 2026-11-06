@@ -11,6 +11,9 @@ let error: string | null = null;
 let notice: string | null = null;
 let busy: string | null = null;
 let sshForm = false;
+let wslForm = false;
+let wslDistros: string[] = [];
+let wslDistro = "";
 let addForm = false;
 let filter = "";
 let backgroundOpacity = 0.12;
@@ -19,6 +22,7 @@ let taskFormFor: string | null = null;
 let chatBusy: Record<string, number> = {};
 let agentBusy: Record<string, number> = {};
 let aiBusy: Record<string, number> = {};
+let windows = false;
 const busyText = (n: number) => `AI working${n > 1 ? ` (${n})` : ""}`;
 // Busy rows swap their icon for a rotating spinner; frames only tick while something is working.
 let frame = 0;
@@ -48,7 +52,7 @@ function rows(): TreeRow[] {
     const projectMatches = !query || [p.name, p.rootPath, p.host].some(value => String(value || "").toLowerCase().includes(query));
     const tasks = projectMatches ? p.tasks : p.tasks.filter((task: any) => [task.name, task.branch].some(value => String(value || "").toLowerCase().includes(query)));
     if (!projectMatches && !tasks.length) continue;
-    const location = p.kind === "ssh" ? `SSH · ${p.host || p.rootPath}` : p.rootPath;
+    const location = p.kind === "ssh" ? `${p.transport === "wsl" ? "WSL" : "SSH"} · ${p.host || p.rootPath}` : p.rootPath;
     const open = !!query || p.expanded;
     // A collapsed project also reports activity in its hidden tasks.
     const busyCount = (aiBusy[key] || 0) + (open ? 0 : p.tasks.reduce((n: number, t: any) => n + (aiBusy[`task:${t.id}`] || 0), 0));
@@ -84,6 +88,7 @@ const mod: AppModule = {
   moduleApiVersion: 1,
   async activate(ctx, prev) {
     if (prev) { sshForm = !!prev.sshForm; taskFormFor = prev.taskFormFor || null; addForm = !!prev.addForm; filter = prev.filter || ""; }
+    windows = ctx.host?.env.info().platform === "windows";
     const sel: any = ctx.state.get("workspace.selected");
     selected = sel ? sel.id : null;
     ctx.state.watch("workspace.selected", (v: any) => { selected = v ? v.id : null; ctx.ui.invalidate(); });
@@ -139,16 +144,36 @@ const mod: AppModule = {
       }
     }
     if (addForm) children.push({ type: "modal", key: "add-modal", title: "Add project", closeAction: "hideAdd", children: [
-      { type: "button", key: "add-local", text: "Choose local folder…", iconSvg: uiIcons["folder"], action: "addLocal", disabled: !!busy },
-      { type: "label", key: "path-label", text: "Or enter a local folder path", size: "sm", color: "muted" },
-      { type: "row", key: "manual", gap: 4, children: [
-        { type: "textInput", key: "local-path", placeholder: "/path/to/project", submitAction: "addLocalPath", grow: true },
-        { type: "button", key: "add-path", text: "Add", action: "addLocalPath", disabled: !!busy },
-      ] },
+      ...(windows ? [
+        { type: "button", key: "add-wsl", text: "Add WSL project…", iconSvg: uiIcons["folder"], action: "showWsl", disabled: !!busy },
+        { type: "button", key: "add-local", text: "Choose a folder under \\\\wsl.localhost…", iconSvg: uiIcons["folder"], action: "addLocal", disabled: !!busy },
+      ] as UiNode[] : [
+        { type: "button", key: "add-local", text: "Choose local folder…", iconSvg: uiIcons["folder"], action: "addLocal", disabled: !!busy },
+        { type: "label", key: "path-label", text: "Or enter a local folder path", size: "sm", color: "muted" },
+        { type: "row", key: "manual", gap: 4, children: [
+          { type: "textInput", key: "local-path", placeholder: "/path/to/project", submitAction: "addLocalPath", grow: true },
+          { type: "button", key: "add-path", text: "Add", action: "addLocalPath", disabled: !!busy },
+        ] },
+      ] as UiNode[]),
       { type: "divider", key: "separator" },
       { type: "button", key: "add-ssh", text: "Connect over SSH…", iconSvg: uiIcons["terminal"], action: "showSsh", disabled: !!busy },
       ...(error ? [{ type: "status", key: "add-error", text: error, level: "error" } as UiNode] : []),
     ] });
+    if (wslForm) {
+      children.push({ type: "modal", key: "wsl-modal", title: "Add WSL project", closeAction: "hideWsl", children: [
+        { type: "label", key: "wsl-l1", text: wslDistros.length ? "The project lives in Linux: files, Git, terminals and agents all run inside the distribution." : "No WSL distribution found. Install one with `wsl --install`, then try again.", size: "xs", color: "muted" },
+        ...(error ? [{ type: "status", key: "wsl-error", text: error, level: "error" } as UiNode] : []),
+        ...(wslDistros.length ? [
+          { type: "select", key: "wsl-distro", value: wslDistro, action: "wslDistro", options: wslDistros.map((d) => ({ value: d, label: d })) },
+          { type: "textInput", key: "wsl-path", placeholder: "/home/you/project", submitAction: "addWsl" },
+          { type: "textInput", key: "wsl-name", placeholder: "display name (optional)" },
+        ] as UiNode[] : []),
+        { type: "row", key: "wsl-b", gap: 4, children: [
+          ...(wslDistros.length ? [{ type: "button", key: "wsl-add", text: busy ? "Connecting…" : "Add", action: "addWsl", variant: "primary", disabled: !!busy } as UiNode] : []),
+          { type: "button", key: "wsl-cancel", text: "Cancel", action: "hideWsl" },
+        ] },
+      ] });
+    }
     if (sshForm) {
       children.push({ type: "modal", key: "ssh-modal", title: "Add SSH project", closeAction: "hideSsh", children: [
         { type: "label", key: "ssh-l1", text: "The remote project is browsed, executed and served by agents ON that host. Authentication uses your SSH agent or a key file path (never stored key contents). Host keys are verified against known_hosts.", size: "xs", color: "muted", wrap: true },
@@ -194,6 +219,19 @@ const mod: AppModule = {
       case "addLocalPath": {
         const path = (ev.inputs["local-path"] || "").trim();
         if (path) { const result = await run("Adding project…", () => ctx.modules.call("projects", "addLocal", { path })); if (result) addForm = false; }
+        break;
+      }
+      case "showWsl":
+        addForm = false; wslForm = true; error = null;
+        try { wslDistros = await ctx.modules.call("projects", "wslDistributions", {}); wslDistro = wslDistros.includes(wslDistro) ? wslDistro : wslDistros[0] || ""; }
+        catch (e) { error = errMsg(e); }
+        break;
+      case "hideWsl": wslForm = false; break;
+      case "wslDistro": wslDistro = String(ev.value || ""); break;
+      case "addWsl": {
+        const i = ev.inputs;
+        const r = await run("Connecting to WSL…", () => ctx.modules.call("projects", "addWsl", { distro: wslDistro, remotePath: i["wsl-path"], name: i["wsl-name"] || null }, { timeoutMs: 120000 }));
+        if (r) wslForm = false;
         break;
       }
       case "showSsh": addForm = false; sshForm = true; error = null; break;

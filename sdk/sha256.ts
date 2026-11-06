@@ -6,7 +6,8 @@ const K = new Uint32Array([
   0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3, 0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
 ]);
 
-export function sha256Hex(text: string): string {
+/** Incremental hash of a string's UTF-8 encoding. */
+function hasher() {
   // Feed UTF-8 directly into a single compression block. The embedded TextEncoder
   // uses a plain JS array, which can exhaust QuickJS's heap on multi-MB bundles.
   const buf = new Uint8Array(64);
@@ -41,7 +42,10 @@ export function sha256Hex(text: string): string {
     length++;
     if (used === 64) { compress(); used = 0; }
   };
-  for (let i = 0; i < text.length; i++) {
+  /** Hash `text[from..to)`. Returns the next index: a surrogate pair is never split across calls. */
+  const update = (text: string, from: number, to: number) => {
+  let i = from;
+  for (; i < to; i++) {
     let c = text.charCodeAt(i);
     if (c >= 0xd800 && c <= 0xdbff) {
       const d = text.charCodeAt(i + 1);
@@ -53,6 +57,9 @@ export function sha256Hex(text: string): string {
     else if (c < 0x10000) { byte(0xe0 | (c >> 12)); byte(0x80 | ((c >> 6) & 63)); byte(0x80 | (c & 63)); }
     else { byte(0xf0 | (c >> 18)); byte(0x80 | ((c >> 12) & 63)); byte(0x80 | ((c >> 6) & 63)); byte(0x80 | (c & 63)); }
   }
+  return i;
+  };
+  const finish = () => {
   const bits = length * 8;
   byte(0x80);
   while (used !== 56) byte(0);
@@ -62,4 +69,22 @@ export function sha256Hex(text: string): string {
   let out = "";
   for (let i = 0; i < 8; i++) out += H[i].toString(16).padStart(8, "0");
   return out;
+  };
+  return { update, finish };
+}
+
+export function sha256Hex(text: string): string {
+  const h = hasher();
+  h.update(text, 0, text.length);
+  return h.finish();
+}
+
+/** For multi-megabyte input: yields to the event loop, staying inside a module's execution slice. */
+export async function sha256HexAsync(text: string, chunk = 256 * 1024): Promise<string> {
+  const h = hasher();
+  for (let i = 0; i < text.length;) {
+    i = h.update(text, i, Math.min(i + chunk, text.length));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  return h.finish();
 }

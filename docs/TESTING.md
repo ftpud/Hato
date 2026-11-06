@@ -61,3 +61,11 @@ HATO_T_PHASE=2 tests/integration/run-integration.sh tests/integration/layout.js 
 These cover docking, resize/collapse events, floating and detached panel trees, bar controls,
 recovery access when bars or the Layout item are hidden, persistence across restart, and reset.
 Native pointer interactions and OS window appearance still require a desktop smoke test.
+
+## Windows
+
+`tests/integration/run-windows.sh`, run from WSL after `tools/release/package-windows.sh`, drives the packaged
+`hato.exe` against a real distribution and a throwaway `sshd`, and removes everything it creates. Pass
+`tools/release/smoke.js` as its argument for the packaged smoke test. Rust tests run on Windows through interop:
+`cargo test --locked --no-default-features --target x86_64-pc-windows-gnu`. Neither opens a window; see
+[WINDOWS.md](WINDOWS.md).

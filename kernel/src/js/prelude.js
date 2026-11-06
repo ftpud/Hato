@@ -186,6 +186,7 @@
       },
       ssh: {
         connect: (profile) => call("ssh.connect", { profile }),
+        wslDistributions: () => call("ssh.wslDistributions", {}),
         status: (connection) => call("ssh.status", { connection }),
         disconnect: (connection) => call("ssh.disconnect", { connection }),
         forwardLoopback: (connection, request) => call("ssh.forwardLoopback", Object.assign({ connection }, request)),

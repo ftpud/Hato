@@ -1,0 +1,3 @@
+# Bundled SQLite needs an explicit Windows API version with MinGW.
+[env]
+CFLAGS_x86_64_pc_windows_gnu = "-D_WIN32_WINNT=0x0A00"

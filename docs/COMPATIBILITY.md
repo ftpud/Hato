@@ -4,6 +4,7 @@
 | --- | --- | --- |
 | Rust toolchain | rustc 1.99.1 (stable, aarch64-apple-darwin) | `Cargo.lock` committed |
 | GPUI | `gpui-pre =0.3.10` via `gpui-kit =0.8.1` | GPUI's published crate family; `gpui-kit` pins the matching revision |
+| `gpui-pre-windows` | `0.3.10`, patched in `vendor/` | Only `build.rs` differs: Linux cross-builds use prebuilt shader bytecode |
 | gpui-component | `=0.8.1`, feature `tree-sitter-languages` | Native `Editor` (read-only, Tree-sitter highlighting), `Input`/`Textarea`, `Button`, dropdown menus, `Checkbox` |
 | QuickJS | `rquickjs =0.14.0` (`std`) | One `Runtime` + `Context` per module generation, own OS thread, explicit job pump |
 | SQLite | `rusqlite =0.41.1` (`bundled`, `limits`) | One DB file per namespace; `ATTACH` disabled |
@@ -20,9 +21,11 @@
 
 * **Tested:** macOS 27 (Apple Silicon) as the desktop host; SSH targets tested: macOS via a user-level
   `sshd` on `127.0.0.1:2222` (real OpenSSH server, key auth, separate host key).
-* **Untested:** Windows and Linux desktop builds (GPUI supports them, but nothing here was run there).
+* **Windows desktop:** the window runs on Windows; projects live in WSL or on Linux hosts. See
+  [WINDOWS.md](WINDOWS.md) for what has and has not been verified.
+* **Untested:** Linux desktop builds (GPUI supports them, but nothing here was run there).
   Remote Linux SSH hosts are expected to work (POSIX-only remote commands, SFTP), but were not available.
-* **Deferred:** remote Windows over SSH.
+* **Deferred:** native projects on Windows, a Windows daemon, and remote Windows over SSH.
 
 ## Why OpenSSH instead of libssh2
 

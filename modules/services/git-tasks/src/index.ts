@@ -2,7 +2,7 @@
 // machine (local or remote via SSH), outside the original checkout. Commands use argv locally and
 // the kernel's audited POSIX quoting adapter remotely — never interpolated shell strings.
 import type { AppModule, ModuleContext, RunResult } from "../../../../sdk/types";
-import { errMsg, shortId, targetFor, workspaceGrant, type WorkspaceDescriptor } from "../../../../sdk/runtime";
+import { errMsg, shortId, sshProfileSpec, targetFor, workspaceGrant, type WorkspaceDescriptor } from "../../../../sdk/runtime";
 import { exportMcpTools } from "../../../../sdk/mcp";
 import { taskTools } from "./tools";
 
@@ -39,7 +39,7 @@ function parsePorcelain(out: string) {
 }
 
 async function remoteStateDir(ctx: ModuleContext, desc: WorkspaceDescriptor) {
-  const c = await ctx.host.ssh.connect({ profileId: desc.ssh!.profileId, host: desc.ssh!.host, port: desc.ssh!.port, user: desc.ssh!.user, identityFile: desc.ssh!.identityFile ?? null });
+  const c = await ctx.host.ssh.connect(sshProfileSpec(desc.ssh!));
   if (!c.home) throw new Error("cannot determine remote home directory");
   return `${c.home.replace(/\/+$/, "")}/.local/state/hato`;
 }

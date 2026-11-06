@@ -340,6 +340,50 @@ pub fn join_relative(root: &str, rel: &str) -> HResult<String> {
     Ok(n)
 }
 
+/// `join_relative` for this machine's own paths, whose roots come from `util::canonical_string`.
+#[cfg(not(windows))]
+pub fn join_local(root: &str, rel: &str) -> HResult<String> { join_relative(root, rel) }
+
+#[cfg(windows)]
+pub fn join_local(root: &str, rel: &str) -> HResult<String> { join_windows(root, rel) }
+
+/// Join under a canonical Windows root (`C:/x` or `//server/share/x`). A root has no POSIX form,
+/// and anything Windows would reinterpret is refused before the path reaches the filesystem:
+/// separators, drives, alternate data streams, DOS device names and trailing dots or spaces.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn join_windows(root: &str, rel: &str) -> HResult<String> {
+    if rel.contains('\0') {
+        return Err(HostError::invalid("NUL in path"));
+    }
+    let base = root.trim_end_matches('/');
+    let rel = if rel == root || rel == base { "" } else { rel.strip_prefix(base).and_then(|r| r.strip_prefix('/')).unwrap_or(rel) };
+    if rel.starts_with('/') || rel.contains('\\') || rel.contains(':') {
+        return Err(HostError::denied(format!("path {rel:?} is outside the granted root")));
+    }
+    let mut parts: Vec<&str> = Vec::new();
+    for p in rel.split('/') {
+        match p {
+            "" | "." => {}
+            ".." => {
+                parts.pop().ok_or_else(|| HostError::denied("path escapes root"))?;
+            }
+            x if !windows_safe_component(x) => return Err(HostError::denied(format!("path component {x:?} is not allowed on Windows"))),
+            x => parts.push(x),
+        }
+    }
+    Ok(if parts.is_empty() { root.to_string() } else { format!("{base}/{}", parts.join("/")) })
+}
+
+fn windows_safe_component(c: &str) -> bool {
+    if c.ends_with('.') || c.ends_with(' ') {
+        return false;
+    }
+    let stem = c.split('.').next().unwrap_or(c).trim_end().to_ascii_uppercase();
+    let device = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$")
+        || (stem.len() == 4 && (stem.starts_with("COM") || stem.starts_with("LPT")) && stem.as_bytes()[3].is_ascii_digit());
+    !device
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -411,5 +455,30 @@ mod tests {
         assert!(join_relative("/a/b", "../x").is_err());
         assert!(join_relative("/a/b", "/etc/passwd").is_err());
         assert_eq!(normalize_posix("/../x"), None);
+    }
+    #[test]
+    fn windows_containment() {
+        // Canonical local paths use `/`, so containment needs no Windows-specific code.
+        assert!(path_within("C:/Users/me", "C:/Users/me/a"));
+        assert!(!path_within("C:/Users/me", "C:/Users/me2"));
+        assert!(!path_within("C:/Users/me", "D:/Users/me/a"));
+        assert!(path_within("C:/", "C:/a"));
+        assert!(path_within("//wsl.localhost/Ubuntu/home", "//wsl.localhost/Ubuntu/home/a"));
+    }
+    #[test]
+    fn windows_join() {
+        let r = "C:/Users/me/My Project";
+        assert_eq!(join_windows(r, "src/../a.txt").unwrap(), "C:/Users/me/My Project/a.txt");
+        assert_eq!(join_windows(r, ".").unwrap(), r);
+        assert_eq!(join_windows(r, "日本語/ファイル.txt").unwrap(), "C:/Users/me/My Project/日本語/ファイル.txt");
+        assert_eq!(join_windows(r, "C:/Users/me/My Project/a").unwrap(), "C:/Users/me/My Project/a");
+        assert_eq!(join_windows("C:/", "a").unwrap(), "C:/a");
+        for bad in ["../x", "a/../../x", "..\\x", "a\\b", "D:/x", "C:evil", "/etc/passwd", "//server/share", "a.txt:stream", "a.txt::$DATA",
+            "CON", "nul.txt", "x/COM1", "lpt9.log", "trailing.", "trailing ", "..."] {
+            assert!(join_windows(r, bad).is_err(), "{bad:?} must be refused");
+        }
+        assert!(join_windows(r, "C:/Users/me/My Project2/a").is_err());
+        assert!(join_windows(r, "console.txt").is_ok());
+        assert!(join_windows(r, "COMMON/x").is_ok());
     }
 }

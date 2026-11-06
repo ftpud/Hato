@@ -5,11 +5,13 @@ import type { AppModule, Handle, Json, ModuleContext } from "../../../../sdk/typ
 import m001 from "../migrations/001_init.sql";
 import m002 from "../migrations/002_indexes.sql";
 import m003 from "../migrations/003_scoped_settings.sql";
+import m004 from "../migrations/004_ssh_transport.sql";
 
 const MIGRATIONS: { version: number; name: string; sql: string }[] = [
   { version: 1, name: "001_init", sql: m001 },
   { version: 2, name: "002_indexes", sql: m002 },
   { version: 3, name: "003_scoped_settings", sql: m003 },
+  { version: 4, name: "004_ssh_transport", sql: m004 },
 ];
 
 let db: Handle | null = null;
@@ -59,7 +61,7 @@ const parse = (s: any, d: any) => { try { return s ? JSON.parse(s) : d; } catch 
 
 const projectRow = (r: any) => ({ id: r.id, name: r.name, kind: r.kind, rootPath: r.root_path, sshProfileId: r.ssh_profile_id, expanded: !!r.expanded, createdAt: r.created_at });
 const taskRow = (r: any) => ({ id: r.id, projectId: r.project_id, name: r.name, branch: r.branch, worktreePath: r.worktree_path, status: r.status, createdAt: r.created_at });
-const sshRow = (r: any) => ({ id: r.id, host: r.host, port: r.port, user: r.username, authRef: r.auth_ref });
+const sshRow = (r: any) => ({ id: r.id, host: r.host, port: r.port, user: r.username, authRef: r.auth_ref, transport: r.transport });
 const viewRow = (r: any, id: string) => r ? ({ workspaceId: r.workspace_id, explorerDir: r.explorer_relative_dir, previewPath: r.preview_relative_path, terminalKey: r.terminal_key, activeConversationId: r.active_conversation_id, ui: parse(r.ui_state_json, {}) })
   : ({ workspaceId: id, explorerDir: ".", previewPath: null, terminalKey: "main", activeConversationId: null, ui: {} });
 const convRow = (r: any) => ({ id: r.id, workspaceId: r.workspace_id, acpProfileId: r.acp_profile_id, providerSessionId: r.provider_session_id, title: r.title, status: r.status, approvalPolicy: r.approval_policy, mcpSelection: parse(r.mcp_selection_json, ["internal"]), config: parse(r.config_json, {}), createdAt: r.created_at, updatedAt: r.updated_at });
@@ -116,8 +118,8 @@ const mod: AppModule = {
     "ssh.upsert": async (ctx, a) => {
       const p = a.profile;
       if (p.authRef && /BEGIN [A-Z ]*PRIVATE KEY/.test(p.authRef)) throw new Error("refusing to store private key material; store a key file path or 'agent'");
-      await x(ctx, "INSERT INTO ssh_profiles(id, host, port, username, auth_ref) VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET host=excluded.host, port=excluded.port, username=excluded.username, auth_ref=excluded.auth_ref",
-        [str(p.id, "id"), str(p.host, "host"), Number(p.port) || 22, str(p.user, "user"), String(p.authRef || "agent")]);
+      await x(ctx, "INSERT INTO ssh_profiles(id, host, port, username, auth_ref, transport) VALUES(?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET host=excluded.host, port=excluded.port, username=excluded.username, auth_ref=excluded.auth_ref, transport=excluded.transport",
+        [str(p.id, "id"), str(p.host, "host"), Number(p.port) || 22, str(p.user, "user"), String(p.authRef || "agent"), p.transport === "wsl" ? "wsl" : "ssh"]);
       return null;
     },
     "ssh.get": async (ctx, a) => { const r = await q(ctx, "SELECT * FROM ssh_profiles WHERE id = ?", [str(a.id, "id")]); return r.length ? sshRow(r[0]) : null; },

@@ -51,7 +51,8 @@ export interface DaemonStatus { machineId: string; bin: string; dir: string; sta
 export interface DaemonResources { ptys: { key: string; cwd: string; exit: string | null; attached: boolean; title?: string }[];
   procs: { key: string; pid: number; command: string; exit: any; attached: boolean; bufferedBytes: number; droppedBytes: number }[] }
 
-export interface SshProfileSpec { profileId: string; host: string; port: number; user: string; identityFile?: string | null }
+/** `transport: "wsl"` (Windows only): `host` is a WSL distribution, reached without SSH. */
+export interface SshProfileSpec { profileId: string; host: string; port: number; user: string; identityFile?: string | null; transport?: "ssh" | "wsl" }
 export interface SqlStatement { sql: string; params?: Json[] }
 
 export interface StreamSubscription { subId: string; close(): Promise<void> }
@@ -100,6 +101,8 @@ export interface NativeHost {
   };
   ssh: {
     connect(profile: SshProfileSpec): Promise<{ connection: Handle; machineId: string; home: string | null }>;
+    /** Installed WSL distributions, the default first. Empty off Windows. */
+    wslDistributions(): Promise<string[]>;
     status(connection: Handle): Promise<{ alive: boolean; machineId: string; lastError: string | null }>;
     disconnect(connection: Handle): Promise<void>;
     forwardLoopback(connection: Handle, request: { listener: Handle }): Promise<{ handle: Handle; remotePort: number; localPort: number }>;
