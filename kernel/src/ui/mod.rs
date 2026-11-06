@@ -264,7 +264,7 @@ impl Shell {
                     let k = k.clone();
                     let m = m.clone();
                     std::thread::spawn(move || {
-                        if let Err(e) = k.rollback(None, &m, None, false) {
+                        if let Err(e) = k.rollback(None, &m, None, false, false) {
                             k.ui.send(UiMsg::Toast { level: "error".into(), text: format!("rollback {m}: {e}") });
                         }
                     });
@@ -1235,7 +1235,7 @@ impl Shell {
                     let k = k.clone();
                     let id = id2.clone();
                     std::thread::spawn(move || {
-                        let r = k.rollback(None, &id, None, false);
+                        let r = k.rollback(None, &id, None, false, false);
                         k.ui.send(UiMsg::Toast { level: if r.is_ok() { "info" } else { "error" }.into(), text: format!("rollback {id}: {}", r.map(|_| "ok".to_string()).unwrap_or_else(|e| e.to_string())) });
                     });
                 }));

@@ -735,12 +735,14 @@ fn dispatch(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: &Value) -> H
         }
         "modules.activate" => {
             gen.caps.require("modules.admin")?;
-            k.activate_staged(Some(gen), arg_str(args, "id")?, arg_str(args, "stageId")?, true)
+            let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+            k.activate_staged(Some(gen), arg_str(args, "id")?, arg_str(args, "stageId")?, true, force)
         }
         "modules.rollback" => {
             gen.caps.require("modules.admin")?;
             let to = args.get("toVersion").and_then(|v| v.as_u64()).map(|v| v as u32);
-            k.rollback(Some(gen), arg_str(args, "id")?, to, true)
+            let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+            k.rollback(Some(gen), arg_str(args, "id")?, to, true, force)
         }
         "modules.discard" => {
             gen.caps.require("modules.admin")?;

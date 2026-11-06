@@ -100,8 +100,8 @@ pub fn driver_op(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: &Value)
             let id = arg_str(args, "id")?;
             k.stage(gen, id, arg_str(args, "code")?, "test", false)
         }
-        "test.activate" => k.activate_staged(None, arg_str(args, "id")?, arg_str(args, "stageId")?, false),
-        "test.rollback" => k.rollback(None, arg_str(args, "id")?, args.get("toVersion").and_then(|v| v.as_u64()).map(|v| v as u32), false),
+        "test.activate" => k.activate_staged(None, arg_str(args, "id")?, arg_str(args, "stageId")?, false, args.get("force").and_then(|v| v.as_bool()).unwrap_or(false)),
+        "test.rollback" => k.rollback(None, arg_str(args, "id")?, args.get("toVersion").and_then(|v| v.as_u64()).map(|v| v as u32), false, args.get("force").and_then(|v| v.as_bool()).unwrap_or(false)),
         // Plugin lifecycle with the driver as requester (approvals follow the test.approvals policy).
         "test.pluginEnable" => k.enable_plugin(Some(gen), arg_str(args, "id")?),
         "test.pluginDisable" => k.disable_plugin(Some(gen), arg_str(args, "id")?, args.get("cascade").and_then(|c| c.as_bool()).unwrap_or(false)),

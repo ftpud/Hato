@@ -335,12 +335,12 @@ const mod: AppModule = {
       const id = String(a.id);
       const stageId = String(a.stageId || lastBuild.get(id)?.stageId || "");
       if (!stageId) throw new Error(`no staged build for '${id}'; run build first`);
-      const r = await ctx.host.modules.activate(id, stageId);
+      const r = await ctx.host.modules.activate(id, stageId, a.force === true ? { force: true } : undefined);
       return { ...r, ok: true };
     },
 
     async rollback(ctx, a) {
-      const r = await ctx.host.modules.rollback(String(a.id), a.toVersion ? { toVersion: Number(a.toVersion) } : undefined);
+      const r = await ctx.host.modules.rollback(String(a.id), { ...(a.toVersion ? { toVersion: Number(a.toVersion) } : {}), ...(a.force === true ? { force: true } : {}) });
       scan(ctx, false).catch(() => {});
       return { ...r, ok: true };
     },

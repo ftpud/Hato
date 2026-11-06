@@ -49,6 +49,8 @@ let busy: string | null = null;
 let upd: Record<string, any> = {};
 let updSummary: { available: string[]; errors: string[] } = { available: [], errors: [] };
 let scanningUpd = false;
+/** Swaps a module refused as busy, kept so the Modules panel can offer to retry them with force. */
+let deferredSwaps: Record<string, { method: "activate" | "rollback"; args: any; reason: string }> = {};
 let layout: Layout = defaultLayout();
 let save: () => void = () => {};
 // Plugin contributions: panels, activity sidebars and overlays come from enabled plugins' manifests.
@@ -103,6 +105,13 @@ async function loadUpdates(ctx: ModuleContext, scan: boolean, full = false) {
 async function loadModules(ctx: ModuleContext) {
   try { modules = await ctx.modules.call("module-dev", "list"); } catch (e) { diag = errMsg(e); }
   ctx.ui.invalidate();
+}
+
+/** Records a build that compiled but whose swap was refused as busy. The staged build is reused by Force. */
+function noteDeferredBuild(id: string, r: any): boolean {
+  if (r?.ok !== false || r.code !== "EDEFERRED" || !r.build?.stageId) return false;
+  deferredSwaps[id] = { method: "activate", args: { id, stageId: r.build.stageId }, reason: String(r.error) };
+  return true;
 }
 
 function versionsSummary() {
@@ -348,6 +357,10 @@ function modulesModal(): UiNode {
     ...updSummary.errors.map((id): UiNode => ({ type: "status", key: `build-error:${id}`, level: "error", text: `${id}: ${upd[id]?.diagnostics || "Build failed"}. The active module has been kept.` })),
     ...(busy ? [{ type: "progress", key: "busy", indeterminate: true, label: busy } as UiNode] : []),
     ...(diag ? [{ type: "status", key: "diag", text: diag, level: diag.startsWith("✓") ? "success" : "error" } as UiNode] : []),
+    ...Object.entries(deferredSwaps).map(([id, d]): UiNode => ({ type: "row", key: `deferred:${id}`, gap: 6, align: "center", children: [
+      { type: "status", key: "reason", level: "warn", text: d.reason, grow: true },
+      { type: "button", key: "force", text: "Force", action: "forceSwap", value: id, small: true, variant: "danger", disabled: !!busy, tooltip: "Replace this module now without waiting for it to finish. Its current work may be interrupted or lost." },
+    ] })),
     { type: "column", key: "list", gap: 2, scroll: true, children: rows },
   ] };
 }
@@ -723,13 +736,14 @@ const mod: AppModule = {
       case "resetLayout": await resetCustomization(ctx); break;
       case "toggleLayoutMenu": showLayout = !showLayout; break;
       // -- modules window
-      case "toggleModules": showModules = !showModules; diag = null; if (showModules) { await loadModules(ctx); loadUpdates(ctx, true); } break;
+      case "toggleModules": showModules = !showModules; diag = null; deferredSwaps = {}; if (showModules) { await loadModules(ctx); loadUpdates(ctx, true); } break;
       case "rescan": await loadUpdates(ctx, true, true); break;
       case "activateAll": {
-        busy = `Updating ${updSummary.available.join(", ")}…`; diag = null; ctx.ui.invalidate();
+        busy = `Updating ${updSummary.available.join(", ")}…`; diag = null; deferredSwaps = {}; ctx.ui.invalidate();
         try {
           const r = await ctx.modules.call("module-dev", "activateUpdates", {}, { timeoutMs: 1800000 });
-          diag = r.ok ? `✓ updated ${r.results.map((x: any) => x.label).join(", ")}` : r.results.filter((x: any) => !x.ok).map((x: any) => `${x.id}: ${x.error}`).join("\n");
+          const failed = r.results.filter((x: any) => !x.ok && !noteDeferredBuild(String(x.id), x));
+          diag = r.ok ? `✓ updated ${r.results.map((x: any) => x.label).join(", ")}` : failed.length ? failed.map((x: any) => `${x.id}: ${x.error}`).join("\n") : null;
         } catch (e) { diag = errMsg(e); }
         busy = null;
         await loadModules(ctx);
@@ -743,22 +757,47 @@ const mod: AppModule = {
         if (!current?.active) break;
         const target = moduleVersions(current)[v as "bundled" | "updated"];
         if (target === undefined || target === current.active.version) break;
-        busy = `Switching ${id} to ${v}…`; diag = null; ctx.ui.invalidate();
+        busy = `Switching ${id} to ${v}…`; diag = null; delete deferredSwaps[id]; ctx.ui.invalidate();
         try {
           const r = await ctx.modules.call("module-dev", "rollback", { id, toVersion: target }, { timeoutMs: 900000 });
           diag = `✓ ${r.label || id} active (${v})`;
-        } catch (e) { diag = `${id}: ${errMsg(e)}`; }
+        } catch (e: any) {
+          if (e?.code === "EDEFERRED") deferredSwaps[id] = { method: "rollback", args: { id, toVersion: target }, reason: errMsg(e) };
+          else diag = `${id}: ${errMsg(e)}`;
+        }
         finally { busy = null; await loadModules(ctx); }
         break;
       }
       case "rebuild":
       case "rollback": {
         const id = String(v);
-        busy = `${ev.action === "rebuild" ? "Building" : "Rolling back"} ${id}…`; diag = null; ctx.ui.invalidate();
+        busy = `${ev.action === "rebuild" ? "Building" : "Rolling back"} ${id}…`; diag = null; delete deferredSwaps[id]; ctx.ui.invalidate();
         try {
           const r = await ctx.modules.call("module-dev", ev.action === "rebuild" ? "buildAndActivate" : "rollback", { id }, { timeoutMs: 900000 });
-          diag = r.ok === false ? `${id}: ${r.error || "failed"}\n${(r.diagnostics || "").slice(0, 2000)}` : `✓ ${r.label || id} active${r.swapMs !== undefined ? ` (swap ${r.swapMs} ms)` : ""}`;
-        } catch (e) { diag = `${id}: ${errMsg(e)}`; }
+          if (!noteDeferredBuild(id, r)) diag = r.ok === false ? `${id}: ${r.error || "failed"}\n${(r.diagnostics || "").slice(0, 2000)}` : `✓ ${r.label || id} active${r.swapMs !== undefined ? ` (swap ${r.swapMs} ms)` : ""}`;
+        } catch (e: any) {
+          if (e?.code === "EDEFERRED") deferredSwaps[id] = { method: "rollback", args: { id }, reason: errMsg(e) };
+          else diag = `${id}: ${errMsg(e)}`;
+        }
+        busy = null;
+        await loadModules(ctx);
+        await loadUpdates(ctx, true);
+        break;
+      }
+      case "forceSwap": {
+        const id = String(v);
+        const swap = deferredSwaps[id];
+        if (!swap || busy) break;
+        busy = `Forcing ${id}…`; diag = null; ctx.ui.invalidate();
+        try {
+          const r = await ctx.modules.call("module-dev", swap.method, { ...swap.args, force: true }, { timeoutMs: 900000 });
+          delete deferredSwaps[id];
+          diag = `✓ ${r.label || id} active (forced)`;
+        } catch (e: any) {
+          // A denied approval leaves the row in place so it can be tried again.
+          diag = `${id}: ${errMsg(e)}`;
+          if (e?.code === "ENOENT") delete deferredSwaps[id];
+        }
         busy = null;
         await loadModules(ctx);
         await loadUpdates(ctx, true);

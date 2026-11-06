@@ -742,7 +742,7 @@ impl Kernel {
         }
     }
 
-    pub fn activate_staged(&self, requester: Option<&Generation>, id: &str, stage_id: &str, require_approval: bool) -> HResult<Value> {
+    pub fn activate_staged(&self, requester: Option<&Generation>, id: &str, stage_id: &str, require_approval: bool, force: bool) -> HResult<Value> {
         let gen = {
             let st = self.staged.lock();
             st.get(stage_id).cloned().ok_or_else(|| HostError::not_found(format!("no staged generation {stage_id}")))?
@@ -753,12 +753,14 @@ impl Kernel {
         if require_approval {
             let req = requester.ok_or_else(|| HostError::denied("approval requires a requester"))?;
             let old = self.router.active(id).map(|g| g.label()).unwrap_or_else(|| "(none)".into());
-            let detail = format!("Swap module '{id}' from {old} to {}.\nSHA-256: {}\nCapabilities: {}\n\nExisting terminals, agent processes and data are kept. The previous version stays available for rollback.",
+            let outcome = if force { "\n\nFORCED: this skips the module's busy check. Work it is doing right now may be interrupted or lost, and active sessions may need restarting." } else { "\n\nExisting terminals, agent processes and data are kept." };
+            let detail = format!("Swap module '{id}' from {old} to {}.\nSHA-256: {}\nCapabilities: {}{outcome}\n\nThe previous version stays available for rollback.",
                 gen.label(), gen.hash, gen.caps.caps.iter().cloned().collect::<Vec<_>>().join(", "));
-            self.require_approval(req, "modules.activate", &format!("Activate {}?", gen.label()), &detail)?;
+            let title = format!("{} {}?", if force { "Force activate" } else { "Activate" }, gen.label());
+            self.require_approval(req, "modules.activate", &title, &detail)?;
         }
         self.staged.lock().remove(stage_id);
-        let r = self.swap(id, gen.clone());
+        let r = self.swap(id, gen.clone(), force);
         if r.is_err() && gen.status() == GenStatus::Staged {
             // Deferred: keep it staged so the caller can retry.
             self.staged.lock().insert(stage_id.to_string(), gen);
@@ -766,7 +768,7 @@ impl Kernel {
         r
     }
 
-    pub fn rollback(&self, requester: Option<&Generation>, id: &str, to: Option<u32>, require_approval: bool) -> HResult<Value> {
+    pub fn rollback(&self, requester: Option<&Generation>, id: &str, to: Option<u32>, require_approval: bool, force: bool) -> HResult<Value> {
         let (target, current) = {
             let store = self.artifacts.lock();
             let rec = store.get(id).cloned().unwrap_or_default();
@@ -781,12 +783,23 @@ impl Kernel {
         let target = target.ok_or_else(|| HostError::not_found(format!("no earlier healthy version of '{id}' to roll back to")))?;
         if require_approval {
             let req = requester.ok_or_else(|| HostError::denied("approval requires a requester"))?;
-            let detail = format!("Roll back module '{id}' from {} to {id}@{target:04}.", current.map(|v| format!("{id}@{v:04}")).unwrap_or("(none)".into()));
-            self.require_approval(req, "modules.rollback", &format!("Roll back '{id}' to version {target:04}?"), &detail)?;
+            let outcome = if force { "\n\nFORCED: this skips the module's busy check. Work it is doing right now may be interrupted or lost, and active sessions may need restarting." } else { "" };
+            let detail = format!("Roll back module '{id}' from {} to {id}@{target:04}.{outcome}", current.map(|v| format!("{id}@{v:04}")).unwrap_or("(none)".into()));
+            let title = format!("{} '{id}' to version {target:04}?", if force { "Force roll back" } else { "Roll back" });
+            self.require_approval(req, "modules.rollback", &title, &detail)?;
         }
         let (code, man, _) = self.artifacts.lock().load(id, target)?;
         let gen = self.spawn_generation(&man, target, &code)?;
-        let r = self.swap(id, gen)?;
+        let r = match self.swap(id, gen.clone(), force) {
+            Ok(r) => r,
+            Err(e) => {
+                // A deferred rollback has no stage id to retry with, so don't leave its worker running.
+                if gen.status() == GenStatus::Staged {
+                    self.router.retire(&gen);
+                }
+                return Err(e);
+            }
+        };
         {
             let mut store = self.artifacts.lock();
             let rec = store.record(id);
@@ -801,12 +814,16 @@ impl Kernel {
 
     /// The swap protocol (fence -> snapshot -> candidate activate(prev) -> health -> cutover ->
     /// drain/retire old). On any failure before cutover the old generation stays active.
-    fn swap(&self, id: &str, new: Arc<Generation>) -> HResult<Value> {
+    /// `force` skips only the old generation's `canSwap` veto; a swap already in progress still
+    /// fails, and activation and health checks still run.
+    fn swap(&self, id: &str, new: Arc<Generation>, force: bool) -> HResult<Value> {
         let lock = self.swap_lock(id);
         let _g = lock.lock();
         let t0 = Instant::now();
         let old = self.router.active(id);
-        if let Some(o) = &old {
+        if force {
+            self.logs.push(id, new.gen_id, "warn", &format!("forced swap to {}: skipped the busy check", new.label()));
+        } else if let Some(o) = &old {
             if o.exports.lock().get("canSwap").and_then(|v| v.as_bool()).unwrap_or(false) {
                 let r = self.router.invoke_gen_blocking(o, json!({"kind": "canSwap"}), Duration::from_secs(3));
                 match r {
@@ -1042,7 +1059,7 @@ impl Kernel {
                     let Some(req) = k.router.active(&id) else { continue };
                     let r = k.stage(&req, &id, &code, "dev-watch", false).and_then(|v| {
                         let sid = v["stageId"].as_str().unwrap_or("").to_string();
-                        k.activate_staged(None, &id, &sid, false)
+                        k.activate_staged(None, &id, &sid, false, false)
                     });
                     let text = match &r { Ok(v) => format!("dev-watch: {} active", v["label"].as_str().unwrap_or(&id)), Err(e) => format!("dev-watch: {id} not activated: {e}") };
                     log::info!("{text}");

@@ -136,8 +136,9 @@ export interface NativeHost {
     describe(id: string): Promise<Json>;
     logs(id: string, limit?: number): Promise<Json[]>;
     stageArtifact(id: string, code: string): Promise<{ stageId: string; id: string; version: number; label: string; sha256: string }>;
-    activate(id: string, stageId: string): Promise<{ ok: boolean; version: number; label: string; previous: string | null; swapMs: number }>;
-    rollback(id: string, opts?: { toVersion?: number }): Promise<{ ok: boolean; version: number; label: string; previous: string | null }>;
+    /** `force` skips the active generation's `canSwap` veto; the native approval warns about this. */
+    activate(id: string, stageId: string, opts?: { force?: boolean }): Promise<{ ok: boolean; version: number; label: string; previous: string | null; swapMs: number }>;
+    rollback(id: string, opts?: { toVersion?: number; force?: boolean }): Promise<{ ok: boolean; version: number; label: string; previous: string | null }>;
     discard(stageId: string): Promise<void>;
     sourceInfo(): Promise<{ repoRoot: string; modulesRoot: string; buildTool: string | null }>;
   };

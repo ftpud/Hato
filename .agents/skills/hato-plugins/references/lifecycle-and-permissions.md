@@ -46,7 +46,7 @@ selection; see `modules/ui/settings/src/index.ts`.
 ```text
 new source/bundle → stage artifact
 └── activate staged generation
-    ├── canSwap on previous generation, if exported
+    ├── canSwap on previous generation, if exported (a veto returns EDEFERRED; `force` skips this step)
     ├── fence incoming calls and pause stream delivery
     ├── snapshot previous generation
     ├── candidate.activate(ctx, snapshot)
