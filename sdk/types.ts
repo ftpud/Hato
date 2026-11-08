@@ -51,8 +51,9 @@ export interface DaemonStatus { machineId: string; bin: string; dir: string; sta
 export interface DaemonResources { ptys: { key: string; cwd: string; exit: string | null; attached: boolean; title?: string }[];
   procs: { key: string; pid: number; command: string; exit: any; attached: boolean; bufferedBytes: number; droppedBytes: number }[] }
 
-/** `transport: "wsl"` (Windows only): `host` is a WSL distribution, reached without SSH. */
-export interface SshProfileSpec { profileId: string; host: string; port: number; user: string; identityFile?: string | null; transport?: "ssh" | "wsl" }
+/** `transport: "wsl"` (Windows only): `host` is a WSL distribution, reached without SSH.
+ *  `auth: "password"`: the kernel asks natively when connecting; modules never see the password. */
+export interface SshProfileSpec { profileId: string; host: string; port: number; user: string; identityFile?: string | null; transport?: "ssh" | "wsl"; auth?: "password" }
 export interface SqlStatement { sql: string; params?: Json[] }
 
 export interface StreamSubscription { subId: string; close(): Promise<void> }
@@ -100,7 +101,8 @@ export interface NativeHost {
     info(pty: Handle): Promise<{ machineId: string; cwd: string; columns: number; rows: number; exit: string | null; screen: string }>;
   };
   ssh: {
-    connect(profile: SshProfileSpec): Promise<{ connection: Handle; machineId: string; home: string | null }>;
+    /** `interactive`: a user gesture, so a password profile may prompt. Otherwise it fails with ENEEDAUTH until connected. */
+    connect(profile: SshProfileSpec, options?: { interactive?: boolean }): Promise<{ connection: Handle; machineId: string; home: string | null }>;
     /** Installed WSL distributions, the default first. Empty off Windows. */
     wslDistributions(): Promise<string[]>;
     status(connection: Handle): Promise<{ alive: boolean; machineId: string; lastError: string | null }>;

@@ -69,3 +69,8 @@ Native pointer interactions and OS window appearance still require a desktop smo
 `tools/release/smoke.js` as its argument for the packaged smoke test. Rust tests run on Windows through interop:
 `cargo test --locked --no-default-features --target x86_64-pc-windows-gnu`. Neither opens a window; see
 [WINDOWS.md](WINDOWS.md).
+
+## SSH password logins
+
+`tests/integration/ssh-password.sh` needs `gcc`, `openssl` and `/usr/sbin/sshd`, and no root: it starts throwaway servers and
+preloads a shim that supplies a test password's hash. Build first with `cargo build --no-default-features && npm run modules:build`.

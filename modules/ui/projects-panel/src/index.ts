@@ -1,20 +1,24 @@
 // projects-panel: left tree of projects and their Git task worktrees.
 // Clicking a row selects a workspace; clicking the chevron expands/collapses (separate events).
 import type { AppModule, ModuleContext, TreeRow, UiNode } from "../../../../sdk/types";
-import { errMsg } from "../../../../sdk/runtime";
+import { errMsg, wslLocation } from "../../../../sdk/runtime";
 import { uiIcons } from "../../../../sdk/ui-icons";
+import { addProjectModal, localRequest, sourcesFor, sshRequest, wslRequest, type AddSource, type FieldErrors, type SshAuth } from "./add-project";
 import { projectsBranding } from "./branding";
 
 let tree: any[] = [];
 let selected: string | null = null;
 let error: string | null = null;
+let treeError: string | null = null;
 let notice: string | null = null;
 let busy: string | null = null;
-let sshForm = false;
-let wslForm = false;
+let addForm = false;
+let addSource: AddSource = "local";
+let sshAuth: SshAuth = "agent";
+let addValues: Record<string, string> = {};
+let fieldErrors: FieldErrors = {};
 let wslDistros: string[] = [];
 let wslDistro = "";
-let addForm = false;
 let filter = "";
 let backgroundOpacity = 0.12;
 let taskFormFor: string | null = null;
@@ -39,8 +43,8 @@ function updateBusy(ctx: ModuleContext) {
 const asCounts = (v: any): Record<string, number> => (v && typeof v === "object" ? v : {});
 
 async function reload(ctx: ModuleContext) {
-  try { tree = await ctx.modules.call("projects", "tree"); error = null; }
-  catch (e) { error = errMsg(e); }
+  try { tree = await ctx.modules.call("projects", "tree"); treeError = null; }
+  catch (e) { treeError = errMsg(e); }
   ctx.ui.invalidate();
 }
 
@@ -58,8 +62,8 @@ function rows(): TreeRow[] {
     const busyCount = (aiBusy[key] || 0) + (open ? 0 : p.tasks.reduce((n: number, t: any) => n + (aiBusy[`task:${t.id}`] || 0), 0));
     out.push({
       key, label: p.name, depth: 0, expandable: tasks.length > 0, expanded: !!query || p.expanded, selected: selected === key,
-      badge: p.offline ? "Offline" : tasks.length ? `${tasks.length} ${tasks.length === 1 ? "task" : "tasks"}` : undefined,
-      detail: p.offline ? `Offline · ${p.offline}` : busyCount ? `${busyText(busyCount)} · ${location}` : location,
+      badge: p.needsPassword ? "Connect" : p.offline ? "Offline" : tasks.length ? `${tasks.length} ${tasks.length === 1 ? "task" : "tasks"}` : undefined,
+      detail: p.needsPassword ? `Password needed · ${location}` : p.offline ? `Offline · ${p.offline}` : busyCount ? `${busyText(busyCount)} · ${location}` : location,
       icon: p.offline ? "warning" : p.kind === "ssh" ? "remote" : "folder",
       iconSvg: busyCount ? spinnerSvg() : p.offline ? uiIcons.warning : p.kind === "ssh" ? uiIcons.terminal : uiIcons.folder, iconColor: busyCount ? "primary" : "muted", weight: "semibold",
     });
@@ -83,12 +87,32 @@ function selectedProject() {
   return null;
 }
 
+function projectOfRow(rowKey: string | undefined) {
+  const task = /^task:(.+)$/.exec(rowKey || "");
+  if (task) return tree.find((p) => p.tasks.some((t: any) => t.id === task[1])) || null;
+  return tree.find((p) => rowKey === `project:${p.id}:root`) || null;
+}
+
+async function loadDistros(ctx: ModuleContext) {
+  try { wslDistros = await ctx.modules.call("projects", "wslDistributions", {}); wslDistro = wslDistros.includes(wslDistro) ? wslDistro : wslDistros[0] || ""; }
+  catch (e) { error = errMsg(e); }
+}
+
+/** A prompt can wait for the user several times, on top of the connection itself. */
+const CONNECT_TIMEOUT_MS = 960000;
+
 const mod: AppModule = {
   id: "projects-panel",
   moduleApiVersion: 1,
   async activate(ctx, prev) {
-    if (prev) { sshForm = !!prev.sshForm; taskFormFor = prev.taskFormFor || null; addForm = !!prev.addForm; filter = prev.filter || ""; }
     windows = ctx.host?.env.info().platform === "windows";
+    addSource = sourcesFor(windows)[0].id;
+    if (prev) {
+      taskFormFor = prev.taskFormFor || null; addForm = !!prev.addForm; filter = prev.filter || ""; addValues = prev.addValues || {};
+      if (sourcesFor(windows).some((source) => source.id === prev.addSource)) addSource = prev.addSource;
+      if (prev.sshAuth === "key" || prev.sshAuth === "password") sshAuth = prev.sshAuth;
+      if (addForm && windows) await loadDistros(ctx);
+    }
     const sel: any = ctx.state.get("workspace.selected");
     selected = sel ? sel.id : null;
     ctx.state.watch("workspace.selected", (v: any) => { selected = v ? v.id : null; ctx.ui.invalidate(); });
@@ -108,7 +132,7 @@ const mod: AppModule = {
     await reload(ctx);
   },
   deactivate() { if (animation) clearInterval(animation); animation = null; },
-  snapshot: () => ({ sshForm, taskFormFor, addForm, filter }),
+  snapshot: () => ({ taskFormFor, addForm, addSource, sshAuth, addValues, filter }),
   render(): UiNode {
     const proj = selectedProject();
     const visibleRows = rows();
@@ -123,7 +147,7 @@ const mod: AppModule = {
         ...(proj?.isGit && proj.hasCommits !== false ? [{ type: "button", key: "new-task", text: "New task", iconSvg: uiIcons["git-branch"], action: "newTask", small: true, variant: "ghost", tooltip: `Create a worktree in ${proj.name}`, disabled: !!busy } as UiNode] : []),
       ] },
     ];
-    if (error) children.push({ type: "status", key: "err", text: error, level: "error" });
+    if ((error || treeError) && !addForm) children.push({ type: "status", key: "err", text: (error || treeError)!, level: "error" });
     if (notice) children.push({ type: "status", key: "notice", text: notice, level: "warn" });
     if (busy) children.push({ type: "progress", key: "busy", indeterminate: true, label: busy });
     if (!visibleRows.length) children.push({ type: "label", key: "empty", text: filter.trim() ? "No matching projects or tasks." : "Add a project to get started.", size: "sm", color: "muted", padding: 8 });
@@ -143,53 +167,7 @@ const mod: AppModule = {
         ] });
       }
     }
-    if (addForm) children.push({ type: "modal", key: "add-modal", title: "Add project", closeAction: "hideAdd", children: [
-      ...(windows ? [
-        { type: "button", key: "add-wsl", text: "Add WSL project…", iconSvg: uiIcons["folder"], action: "showWsl", disabled: !!busy },
-        { type: "button", key: "add-local", text: "Choose a folder under \\\\wsl.localhost…", iconSvg: uiIcons["folder"], action: "addLocal", disabled: !!busy },
-      ] as UiNode[] : [
-        { type: "button", key: "add-local", text: "Choose local folder…", iconSvg: uiIcons["folder"], action: "addLocal", disabled: !!busy },
-        { type: "label", key: "path-label", text: "Or enter a local folder path", size: "sm", color: "muted" },
-        { type: "row", key: "manual", gap: 4, children: [
-          { type: "textInput", key: "local-path", placeholder: "/path/to/project", submitAction: "addLocalPath", grow: true },
-          { type: "button", key: "add-path", text: "Add", action: "addLocalPath", disabled: !!busy },
-        ] },
-      ] as UiNode[]),
-      { type: "divider", key: "separator" },
-      { type: "button", key: "add-ssh", text: "Connect over SSH…", iconSvg: uiIcons["terminal"], action: "showSsh", disabled: !!busy },
-      ...(error ? [{ type: "status", key: "add-error", text: error, level: "error" } as UiNode] : []),
-    ] });
-    if (wslForm) {
-      children.push({ type: "modal", key: "wsl-modal", title: "Add WSL project", closeAction: "hideWsl", children: [
-        { type: "label", key: "wsl-l1", text: wslDistros.length ? "The project lives in Linux: files, Git, terminals and agents all run inside the distribution." : "No WSL distribution found. Install one with `wsl --install`, then try again.", size: "xs", color: "muted" },
-        ...(error ? [{ type: "status", key: "wsl-error", text: error, level: "error" } as UiNode] : []),
-        ...(wslDistros.length ? [
-          { type: "select", key: "wsl-distro", value: wslDistro, action: "wslDistro", options: wslDistros.map((d) => ({ value: d, label: d })) },
-          { type: "textInput", key: "wsl-path", placeholder: "/home/you/project", submitAction: "addWsl" },
-          { type: "textInput", key: "wsl-name", placeholder: "display name (optional)" },
-        ] as UiNode[] : []),
-        { type: "row", key: "wsl-b", gap: 4, children: [
-          ...(wslDistros.length ? [{ type: "button", key: "wsl-add", text: busy ? "Connecting…" : "Add", action: "addWsl", variant: "primary", disabled: !!busy } as UiNode] : []),
-          { type: "button", key: "wsl-cancel", text: "Cancel", action: "hideWsl" },
-        ] },
-      ] });
-    }
-    if (sshForm) {
-      children.push({ type: "modal", key: "ssh-modal", title: "Add SSH project", closeAction: "hideSsh", children: [
-        { type: "label", key: "ssh-l1", text: "The remote project is browsed, executed and served by agents ON that host. Authentication uses your SSH agent or a key file path (never stored key contents). Host keys are verified against known_hosts.", size: "xs", color: "muted", wrap: true },
-        ...(error ? [{ type: "status", key: "ssh-error", text: error, level: "error" } as UiNode] : []),
-        { type: "textInput", key: "ssh-host", placeholder: "hostname" },
-        { type: "textInput", key: "ssh-user", placeholder: "user" },
-        { type: "textInput", key: "ssh-port", placeholder: "port (22)" },
-        { type: "textInput", key: "ssh-path", placeholder: "/absolute/remote/path" },
-        { type: "textInput", key: "ssh-key", placeholder: "identity file path (optional, default: ssh-agent)" },
-        { type: "textInput", key: "ssh-name", placeholder: "display name (optional)" },
-        { type: "row", key: "ssh-b", gap: 4, children: [
-          { type: "button", key: "ssh-add", text: busy ? "Connecting…" : "Connect & add", action: "addSsh", variant: "primary", disabled: !!busy },
-          { type: "button", key: "ssh-cancel", text: "Cancel", action: "hideSsh" },
-        ] },
-      ] });
-    }
+    if (addForm) children.push(addProjectModal({ windows, source: addSource, sshAuth, values: addValues, errors: fieldErrors, error, busy, distros: wslDistros, distro: wslDistro }));
     return { type: "column", key: "projects-root", gap: 4, padding: 6, grow: true,
       ...(backgroundOpacity > 0 ? { backgroundImage: projectsBranding, backgroundImageStyle: { opacity: backgroundOpacity, width: 960, left: -350, top: -60 } } : {}), children };
   },
@@ -198,15 +176,28 @@ const mod: AppModule = {
       busy = label; error = null; ctx.ui.invalidate();
       try { return await fn(); } catch (e) { error = errMsg(e); return null; } finally { busy = null; await reload(ctx); }
     };
+    // Typing is kept while a connection is under way.
+    if (ev.action === "addField") { addValues = { ...addValues, [ev.key]: String(ev.value ?? "") }; delete fieldErrors[ev.key]; ctx.ui.invalidate(); return; }
     if (busy) return;
+    const closeAdd = () => { addForm = false; addValues = {}; fieldErrors = {}; };
+    const openAdd = async (source: AddSource) => {
+      addForm = true; addSource = source; error = null; fieldErrors = {};
+      if (source === "wsl") await loadDistros(ctx);
+    };
     switch (ev.action) {
       case "filter": filter = String(ev.value || ""); break;
-      case "refresh": await reload(ctx); break;
-      case "showAdd": addForm = true; error = null; break;
-      case "hideAdd": addForm = false; break;
+      case "refresh": error = null; await reload(ctx); break;
+      case "showAdd": await openAdd(sourcesFor(windows).some((source) => source.id === addSource) ? addSource : sourcesFor(windows)[0].id); break;
+      case "hideAdd": addForm = false; error = null; fieldErrors = {}; break;
+      case "addSource": await openAdd(ev.value as AddSource); break;
       case "selectWorkspace":
         error = null;
         selected = ev.rowKey || null; ctx.ui.invalidate();
+        // Clicking a project is the gesture that may ask for its password; nothing else prompts.
+        {
+          const project = projectOfRow(ev.rowKey);
+          if (project?.auth === "password") await run("Connecting…", () => ctx.modules.call("projects", "connect", { projectId: project.id }, { timeoutMs: CONNECT_TIMEOUT_MS }));
+        }
         try { await ctx.modules.call("workspace", "select", { workspaceId: ev.rowKey }); } catch (e) { error = errMsg(e); }
         break;
       case "toggleExpanded": {
@@ -215,33 +206,36 @@ const mod: AppModule = {
         if (p) await ctx.modules.call("projects", "setExpanded", { projectId: p.id, expanded: !p.expanded });
         break;
       }
-      case "addLocal": { const result = await run("Adding project…", () => ctx.modules.call("projects", "pickAndAddLocal", {})); if (result) addForm = false; break; }
-      case "addLocalPath": {
-        const path = (ev.inputs["local-path"] || "").trim();
-        if (path) { const result = await run("Adding project…", () => ctx.modules.call("projects", "addLocal", { path })); if (result) addForm = false; }
+      case "browse": {
+        const path = await run("Choosing a folder…", () => ctx.modules.call("projects", "pickFolder", {}));
+        if (!path) break;
+        if (!windows) { addValues = { ...addValues, "local-path": path }; break; }
+        const location = wslLocation(path);
+        if (!location) { error = "Choose a folder under \\\\wsl.localhost, inside a WSL distribution."; break; }
+        if (wslDistros.includes(location.distro)) wslDistro = location.distro;
+        addValues = { ...addValues, "wsl-path": location.remotePath };
         break;
       }
-      case "showWsl":
-        addForm = false; wslForm = true; error = null;
-        try { wslDistros = await ctx.modules.call("projects", "wslDistributions", {}); wslDistro = wslDistros.includes(wslDistro) ? wslDistro : wslDistros[0] || ""; }
-        catch (e) { error = errMsg(e); }
+      case "addLocalPath": {
+        const parsed = localRequest({ ...addValues, ...ev.inputs });
+        fieldErrors = parsed.errors;
+        if (parsed.request && await run("Adding project…", () => ctx.modules.call("projects", "addLocal", parsed.request))) closeAdd();
         break;
-      case "hideWsl": wslForm = false; break;
+      }
+      case "showWsl": await openAdd("wsl"); break;
       case "wslDistro": wslDistro = String(ev.value || ""); break;
       case "addWsl": {
-        const i = ev.inputs;
-        const r = await run("Connecting to WSL…", () => ctx.modules.call("projects", "addWsl", { distro: wslDistro, remotePath: i["wsl-path"], name: i["wsl-name"] || null }, { timeoutMs: 120000 }));
-        if (r) wslForm = false;
+        const parsed = wslRequest({ ...addValues, ...ev.inputs }, wslDistro);
+        fieldErrors = parsed.errors;
+        if (parsed.request && await run("Connecting to WSL…", () => ctx.modules.call("projects", "addWsl", parsed.request, { timeoutMs: 120000 }))) closeAdd();
         break;
       }
-      case "showSsh": addForm = false; sshForm = true; error = null; break;
-      case "hideSsh": sshForm = false; break;
+      case "showSsh": await openAdd("ssh"); break;
+      case "sshAuth": if (ev.value === "agent" || ev.value === "key" || ev.value === "password") sshAuth = ev.value; break;
       case "addSsh": {
-        const i = ev.inputs;
-        const r = await run("Connecting over SSH…", () => ctx.modules.call("projects", "addSsh", {
-          host: i["ssh-host"], user: i["ssh-user"], port: Number(i["ssh-port"]) || 22, remotePath: i["ssh-path"], identityFile: i["ssh-key"] || null, name: i["ssh-name"] || null,
-        }, { timeoutMs: 120000 }));
-        if (r) sshForm = false;
+        const parsed = sshRequest({ ...addValues, ...ev.inputs }, sshAuth);
+        fieldErrors = parsed.errors;
+        if (parsed.request && await run("Connecting over SSH…", () => ctx.modules.call("projects", "addSsh", parsed.request, { timeoutMs: CONNECT_TIMEOUT_MS }))) closeAdd();
         break;
       }
       case "newTask": taskFormFor = selectedProject()?.id || null; notice = null; break;

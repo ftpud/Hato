@@ -18,8 +18,8 @@ Unzip `Hato-<version>-windows-x86_64.zip` to a folder you can write to, and run 
 builds write to that folder. Node is not needed on Windows; the package includes esbuild. Application data is in
 `%APPDATA%\Hato`.
 
-To add a project, press **+** in the project panel, then either **Add WSL project…** (distribution and Linux path) or
-choose a folder under `\\wsl.localhost`. **Connect over SSH…** adds a Linux host. `hato.exe --root
+To add a project, press **+** in the project panel. **WSL** takes a distribution and a Linux path, or a folder under
+`\\wsl.localhost` chosen with **Browse…**. **SSH host** adds a Linux host, signing in with the SSH agent, a key file or a password. `hato.exe --root
 \\wsl.localhost\Ubuntu\home\me\project` registers a project on first launch.
 
 ## How it works
@@ -45,7 +45,7 @@ same as on Unix.
 
 * Terminals through the daemon survive an app restart as long as the distribution keeps running. WSL may stop an idle
   distribution once no Windows process is using it, which ends them.
-* `hato.exe` has no embedded icon, and the build is not code-signed, so SmartScreen may warn on first launch.
+* The build is not code-signed, so SmartScreen may warn on first launch.
 * Without `cargo-zigbuild` on the build machine, the bundled daemon links glibc, and needs a distribution at least as
   new as the build machine's, on x86-64. With it, static x86-64 and ARM64 daemons are bundled.
 * The Windows package is not part of the signed release workflow.
@@ -60,6 +60,9 @@ tests/integration/run-windows.sh      # from WSL: end-to-end test of that packag
 ```
 
 Native rebuilds are needed only for kernel changes. Module changes hot-reload as on other platforms.
+
+`build.rs` embeds `assets/hato.ico` in the executable with MinGW's `windres`. After changing `assets/hato-icon.png`, run
+`tools/windows/build-icon.py` (needs Pillow) and rebuild.
 
 Release builds embed compiled shaders. GPUI's build script needs `fxc.exe` from the Windows SDK, which cannot run during a
 Linux build, so `vendor/gpui-pre-windows` uses `prebuilt/shaders_bytes.rs`. After changing a vendored `.hlsl` file, run

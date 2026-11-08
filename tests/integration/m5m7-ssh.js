@@ -31,6 +31,7 @@ async function run(ctx) {
 
   // ---- M5: SSH project through the panel's Add SSH form
   await ev("projects-panel", "showSsh");
+  await ev("projects-panel", "sshAuth", { value: "key" });
   await ev("projects-panel", "addSsh", { inputs: { "ssh-host": "127.0.0.1", "ssh-user": user, "ssh-port": "2222", "ssh-path": R, "ssh-key": key, "ssh-name": "Remote Gamma" } });
   const tree = await until(async () => { const t = await call("projects", "tree"); const p = t.find((x) => x.kind === "ssh"); return p && p.isGit !== null ? t : null; }, 30000);
   const pr = tree && tree.find((x) => x.kind === "ssh");

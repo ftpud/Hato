@@ -30,14 +30,37 @@ pub struct ApprovalRequest {
     pub detail: String,
     /// True when the detail text was supplied by a module rather than computed by the kernel.
     pub module_supplied: bool,
+    /// Label of a masked field in the native prompt. The typed text is never part of this request.
+    pub secret_label: Option<String>,
     pub options: Vec<ApprovalOption>,
     pub created_ms: u64,
     pub expires_ms: u64,
 }
 
+/// Text typed into native chrome, for a privileged operation only. Not serializable or printable,
+/// and overwritten when dropped.
+pub struct Secret(String);
+
+impl Secret {
+    pub fn new(text: String) -> Self { Secret(text) }
+    pub fn expose(&self) -> &str { &self.0 }
+}
+
+impl Drop for Secret {
+    fn drop(&mut self) {
+        // SAFETY: zero bytes are valid UTF-8, and the string is not used afterwards.
+        unsafe { self.0.as_bytes_mut().fill(0); }
+    }
+}
+
+struct Resolution {
+    option: String,
+    secret: Option<Secret>,
+}
+
 struct Pending {
     req: ApprovalRequest,
-    tx: crossbeam_channel::Sender<String>,
+    tx: crossbeam_channel::Sender<Resolution>,
 }
 
 pub struct Approvals {
@@ -45,6 +68,8 @@ pub struct Approvals {
     ui: UiBridge,
     /// Headless test hook: auto-decisions (only settable from the kernel's own headless runner).
     pub headless_policy: Mutex<Option<Arc<dyn Fn(&ApprovalRequest) -> Option<String> + Send + Sync>>>,
+    /// Headless test hook: what a secret prompt "types". Without it, secret prompts are cancelled.
+    pub headless_secret: Mutex<Option<String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -55,7 +80,7 @@ pub enum Decision {
 
 impl Approvals {
     pub fn new(ui: UiBridge) -> Self {
-        Approvals { pending: Mutex::new(Vec::new()), ui, headless_policy: Mutex::new(None) }
+        Approvals { pending: Mutex::new(Vec::new()), ui, headless_policy: Mutex::new(None), headless_secret: Mutex::new(None) }
     }
 
     pub fn allow_deny() -> Vec<ApprovalOption> {
@@ -77,8 +102,37 @@ impl Approvals {
         options: Vec<ApprovalOption>,
         timeout: Duration,
     ) -> Decision {
-        let (tx, rx) = crossbeam_channel::bounded(1);
-        let req = ApprovalRequest {
+        let req = Self::new_request(module, generation, operation, title, detail, module_supplied, None, options, timeout);
+        if let Some(policy) = self.headless_policy.lock().clone() {
+            if let Some(choice) = policy(&req) {
+                log::info!("headless approval policy chose {choice} for {} ({})", req.operation, req.title);
+                return Decision::Option(choice);
+            }
+        }
+        match self.wait(req, timeout) {
+            Some(resolution) => Decision::Option(resolution.option),
+            None => Decision::Expired,
+        }
+    }
+
+    /// Blocking, like `request`: asks for a secret in native chrome, so the caller's module never
+    /// sees it. `None` when the user cancels or the prompt expires.
+    pub fn request_secret(&self, module: &str, generation: u64, operation: &str, title: &str, detail: &str, label: &str, confirm: &str, timeout: Duration) -> Option<Secret> {
+        let options = vec![
+            ApprovalOption { id: "allow".into(), label: confirm.into(), kind: "allow".into() },
+            ApprovalOption { id: "deny".into(), label: "Cancel".into(), kind: "deny".into() },
+        ];
+        let req = Self::new_request(module, generation, operation, title, detail, false, Some(label.into()), options, timeout);
+        if let Some(policy) = self.headless_policy.lock().clone() {
+            let _ = policy(&req);
+            return self.headless_secret.lock().clone().map(Secret::new);
+        }
+        self.wait(req, timeout).and_then(|resolution| resolution.secret)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn new_request(module: &str, generation: u64, operation: &str, title: &str, detail: &str, module_supplied: bool, secret_label: Option<String>, options: Vec<ApprovalOption>, timeout: Duration) -> ApprovalRequest {
+        ApprovalRequest {
             id: format!("appr_{}", random_hex(8)),
             module: module.into(),
             generation,
@@ -86,26 +140,22 @@ impl Approvals {
             title: title.into(),
             detail: detail.into(),
             module_supplied,
+            secret_label,
             options,
             created_ms: now_ms(),
             expires_ms: now_ms() + timeout.as_millis() as u64,
-        };
-        let id = req.id.clone();
-        if let Some(policy) = self.headless_policy.lock().clone() {
-            if let Some(choice) = policy(&req) {
-                log::info!("headless approval policy chose {choice} for {} ({})", req.operation, req.title);
-                return Decision::Option(choice);
-            }
         }
+    }
+
+    fn wait(&self, req: ApprovalRequest, timeout: Duration) -> Option<Resolution> {
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        let id = req.id.clone();
         self.pending.lock().push(Pending { req, tx });
         self.ui.send(UiMsg::ApprovalsChanged);
         let res = rx.recv_timeout(timeout);
         self.pending.lock().retain(|p| p.req.id != id);
         self.ui.send(UiMsg::ApprovalsChanged);
-        match res {
-            Ok(choice) => Decision::Option(choice),
-            Err(_) => Decision::Expired,
-        }
+        res.ok()
     }
 
     pub fn snapshot(&self) -> Vec<ApprovalRequest> { self.pending.lock().iter().map(|p| p.req.clone()).collect() }
@@ -117,8 +167,16 @@ impl Approvals {
         let pending = self.pending.lock();
         if let Some(p) = pending.iter().find(|p| p.req.id == id) {
             if p.req.options.iter().any(|o| o.id == option) {
-                let _ = p.tx.try_send(option.to_string());
+                let _ = p.tx.try_send(Resolution { option: option.to_string(), secret: None });
             }
+        }
+    }
+
+    /// Called ONLY from native GPUI handlers, with text from the prompt's own masked field.
+    pub fn resolve_secret_from_native_ui(&self, id: &str, secret: Secret) {
+        let pending = self.pending.lock();
+        if let Some(p) = pending.iter().find(|p| p.req.id == id && p.req.secret_label.is_some()) {
+            let _ = p.tx.try_send(Resolution { option: "allow".to_string(), secret: Some(secret) });
         }
     }
 }

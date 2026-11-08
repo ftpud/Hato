@@ -12,7 +12,7 @@ export interface WorkspaceDescriptor {
   machineId: string; // local | ssh:<profileId>
   rootAbsolutePath: string; // path ON that machine
   connectionRef?: string | null; // ssh profile id (no credentials)
-  ssh?: { profileId: string; host: string; port: number; user: string; identityFile?: string | null; transport?: "ssh" | "wsl" } | null;
+  ssh?: { profileId: string; host: string; port: number; user: string; identityFile?: string | null; transport?: "ssh" | "wsl"; auth?: "password" } | null;
   isGit?: boolean;
   status?: string;
 }
@@ -22,12 +22,13 @@ const sshCache = new Map<string, Promise<{ connection: Handle; machineId: string
 
 /** Connection parameters of a workspace's machine. */
 export function sshProfileSpec(ssh: NonNullable<WorkspaceDescriptor["ssh"]>): SshProfileSpec {
-  return { profileId: ssh.profileId, host: ssh.host, port: ssh.port, user: ssh.user, identityFile: ssh.identityFile ?? null, transport: ssh.transport ?? "ssh" };
+  return { profileId: ssh.profileId, host: ssh.host, port: ssh.port, user: ssh.user, identityFile: ssh.identityFile ?? null, transport: ssh.transport ?? "ssh", ...(ssh.auth ? { auth: ssh.auth } : {}) };
 }
 
 /** Descriptor field for a persisted machine profile. */
 export function sshFromProfile(p: { id: string; host: string; port: number; user: string; authRef?: string | null; transport?: "ssh" | "wsl" }): NonNullable<WorkspaceDescriptor["ssh"]> {
-  return { profileId: p.id, host: p.host, port: p.port, user: p.user, identityFile: p.authRef && p.authRef !== "agent" ? p.authRef : null, transport: p.transport ?? "ssh" };
+  const password = p.authRef === "password";
+  return { profileId: p.id, host: p.host, port: p.port, user: p.user, identityFile: p.authRef && p.authRef !== "agent" && !password ? p.authRef : null, transport: p.transport ?? "ssh", ...(password ? { auth: "password" as const } : {}) };
 }
 
 /** A Windows path into a WSL distribution (`\\\\wsl.localhost\\Ubuntu\\home\\me`) as its distribution and Linux path. */

@@ -11,6 +11,7 @@ Automated runs happen in Windows session 0, which has no desktop, so `hato.exe` 
 - [ ] Launch `hato.exe`: window creation, rendering (first use of the prebuilt shaders), fonts, icons.
 - [ ] Title bar controls, resizing, clipboard, keyboard shortcuts, IME.
 - [ ] Add a project with the form and with the folder picker under `\\wsl.localhost`.
+- [ ] The SSH password prompt: focus, masking, Enter, Cancel, and a reconnect after a restart.
 - [ ] Type in a terminal: colors, TUI programs (`vim`, `htop`), resizing by dragging.
 - [ ] Hot reload from the UI with a project open.
 - [ ] Smoke-test the zip on a clean Windows machine without the developer toolchain.
@@ -24,7 +25,7 @@ Automated runs happen in Windows session 0, which has no desktop, so `hato.exe` 
 
 ## Possible follow-ups
 
-- [ ] App icon and code signing.
+- [ ] Code signing.
 - [ ] A Windows job in `.github/workflows/release.yml`.
 - [ ] Static (musl) daemons in local builds: install `cargo-zigbuild`.
 

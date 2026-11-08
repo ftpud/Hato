@@ -10,7 +10,7 @@
 //!
 //! On Windows, whose OpenSSH has no ControlMaster, the client is the one in the default WSL
 //! distribution. `transport: "wsl"` runs the same channels in a distribution, without SSH.
-use crate::approvals::{Approvals, Decision};
+use crate::approvals::{Approvals, Decision, Secret};
 use crate::host::sftp::Sftp;
 use crate::host::wsl;
 use crate::util::{random_hex, HResult, HostError};
@@ -36,16 +36,23 @@ pub struct SshProfile {
     /// "ssh" (default) or "wsl": `host` is then a WSL distribution, reached without SSH.
     #[serde(default)]
     pub transport: Option<String>,
+    /// "password": the kernel asks for it natively when connecting. Otherwise the agent or the key.
+    #[serde(default)]
+    pub auth: Option<String>,
 }
 
 fn default_port() -> u16 { 22 }
 
 impl SshProfile {
     pub fn is_wsl(&self) -> bool { self.transport.as_deref() == Some("wsl") }
+    pub fn uses_password(&self) -> bool { self.auth.as_deref() == Some("password") }
 
     pub fn validate(&self) -> HResult<()> {
         if !matches!(self.transport.as_deref(), None | Some("ssh") | Some("wsl")) {
             return Err(HostError::invalid("invalid SSH profile transport"));
+        }
+        if !matches!(self.auth.as_deref(), None | Some("password")) || self.uses_password() && (self.is_wsl() || self.identity_file.is_some()) {
+            return Err(HostError::invalid("invalid SSH profile authentication"));
         }
         if self.is_wsl() && !cfg!(windows) {
             return Err(HostError::new("ENOTSUP", "WSL workspaces are only available on Windows"));
@@ -73,6 +80,8 @@ pub struct SshMaster {
     pub profile: SshProfile,
     pub socket: PathBuf,
     child: Mutex<Option<Child>>,
+    /// Held while connecting, so concurrent callers share one master and one password prompt.
+    connecting: Mutex<()>,
     pub sftp: Mutex<Option<Arc<Sftp>>>,
     pub connected_at: Mutex<Option<Instant>>,
     pub last_error: Mutex<Option<String>>,
@@ -112,6 +121,20 @@ fn ssh_program() -> Command {
     c
 }
 
+/// The client, reading a password from `askpass`. ssh passes its stdin on to that program, so the
+/// password stays off command lines, out of the environment and off the disk.
+fn password_ssh_program(askpass: &str) -> Command {
+    let askpass = format!("SSH_ASKPASS={askpass}");
+    // DISPLAY makes OpenSSH before 8.4 use askpass; it has no SSH_ASKPASS_REQUIRE.
+    let argv = ["env", askpass.as_str(), "SSH_ASKPASS_REQUIRE=force", "DISPLAY=:0", "ssh"];
+    if cfg!(windows) {
+        return wsl::command(None, &argv);
+    }
+    let mut c = crate::util::command(argv[0]);
+    c.args(&argv[1..]);
+    c
+}
+
 /// An OpenSSH companion tool (`ssh-keyscan`, `ssh-keygen`) from the same place as the client.
 fn ssh_tool(tool: &str) -> Command {
     if cfg!(windows) { wsl::command(None, &[tool]) } else { crate::util::command(tool) }
@@ -127,6 +150,7 @@ impl SshMaster {
             profile,
             socket,
             child: Mutex::new(None),
+            connecting: Mutex::new(()),
             sftp: Mutex::new(None),
             connected_at: Mutex::new(None),
             last_error: Mutex::new(None),
@@ -238,7 +262,15 @@ impl SshMaster {
     }
 
     /// Start (or restart) the ControlMaster. Host key trust for unknown hosts is a native approval.
-    pub fn connect(&self, approvals: &Approvals, module: &str, generation: u64) -> HResult<()> {
+    /// A password is also asked natively, so only an `interactive` caller (a user gesture) may need one.
+    pub fn connect(&self, approvals: &Approvals, module: &str, generation: u64, interactive: bool) -> HResult<()> {
+        if self.profile.uses_password() && !interactive {
+            if self.is_alive() {
+                return Ok(());
+            }
+            return Err(HostError::new("ENEEDAUTH", format!("Login needed for {}. Select the project to connect.", self.profile.destination())));
+        }
+        let _connecting = self.connecting.lock();
         if self.is_alive() {
             return Ok(());
         }
@@ -249,19 +281,40 @@ impl SshMaster {
         #[cfg(windows)]
         prepare_socket_dir()?;
         let _ = std::fs::remove_file(&self.socket);
-        for attempt in 0..2 {
+        let mut trust_asked = false;
+        // The first password attempt follows a probe without credentials, which verifies the host
+        // key first and reports the authentication methods: a password only goes to a trusted host.
+        let mut password: Option<Secret> = None;
+        let mut method = "";
+        let mut rejected = 0;
+        loop {
             let strict = if *self.accept_new.lock() { "accept-new" } else { "yes" };
-            let mut c = ssh_program();
+            let mut c = match &password {
+                Some(_) => password_ssh_program(&install_askpass()?),
+                None => ssh_program(),
+            };
             c.arg("-M").arg("-N").arg("-S").arg(&self.socket)
                 .arg("-o").arg("ControlPersist=no")
                 .arg("-o").arg(format!("StrictHostKeyChecking={strict}"))
                 .arg("-o").arg("ServerAliveInterval=15")
                 .arg("-o").arg("ServerAliveCountMax=3")
                 .arg("-o").arg("ExitOnForwardFailure=yes");
+            if password.is_some() {
+                c.arg("-o").arg("BatchMode=no")
+                    .arg("-o").arg(format!("PreferredAuthentications={method}"))
+                    .arg("-o").arg("PubkeyAuthentication=no")
+                    .arg("-o").arg("NumberOfPasswordPrompts=1");
+            } else if self.profile.uses_password() {
+                c.arg("-o").arg("PreferredAuthentications=none");
+            }
             self.base_opts(&mut c);
             c.arg(self.profile.destination());
-            c.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped());
+            c.stdin(if password.is_some() { Stdio::piped() } else { Stdio::null() }).stdout(Stdio::null()).stderr(Stdio::piped());
             let mut child = c.spawn().map_err(|e| HostError::new("ENOEXEC", format!("cannot run ssh: {e}")))?;
+            if let (Some(secret), Some(mut stdin)) = (&password, child.stdin.take()) {
+                use std::io::Write;
+                let _ = stdin.write_all(secret.expose().as_bytes()).and_then(|_| stdin.write_all(b"\n"));
+            }
             let t0 = Instant::now();
             let mut failure = None;
             loop {
@@ -307,7 +360,8 @@ impl SshMaster {
                 }
                 Some(err) => {
                     let host_key_problem = err.contains("Host key verification failed") || err.contains("No ED25519 host key is known") || err.contains("host key for") && err.contains("is not known");
-                    if host_key_problem && attempt == 0 && !err.contains("REMOTE HOST IDENTIFICATION HAS CHANGED") {
+                    if host_key_problem && !trust_asked && !err.contains("REMOTE HOST IDENTIFICATION HAS CHANGED") {
+                        trust_asked = true;
                         let fp = keyscan_fingerprints(&self.profile.host, self.profile.port);
                         let detail = format!(
                             "The SSH host {}:{} is not in your known_hosts file.\n\nServer key fingerprints (from ssh-keyscan):\n{}\n\nApproving adds the key to ~/.ssh/known_hosts (StrictHostKeyChecking=accept-new). Changed keys are always rejected.",
@@ -323,12 +377,32 @@ impl SshMaster {
                             }
                         }
                     }
+                    if self.profile.uses_password() && err.contains("Permission denied") {
+                        if password.take().is_some() {
+                            rejected += 1;
+                        } else if let Some(offered) = password_method(&err) {
+                            method = offered;
+                        } else {
+                            *self.last_error.lock() = Some(err.clone());
+                            return Err(HostError::new("EAUTH", format!("{} does not accept password logins. Sign in with a key or the SSH agent instead.", self.profile.destination())));
+                        }
+                        if rejected >= MAX_PASSWORD_ATTEMPTS {
+                            *self.last_error.lock() = Some(err.clone());
+                            return Err(HostError::new("EAUTH", format!("The password for {} was rejected {rejected} times.", self.profile.destination())));
+                        }
+                        let notice = if rejected > 0 { "That password was not accepted. Try again.\n\n" } else { "" };
+                        let detail = format!("{notice}Connecting to {}:{}, whose host key matches known_hosts.\n\nThe password goes only to OpenSSH for this connection. Hato does not save it or share it with plugins, and asks again the next time it reconnects.", self.profile.host, self.profile.port);
+                        password = approvals.request_secret(module, generation, "ssh.password", &format!("Password for {}", self.profile.destination()), &detail, "Password", "Connect", Duration::from_secs(300));
+                        if password.is_none() {
+                            return Err(HostError::new("ECANCELED", format!("Password entry for {} was cancelled.", self.profile.destination())));
+                        }
+                        continue;
+                    }
                     *self.last_error.lock() = Some(err.clone());
                     return Err(HostError::new("ECONNREFUSED", format!("SSH connection to {} failed: {err}", self.profile.destination())));
                 }
             }
         }
-        Err(HostError::new("ECONNREFUSED", "SSH connection failed"))
     }
 
     /// Connect the internal master for the default distribution (no approvals involved).
@@ -490,6 +564,50 @@ fn prepare_socket_dir() -> HResult<()> {
     Ok(())
 }
 
+const MAX_PASSWORD_ATTEMPTS: u32 = 3;
+
+/// The method to send a password with, from ssh's `Permission denied (publickey,password).` One
+/// method only: a second would count against the server's limit with an empty answer.
+fn password_method(error: &str) -> Option<&'static str> {
+    let (_, rest) = error.split_once("Permission denied (")?;
+    let methods = rest.split(')').next()?.split(',').map(str::trim);
+    let mut keyboard = false;
+    for method in methods {
+        match method {
+            "password" => return Some("password"),
+            "keyboard-interactive" => keyboard = true,
+            _ => {}
+        }
+    }
+    keyboard.then_some("keyboard-interactive")
+}
+
+const ASKPASS_SCRIPT: &str = "#!/bin/sh\nexec head -n 1\n";
+
+/// Install the askpass program where the client runs, and return its path. It holds no secret.
+#[cfg(unix)]
+fn install_askpass() -> HResult<String> {
+    use std::os::unix::fs::PermissionsExt;
+    let path = format!("{}/askpass", socket_dir());
+    let temporary = format!("{path}.{}", random_hex(4));
+    std::fs::write(&temporary, ASKPASS_SCRIPT)
+        .and_then(|_| std::fs::set_permissions(&temporary, std::fs::Permissions::from_mode(0o700)))
+        .and_then(|_| std::fs::rename(&temporary, &path))
+        .map_err(|e| HostError::new("EIO", format!("cannot install the SSH password helper: {e}")))?;
+    Ok(path)
+}
+
+#[cfg(windows)]
+fn install_askpass() -> HResult<String> {
+    let path = format!("{}/askpass", socket_dir());
+    let out = wsl::command(None, &["/bin/sh", "-c", r#"printf "$1" > "$2.$$" && chmod 700 "$2.$$" && mv "$2.$$" "$2""#, "sh", ASKPASS_SCRIPT, &path]).stdin(Stdio::null()).output()
+        .map_err(|e| HostError::new("ENOEXEC", format!("cannot run wsl.exe: {e}")))?;
+    if !out.status.success() {
+        return Err(HostError::new("EIO", format!("cannot install the SSH password helper: {}", wsl::decode(&out.stderr).trim())));
+    }
+    Ok(path)
+}
+
 /// Optional alternate known_hosts file (isolated test environments). Host keys are still verified.
 fn known_hosts_override() -> Option<String> {
     std::env::var("HATO_SSH_KNOWN_HOSTS").ok().filter(|s| !s.is_empty() && !s.contains('\0'))
@@ -544,5 +662,26 @@ impl SshTable {
         for (_, m) in self.masters.lock().drain() {
             m.disconnect();
         }
+    }
+}
+
+#[cfg(test)]
+mod password_tests {
+    use super::*;
+
+    #[test]
+    fn password_method_prefers_password_and_refuses_key_only_servers() {
+        assert_eq!(password_method("u@h: Permission denied (publickey,password,keyboard-interactive)."), Some("password"));
+        assert_eq!(password_method("u@h: Permission denied (publickey,keyboard-interactive)."), Some("keyboard-interactive"));
+        assert_eq!(password_method("u@h: Permission denied (publickey)."), None);
+        assert_eq!(password_method("Connection refused"), None);
+    }
+
+    #[test]
+    fn password_profiles_exclude_keys_and_wsl() {
+        let profile = SshProfile { profile_id: "p".into(), host: "h".into(), port: 22, user: "u".into(), identity_file: None, transport: None, auth: Some("password".into()) };
+        assert!(profile.validate().is_ok());
+        assert!(SshProfile { identity_file: Some("/k".into()), ..profile.clone() }.validate().is_err());
+        assert!(SshProfile { auth: Some("other".into()), ..profile }.validate().is_err());
     }
 }

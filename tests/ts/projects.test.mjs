@@ -68,8 +68,8 @@ test('on Windows the add form offers WSL projects instead of native local paths'
   await mod.activate(ctx);
   await mod.onEvent(ctx, { action: 'showAdd', inputs: {} });
   let nodes = walk(mod.render()).map(n => n.key);
-  assert.ok(nodes.includes('add-wsl'));
-  assert.ok(!nodes.includes('local-path'));
+  assert.ok(nodes.includes('source:wsl') && nodes.includes('source:ssh'));
+  assert.ok(!nodes.includes('source:local') && !nodes.includes('local-path'));
   await mod.onEvent(ctx, { action: 'showWsl', inputs: {} });
   const distro = walk(mod.render()).find(n => n.key === 'wsl-distro');
   assert.deepEqual(distro.options.map(o => o.value), ['Ubuntu', 'Debian']);
@@ -77,5 +77,62 @@ test('on Windows the add form offers WSL projects instead of native local paths'
   await mod.onEvent(ctx, { action: 'wslDistro', value: 'Debian', inputs: {} });
   await mod.onEvent(ctx, { action: 'addWsl', inputs: { 'wsl-path': '/srv/app' } });
   assert.deepEqual(calls.find(c => c[0] === 'addWsl')[1], { distro: 'Debian', remotePath: '/srv/app', name: null });
-  assert.ok(!walk(mod.render()).some(n => n.key === 'wsl-modal'));
+  assert.ok(!walk(mod.render()).some(n => n.key === 'add-modal'));
+});
+
+const addProject = async () => {
+  const built = await esbuild.build({ entryPoints: ['modules/ui/projects-panel/src/add-project.ts'], bundle: true, format: 'esm', write: false });
+  return import('data:text/javascript;base64,' + Buffer.from(built.outputFiles[0].text).toString('base64'));
+};
+
+test('the SSH form validates per field and never collects a password', async () => {
+  const { addProjectModal, parseSshTarget, sshRequest } = await addProject();
+  assert.deepEqual(parseSshTarget('me@box:2222'), { host: 'box', user: 'me', port: '2222' });
+  assert.deepEqual(parseSshTarget('[::1]:22'), { host: '::1', user: undefined, port: '22' });
+  assert.equal(parseSshTarget('::1').host, '::1');
+  const empty = sshRequest({}, 'key');
+  assert.equal(empty.request, null);
+  assert.deepEqual(Object.keys(empty.errors).sort(), ['ssh-host', 'ssh-key', 'ssh-path', 'ssh-user']);
+  assert.ok(sshRequest({ 'ssh-host': 'h', 'ssh-user': 'u', 'ssh-path': '/p', 'ssh-port': '70000' }, 'agent').errors['ssh-port']);
+  const { request } = sshRequest({ 'ssh-host': 'me@box:2222', 'ssh-path': '/srv', 'ssh-key': '/ignored' }, 'password');
+  assert.deepEqual(request, { host: 'box', user: 'me', port: 2222, remotePath: '/srv', identityFile: null, auth: 'password', name: null });
+  const view = { windows: false, source: 'ssh', sshAuth: 'password', values: {}, errors: {}, error: null, busy: null, distros: [], distro: '' };
+  const nodes = walk(addProjectModal(view));
+  assert.ok(nodes.some(n => n.key === 'auth:password' && n.variant === 'primary'));
+  assert.ok(!nodes.some(n => n.key === 'ssh-key' || n.secret), 'the kernel prompt is the only place a password is typed');
+});
+
+test('locked password projects connect on click, then select', async () => {
+  const built = await esbuild.build({ entryPoints: ['modules/ui/projects-panel/src/index.ts'], bundle: true, format: 'esm', write: false });
+  const mod = (await import('data:text/javascript;base64,' + Buffer.from(built.outputFiles[0].text).toString('base64'))).default;
+  const calls = [];
+  const project = { id: 'r', name: 'Remote', rootPath: '/srv', host: 'me@box', kind: 'ssh', auth: 'password', needsPassword: true, offline: 'Password needed', tasks: [], expanded: false };
+  const ctx = { state: { get: () => null, watch() {} }, events: { on() {} }, ui: { invalidate() {} }, host: { env: { info: () => ({ platform: 'linux' }) } }, modules: { async call(m, f, a) { calls.push(`${m}.${f}`); return f === 'tree' ? [project] : {}; } } };
+  await mod.activate(ctx);
+  await mod.onEvent(ctx, { action: 'filter', value: '', inputs: {} });
+  const row = walk(mod.render()).find(n => n.type === 'tree').rows[0];
+  assert.equal(row.badge, 'Connect');
+  calls.length = 0;
+  await mod.onEvent(ctx, { action: 'selectWorkspace', rowKey: 'project:r:root', inputs: {} });
+  const connect = calls.indexOf('projects.connect'), select = calls.indexOf('workspace.select');
+  assert.ok(connect >= 0 && connect < select, calls.join());
+});
+
+test('stored password choice reaches the kernel profile without a key path', async () => {
+  const built = await esbuild.build({ entryPoints: ['sdk/runtime.ts'], bundle: true, format: 'esm', write: false });
+  const { sshFromProfile, sshProfileSpec } = await import('data:text/javascript;base64,' + Buffer.from(built.outputFiles[0].text).toString('base64'));
+  const spec = sshProfileSpec(sshFromProfile({ id: 'p', host: 'h', port: 22, user: 'u', authRef: 'password' }));
+  assert.equal(spec.auth, 'password');
+  assert.equal(spec.identityFile, null);
+});
+
+test('a failed add keeps its error in the dialog after the tree reloads', async () => {
+  const built = await esbuild.build({ entryPoints: ['modules/ui/projects-panel/src/index.ts'], bundle: true, format: 'esm', write: false });
+  const mod = (await import('data:text/javascript;base64,' + Buffer.from(built.outputFiles[0].text).toString('base64'))).default;
+  const ctx = { state: { get: () => null, watch() {} }, events: { on() {} }, ui: { invalidate() {} }, host: { env: { info: () => ({ platform: 'linux' }) } }, modules: { async call(m, f) { if (f === 'addLocal') throw new Error('no such folder'); return []; } } };
+  await mod.activate(ctx);
+  await mod.onEvent(ctx, { action: 'showAdd', inputs: {} });
+  await mod.onEvent(ctx, { action: 'addLocalPath', inputs: { 'local-path': '/missing' } });
+  assert.equal(walk(mod.render()).find(n => n.key === 'add-error')?.text, 'no such folder');
+  await mod.onEvent(ctx, { action: 'hideAdd', inputs: {} });
 });

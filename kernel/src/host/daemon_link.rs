@@ -131,7 +131,7 @@ pub fn forward_reverse(master: &Arc<SshMaster>, local_port: u16, data_dir: &std:
     }
     #[cfg(windows)]
     {
-        let hop = SshMaster::new(crate::host::ssh::SshProfile { profile_id: "wsl-default".into(), host: String::new(), port: 22, user: "default".into(), identity_file: None, transport: Some("wsl".into()) });
+        let hop = SshMaster::new(crate::host::ssh::SshProfile { profile_id: "wsl-default".into(), host: String::new(), port: 22, user: "default".into(), identity_file: None, transport: Some("wsl".into()), auth: None });
         hop.connect_default_distribution()?;
         let (bin, _) = install(&hop, data_dir, repo_root)?;
         let hop_port = hop.relay_from_wsl(local_port, &bin)?;

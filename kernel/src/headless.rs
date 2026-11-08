@@ -62,6 +62,7 @@ pub fn driver_op(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: &Value)
         "test.approvals" => {
             let policy = arg_str(args, "policy")?.to_string();
             let log: Arc<Mutex<Vec<Value>>> = TEST_APPROVALS.clone();
+            *k.approvals.headless_secret.lock() = args.get("secret").and_then(|s| s.as_str()).map(str::to_owned);
             *k.approvals.headless_policy.lock() = Some(Arc::new(move |req| {
                 log.lock().push(json!({"operation": req.operation, "title": req.title, "module": req.module, "detail": req.detail.chars().take(4000).collect::<String>()}));
                 match policy.as_str() {

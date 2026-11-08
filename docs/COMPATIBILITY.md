@@ -36,7 +36,15 @@ uses the system OpenSSH client with a per-profile ControlMaster:
   native trust approval and `StrictHostKeyChecking=accept-new`; changed keys are always rejected);
 * concurrent multiplexed channels (exec, PTY, SFTP subsystem, `-O forward -R 127.0.0.1:0:…` reverse
   forwards) without libssh2's global session lock issues in blocking mode;
-* no credentials ever pass through Hato: only a key *path* may be stored.
+* only a key *path* may be stored, never key material or a password. The one credential that passes through
+  Hato is a password you choose to use for a profile: see below.
+
+Password logins stay inside the kernel. A native prompt collects the password, so modules, the database and the audit log
+never see it, and it is kept only until the connection is up. It reaches OpenSSH through the stdin of a small `SSH_ASKPASS`
+script, never a command line, environment variable or file. A credential-free probe runs first, so a password is only sent
+after the host key has matched `known_hosts`. The master authenticates once and every other channel multiplexes over it.
+Only a user gesture can prompt: adding the project or selecting it. Other connection attempts fail with `ENEEDAUTH`.
+Requires OpenSSH on the client side; memory holding the text in the UI toolkit's input is not guaranteed to be wiped.
 
 All remote command lines are built by one audited POSIX quoting adapter (`kernel/src/quoting.rs`).
 

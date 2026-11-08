@@ -75,13 +75,23 @@ pub struct Shell {
     toasts: Vec<(String, String, Instant)>,
     modals: Vec<(String, String, Value)>,
     control_style: Value,
+    in_title_bar: bool,
     approval_scroll: ScrollHandle,
+    /// The masked field of the current secret prompt, by request id. Never part of `inputs`, which
+    /// modules receive with their events.
+    approval_secret: Option<(String, Entity<InputState>, Subscription)>,
     show_safe_mode: bool,
     submit_queue: Vec<(String, String, String)>,
     lay: interact::Layout,
 }
 
 fn sid(module: &str, path: &str) -> SharedString { format!("{module}::{path}").into() }
+
+/// Node types that take mouse input, so they must not count as title bar drag area. Slots hold
+/// arbitrary module content; labels, spacers and containers stay draggable.
+fn blocks_title_bar_drag(ty: &str) -> bool {
+    matches!(ty, "button" | "canvas" | "choice" | "dragHandle" | "dropdown" | "imagePicker" | "popover" | "select" | "slot" | "switch" | "tabs" | "textInput" | "toggle" | "tree")
+}
 
 fn find_ui_node<'a>(node: &'a Value, key: &str) -> Option<&'a Value> {
     if node["key"].as_str() == Some(key) { return Some(node); }
@@ -129,6 +139,8 @@ impl Shell {
             toasts: Vec::new(),
             modals: Vec::new(),
             control_style: Value::Null,
+            in_title_bar: false,
+            approval_secret: None,
             approval_scroll: ScrollHandle::new(),
             show_safe_mode: false,
             submit_queue: Vec::new(),
@@ -332,6 +344,20 @@ impl Shell {
 
     fn node(&mut self, module: &str, n: &Value, parent: &str, depth: usize, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let ty = n.get("type").and_then(|t| t.as_str()).unwrap_or("");
+        if !self.in_title_bar || !blocks_title_bar_drag(ty) {
+            return self.render_node(module, n, parent, depth, window, cx);
+        }
+        // The title bar is a window drag area: on Windows the OS would take the press as a window
+        // move unless something in front of it blocks the mouse. One blocker covers its whole subtree.
+        self.in_title_bar = false;
+        let el = self.render_node(module, n, parent, depth, window, cx);
+        self.in_title_bar = true;
+        let grow = n["grow"].as_bool().unwrap_or(false);
+        div().occlude().when(grow, |d| d.flex_1().min_w_0()).when(!grow, |d| d.flex_none()).child(el).into_any_element()
+    }
+
+    fn render_node(&mut self, module: &str, n: &Value, parent: &str, depth: usize, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let ty = n.get("type").and_then(|t| t.as_str()).unwrap_or("");
         let key = n.get("key").and_then(|k| k.as_str()).unwrap_or("_");
         let path = format!("{parent}/{key}");
         let s = |k: &str| n.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
@@ -371,7 +397,9 @@ impl Shell {
                 d.child(div().id(sid(module, &path)).flex_1().min_h_0().w_full().overflow_y_scroll().child(v_flex().w_full().children(kids))).into_any_element()
             }
             "titleBar" => {
+                self.in_title_bar = true;
                 let kids = self.children(module, n, &path, depth, window, cx);
+                self.in_title_bar = false;
                 TitleBar::new()
                     // macOS hides the traffic lights in fullscreen, so reclaim their inset.
                     .when(cfg!(target_os = "macos") && window.is_fullscreen(), |bar| bar.pl_0())
@@ -1192,10 +1220,17 @@ impl Shell {
 
     /// Trusted approval chrome: rendered by the kernel from its own queue. Only a real click here
     /// can resolve an approval.
-    fn render_approvals(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    fn render_approvals(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
         let reqs = self.kernel.approvals.snapshot();
-        let req = reqs.first()?.clone();
+        let Some(req) = reqs.first().cloned() else {
+            self.approval_secret = None;
+            return None;
+        };
         let more = reqs.len() - 1;
+        let secret = req.secret_label.as_ref().map(|_| self.approval_secret_input(&req.id, window, cx));
+        if secret.is_none() {
+            self.approval_secret = None;
+        }
         let mono = cx.theme().mono_font_family.clone();
         let mut buttons = h_flex().gap_2();
         for o in &req.options {
@@ -1204,18 +1239,49 @@ impl Shell {
             let oid = o.id.clone();
             let mut btn = Button::new(SharedString::from(format!("approval::{}::{}", req.id, o.id))).label(o.label.clone());
             btn = match o.kind.as_str() { "allow" => btn.primary(), "deny" => btn.danger(), _ => btn };
-            buttons = buttons.child(btn.on_click(move |_, _, _| k.approvals.resolve_from_native_ui(&id, &oid)));
+            let field = secret.clone().filter(|_| o.kind == "allow");
+            buttons = buttons.child(btn.on_click(move |_, _, cx| match &field {
+                Some(field) => Self::submit_secret(&k, &id, field, cx),
+                None => k.approvals.resolve_from_native_ui(&id, &oid),
+            }));
         }
         Some(div().absolute().top_0().left_0().size_full().occlude().bg(black().opacity(0.5)).flex().items_center().justify_center()
             .child(v_flex().w(px(760.0)).max_w(relative(0.95)).max_h(relative(0.9)).gap_2().p_4().rounded(px(10.0)).bg(cx.theme().background).border_2().border_color(cx.theme().warning).shadow_lg()
-                .child(h_flex().gap_2().child(div().text_xs().px_2().rounded(px(4.0)).bg(cx.theme().warning.opacity(0.25)).child("KERNEL APPROVAL"))
+                .child(h_flex().gap_2().child(div().text_xs().px_2().rounded(px(4.0)).bg(cx.theme().warning.opacity(0.25)).child(if secret.is_some() { "KERNEL PROMPT" } else { "KERNEL APPROVAL" }))
                     .child(div().text_xs().text_color(cx.theme().muted_foreground).child(format!("requested by module '{}' (generation {}) · operation {}", req.module, req.generation, req.operation))))
                 .child(div().text_lg().font_weight(FontWeight::BOLD).child(req.title.clone()))
                 .when(req.module_supplied, |d| d.child(div().text_xs().text_color(cx.theme().warning).child("The text below was supplied by the module/agent, not verified by the kernel.")))
                 .child(div().id("approval-detail").flex_1().min_h(px(80.0)).max_h(px(480.0)).overflow_y_scroll().track_scroll(&self.approval_scroll).p_2().rounded(px(4.0)).bg(cx.theme().muted)
                     .child(div().text_xs().font_family(mono).child(req.detail.clone())))
+                .when_some(secret, |d, field| d.child(v_flex().gap_1().child(div().text_sm().font_weight(FontWeight::MEDIUM).child(req.secret_label.clone().unwrap_or_default())).child(Input::new(&field).mask_toggle())))
                 .child(h_flex().child(div().flex_1().text_xs().text_color(cx.theme().muted_foreground).child(if more > 0 { format!("{more} more pending") } else { String::new() })).child(buttons)))
             .into_any_element())
+    }
+
+    fn approval_secret_input(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) -> Entity<InputState> {
+        if let Some((current, field, _)) = &self.approval_secret {
+            if current == id {
+                return field.clone();
+            }
+        }
+        let field = cx.new(|cx| InputState::new(window, cx).masked(true));
+        let (k, request) = (self.kernel.clone(), id.to_string());
+        let sub = cx.subscribe_in(&field, window, move |_: &mut Shell, field, ev: &InputEvent, _, cx| {
+            if let InputEvent::PressEnter { .. } = ev {
+                Self::submit_secret(&k, &request, field, cx);
+            }
+        });
+        window.focus(&field.read(cx).focus_handle(cx), cx);
+        self.approval_secret = Some((id.to_string(), field.clone(), sub));
+        field
+    }
+
+    /// A real gesture on the prompt's own field; an empty field is not an answer.
+    fn submit_secret(k: &Arc<Kernel>, id: &str, field: &Entity<InputState>, cx: &mut App) {
+        let text = field.read(cx).value().to_string();
+        if !text.is_empty() {
+            k.approvals.resolve_secret_from_native_ui(id, crate::approvals::Secret::new(text));
+        }
     }
 
     fn render_safe_mode(&mut self, cx: &mut Context<Self>) -> AnyElement {
@@ -1285,7 +1351,7 @@ impl Render for Shell {
         self.sync_windows(window, cx);
         let modals = std::mem::take(&mut self.modals);
         let modal_els: Vec<AnyElement> = modals.iter().map(|(m, p, n)| self.render_modal(m, p, n, window, cx)).collect();
-        let approvals = self.render_approvals(cx);
+        let approvals = self.render_approvals(window, cx);
         let chrome = theme::chrome(cx);
         let toast_w = chrome["toasts"]["width"].as_f64().unwrap_or(420.0).clamp(160.0, 1200.0) as f32;
         let mut toasts = v_flex().absolute().gap_1().w(px(toast_w));

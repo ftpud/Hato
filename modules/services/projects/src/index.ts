@@ -1,7 +1,7 @@
 // projects: registration of local and SSH projects, Git detection on the project's own machine,
 // and the project/task tree model. Persistence goes through the `persistence` service.
 import type { AppModule, ModuleContext } from "../../../../sdk/types";
-import { errMsg, sshFromProfile, targetFor, workspaceGrant, wslLocation, type WorkspaceDescriptor } from "../../../../sdk/runtime";
+import { errMsg, sshFromProfile, sshProfileSpec, targetFor, workspaceGrant, wslLocation, type WorkspaceDescriptor } from "../../../../sdk/runtime";
 
 interface GitInfo { isGit: boolean; topLevel: string | null; hasCommits: boolean; error?: string; checkedAt: number }
 const gitCache = new Map<string, GitInfo>();
@@ -101,6 +101,8 @@ const mod: AppModule = {
           id: p.id, name: p.name, kind: p.kind, rootPath: p.rootPath, expanded: p.expanded,
           host: ssh ? (ssh.transport === "wsl" ? ssh.host : `${ssh.user}@${ssh.host}${ssh.port !== 22 ? ":" + ssh.port : ""}`) : null,
           transport: ssh ? ssh.transport : null,
+          auth: ssh?.authRef === "password" ? "password" : null,
+          needsPassword: ssh?.authRef === "password" && offline.has(p.id),
           isGit: git ? git.isGit : null, hasCommits: git ? git.hasCommits : null,
           offline: offline.get(p.id) || null,
           tasks: tasks.filter((t: any) => t.projectId === p.id).map((t: any) => ({ id: t.id, name: t.name, branch: t.branch, worktreePath: t.worktreePath, status: t.status })),
@@ -136,11 +138,7 @@ const mod: AppModule = {
       return ctx.modules.call("persistence", "projects.get", { id });
     },
 
-    async pickAndAddLocal(ctx) {
-      const path = await ctx.host.ui.pickFolder();
-      if (!path) return null;
-      return mod.methods!.addLocal(ctx, { path }, { caller: "projects" });
-    },
+    pickFolder: async (ctx) => ctx.host.ui.pickFolder(),
 
     /** Register an SSH project. Validates connectivity + remote root on that machine. */
     async addSsh(ctx, a) {
@@ -151,13 +149,26 @@ const mod: AppModule = {
       const identityFile = a.identityFile ? String(a.identityFile).trim() : "";
       if (!host || !user || !remotePath.startsWith("/")) throw new Error("host, user and an absolute remote path are required");
       if (/PRIVATE KEY/.test(identityFile)) throw new Error("enter a key file path, never key contents");
+      const password = a.auth === "password";
+      if (password && identityFile) throw new Error("choose either a password or a key file");
+      // Only the choice is stored: the kernel asks for the password itself, whenever it connects.
+      const authRef = password ? "password" : identityFile || "agent";
       const profiles = await ctx.modules.call("persistence", "ssh.list");
-      let profile = profiles.find((p: any) => p.host === host && p.user === user && p.port === port && (p.authRef || "agent") === (identityFile || "agent"));
+      let profile = profiles.find((p: any) => p.host === host && p.user === user && p.port === port && (p.authRef || "agent") === authRef);
       if (!profile) {
-        profile = { id: crypto.randomUUID(), host, port, user, authRef: identityFile || "agent" };
+        profile = { id: crypto.randomUUID(), host, port, user, authRef };
         await ctx.modules.call("persistence", "ssh.upsert", { profile });
       }
+      if (password) await ctx.host.ssh.connect(sshProfileSpec(sshFromProfile(profile)), { interactive: true });
       return registerRemote(ctx, profile, remotePath, a.name);
+    },
+
+    /** Connect a project's machine for a user gesture, which may ask for its password. */
+    async connect(ctx, a) {
+      const { desc } = await describeProject(ctx, a.projectId);
+      if (desc.ssh) await ctx.host.ssh.connect(sshProfileSpec(desc.ssh), { interactive: true });
+      await refreshGit(ctx, a.projectId);
+      return null;
     },
 
     /** Installed WSL distributions (Windows), the default first. */

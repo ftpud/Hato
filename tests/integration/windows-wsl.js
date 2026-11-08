@@ -131,6 +131,7 @@ async function run(ctx) {
   const sshUser = await T("test.env", { name: "HATO_T_SSH_USER" });
   if (sshUser) {
     await ev("projects-panel", "showSsh");
+    await ev("projects-panel", "sshAuth", { value: "key" });
     await ev("projects-panel", "addSsh", { inputs: { "ssh-host": "127.0.0.1", "ssh-user": sshUser, "ssh-port": await T("test.env", { name: "HATO_T_SSH_PORT" }), "ssh-path": R, "ssh-key": await T("test.env", { name: "HATO_T_SSH_KEY" }), "ssh-name": "SSH Project" } });
     const st = await until(async () => { const t = await call("projects", "tree"); const x = t.find((y) => y.name === "SSH Project"); return x && x.isGit !== null ? x : null; }, 60000);
     check("SSH project registered through WSL's client", st && st.transport === "ssh" && st.isGit === true, st || texts(await T("test.render", { module: "projects-panel" })).join(" | ").slice(-400));

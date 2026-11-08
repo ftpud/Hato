@@ -514,7 +514,7 @@ fn dispatch(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: &Value) -> H
             let profile: SshProfile = serde_json::from_value(args.get("profile").cloned().unwrap_or(Value::Null)).map_err(|e| HostError::invalid(format!("profile: {e}")))?;
             profile.validate()?;
             let master = k.ssh.get_or_create(&profile)?;
-            master.connect(&k.approvals, owner, gen.gen_id)?;
+            master.connect(&k.approvals, owner, gen.gen_id, args["interactive"].as_bool().unwrap_or(false))?;
             let home = master.sftp().and_then(|s| s.realpath(".")).ok();
             let key = format!("ssh:{}", profile.machine_id());
             let h = match k.handles.lookup(owner, &key) {

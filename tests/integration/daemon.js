@@ -125,6 +125,7 @@ J`] });
       // ---- full module flow: SSH project → auto daemon → daemon-held terminal → panel
       const call = (m, f, a, o) => ctx.modules.call(m, f, a || {}, o);
       await ev("projects-panel", "showSsh");
+      await ev("projects-panel", "sshAuth", { value: "key" });
       await ev("projects-panel", "addSsh", { inputs: { "ssh-host": "127.0.0.1", "ssh-user": user, "ssh-port": "2222", "ssh-path": root, "ssh-key": key, "ssh-name": "Daemon Remote" } });
       const tree = await until(async () => { const t = await call("projects", "tree"); return t.find((x) => x.kind === "ssh") ? t : null; }, 30000);
       const pr = tree.find((x) => x.kind === "ssh");

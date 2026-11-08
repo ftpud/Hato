@@ -185,7 +185,7 @@
         info: (pty) => call("pty.info", { handle: pty }),
       },
       ssh: {
-        connect: (profile) => call("ssh.connect", { profile }),
+        connect: (profile, options) => call("ssh.connect", { profile, interactive: !!(options && options.interactive) }),
         wslDistributions: () => call("ssh.wslDistributions", {}),
         status: (connection) => call("ssh.status", { connection }),
         disconnect: (connection) => call("ssh.disconnect", { connection }),
