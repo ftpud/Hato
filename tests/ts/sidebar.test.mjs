@@ -4,7 +4,7 @@ import * as esbuild from 'esbuild';
 import { pluginsHost } from './plugin-fixture.mjs';
 let generation = 0;
 async function load(id, icons) {
-  const built = await esbuild.build({ entryPoints: [`modules/ui/${id}/src/index.ts`], bundle: true, format: 'esm', write: false, plugins: icons ? [{ name: 'edited-icons', setup(build) { build.onLoad({ filter: /sidebar-icons\.ts$/ }, () => ({ contents: `export const sidebarIcons = ${JSON.stringify(icons)}`, loader: 'ts' })); } }] : [] });
+  const built = await esbuild.build({ entryPoints: [`Hato-plugins/modules/ui/${id}/src/index.ts`], bundle: true, format: 'esm', write: false, plugins: icons ? [{ name: 'edited-icons', setup(build) { build.onLoad({ filter: /sidebar-icons\.ts$/ }, () => ({ contents: `export const sidebarIcons = ${JSON.stringify(icons)}`, loader: 'ts' })); } }] : [] });
   return (await import('data:text/javascript;base64,' + Buffer.from(built.outputFiles[0].text).toString('base64') + '#' + generation++)).default;
 }
 test('separate sidebar toggles layout panels and reflects collapse, hide and restore state', async () => {

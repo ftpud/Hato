@@ -37,7 +37,7 @@ function fixture(t, { commit = true } = {}) {
 }
 
 test('branch catalog excludes remote HEAD aliases and checks out remote tracking branches', async t => {
-  const mod = await load('modules/services/git/src/index.ts'), f = fixture(t); f.remote();
+  const mod = await load('Hato-plugins/modules/services/git/src/index.ts'), f = fixture(t); f.remote();
   let list = await mod.methods.branches(f.ctx, { workspaceId: f.root });
   assert.equal(list.current, 'main'); assert.equal(list.local[0].current, true);
   assert.deepEqual(list.remote.map(b => b.name), ['origin/feature/welcome', 'origin/main']);
@@ -52,7 +52,7 @@ test('branch catalog excludes remote HEAD aliases and checks out remote tracking
 });
 
 test('checkout preserves conflicting local edits and other worktrees', async t => {
-  const mod = await load('modules/services/git/src/index.ts'), f = fixture(t);
+  const mod = await load('Hato-plugins/modules/services/git/src/index.ts'), f = fixture(t);
   f.git('switch', '-qc', 'feature'); fs.writeFileSync(path.join(f.dir, 'readme'), 'feature\n'); f.git('commit', '-qam', 'Feature'); f.git('switch', '-q', 'main');
   fs.writeFileSync(path.join(f.dir, 'readme'), 'uncommitted\n');
   await assert.rejects(mod.methods.checkout(f.ctx, { workspaceId: f.root, ref: 'refs/heads/feature' }), /overwritten|local changes/i);
@@ -67,7 +67,7 @@ test('checkout preserves conflicting local edits and other worktrees', async t =
 });
 
 test('remote name conflicts cannot overwrite local branches; create-from supports another name', async t => {
-  const mod = await load('modules/services/git/src/index.ts'), f = fixture(t); f.remote(); f.git('branch', 'feature/welcome');
+  const mod = await load('Hato-plugins/modules/services/git/src/index.ts'), f = fixture(t); f.remote(); f.git('branch', 'feature/welcome');
   await assert.rejects(mod.methods.checkout(f.ctx, { workspaceId: f.root, ref: 'refs/remotes/origin/feature/welcome' }), /different upstream/);
   assert.equal(f.git('branch', '--show-current'), 'main');
   const list = await mod.methods.createBranch(f.ctx, { workspaceId: f.root, name: 'feature/alternate', from: 'refs/remotes/origin/feature/welcome' });
@@ -78,7 +78,7 @@ test('remote name conflicts cannot overwrite local branches; create-from support
 });
 
 test('branch catalog and creation support unborn HEAD and detached HEAD', async t => {
-  const mod = await load('modules/services/git/src/index.ts'), f = fixture(t, { commit: false });
+  const mod = await load('Hato-plugins/modules/services/git/src/index.ts'), f = fixture(t, { commit: false });
   let list = await mod.methods.branches(f.ctx, { workspaceId: f.root });
   assert.equal(list.current, 'main'); assert.equal(list.local[0].unborn, true);
   list = await mod.methods.createBranch(f.ctx, { workspaceId: f.root, name: 'initial' });
@@ -91,7 +91,7 @@ test('branch catalog and creation support unborn HEAD and detached HEAD', async 
 });
 
 test('SSH branch mutations stay on the selected workspace machine', async () => {
-  const mod = await load('modules/services/git/src/index.ts'); const calls = [];
+  const mod = await load('Hato-plugins/modules/services/git/src/index.ts'); const calls = [];
   const ctx = { modules: { async call() { return { id: 'ssh', machineId: 'ssh:branch-test', location: 'ssh', rootAbsolutePath: '/srv/repo', ssh: { profileId: 'branch-test', host: 'host', port: 22, user: 'user' } }; } },
     host: { ssh: { async connect() { return { connection: 'ssh-connection', machineId: 'ssh:branch-test' }; } }, capabilities: { async request(a) { assert.equal(a.target.kind, 'ssh'); return { grant: 'ssh-grant' }; } }, process: { async run(_, spec) {
       calls.push(spec); assert.equal(spec.target.kind, 'ssh'); assert.equal(spec.target.connection, 'ssh-connection'); assert.equal(spec.cwd, '/srv/repo'); assert.equal(spec.loginShell, true);

@@ -109,6 +109,11 @@ pub fn driver_op(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: &Value)
         "test.pluginRoot" => k.set_root_plugin(args.get("id").and_then(|v| v.as_str())).map(|_| Value::Null),
         "test.pluginRescan" => Ok(k.rescan_plugins()),
         "test.pluginInstall" => k.install_plugin(gen, arg_str(args, "path")?),
+        "test.pluginInstallMany" => {
+            let paths: Vec<String> = serde_json::from_value(args["paths"].clone()).map_err(|e| HostError::invalid(e.to_string()))?;
+            k.install_plugins(gen, &paths)
+        }
+        "test.pluginRollback" => k.rollback_plugin(gen, arg_str(args, "id")?),
         "test.pluginUninstall" => k.uninstall_plugin(gen, arg_str(args, "id")?),
         "test.logs" => Ok(json!(k.logs.tail(arg_str(args, "id")?, 200))),
         "test.state" => Ok(k.state.values.lock().get(arg_str(args, "key")?).cloned().unwrap_or(Value::Null)),

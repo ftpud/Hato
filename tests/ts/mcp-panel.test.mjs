@@ -5,7 +5,7 @@ let generation=0;
 async function load(path){return(await import('data:text/javascript;base64,'+Buffer.from((await esbuild.build({entryPoints:[path],bundle:true,format:'esm',write:false})).outputFiles[0].text).toString('base64')+'#'+generation++)).default;}
 function store(){let list=[];const handlers={},events=[];return{handlers,events,get list(){return list;},ctx:{events:{on:(key,fn)=>handlers[key]=fn,emit:(key,data)=>{events.push({key,data});handlers[key]?.(data);}},modules:{async call(module,method,args){assert.equal(module,'persistence');assert.equal(args.key,'persistent-agents.mcps');if(method==='settings.get')return structuredClone(list);if(method==='settings.set'){list=structuredClone(args.value);return null;}throw Error(method);}}}};}
 test('MCP configurations retain ids, validate settings and serialize simultaneous edits',async()=>{
- const service=await load('modules/services/persistent-agents/src/index.ts'),s=store();
+ const service=await load('Hato-plugins/modules/services/persistent-agents/src/index.ts'),s=store();
  const server=id=>({id,name:id,command:'npx',args:['-y',id],env:[{name:'TOKEN',value:'secret'}]});
  await Promise.all(['one','two'].map(id=>service.methods.saveMcp(s.ctx,{server:server(id)})));
  assert.deepEqual(s.list.map(v=>v.id),['one','two']);
@@ -19,7 +19,7 @@ test('MCP configurations retain ids, validate settings and serialize simultaneou
 const panelCtx=s=>({events:s.ctx.events,ui:{invalidate(){}},state:{get(){},set(){},watch(){}}});
 const walk=n=>[n,...(n.children||[]).flatMap(walk)];
 test('MCP panel adds, edits and removes a local server without a selected workspace',async()=>{
- const service=await load('modules/services/persistent-agents/src/index.ts'),panel=await load('modules/ui/mcp-panel/src/index.ts'),s=store();
+ const service=await load('Hato-plugins/modules/services/persistent-agents/src/index.ts'),panel=await load('Hato-plugins/modules/ui/mcp-panel/src/index.ts'),s=store();
  service.activate(s.ctx);
  const ctx=panelCtx(s);
  const event=(action,inputs={},extra={})=>panel.onEvent(ctx,{action,key:action,inputs,...extra});
@@ -44,7 +44,7 @@ test('MCP panel adds, edits and removes a local server without a selected worksp
  }finally{panel.deactivate();}
 });
 test('invalid MCP fields keep the editor open and do not save',async()=>{
- const service=await load('modules/services/persistent-agents/src/index.ts'),panel=await load('modules/ui/mcp-panel/src/index.ts'),s=store();service.activate(s.ctx);
+ const service=await load('Hato-plugins/modules/services/persistent-agents/src/index.ts'),panel=await load('Hato-plugins/modules/ui/mcp-panel/src/index.ts'),s=store();service.activate(s.ctx);
  const ctx=panelCtx(s);
  try{
   await panel.activate(ctx);await new Promise(setImmediate);
@@ -58,7 +58,7 @@ test('invalid MCP fields keep the editor open and do not save',async()=>{
  }finally{panel.deactivate();}
 });
 test('remote presets and pasted configs become remote servers; OAuth tokens stay out of the config',async()=>{
- const service=await load('modules/services/persistent-agents/src/index.ts'),panel=await load('modules/ui/mcp-panel/src/index.ts'),s=store();service.activate(s.ctx);
+ const service=await load('Hato-plugins/modules/services/persistent-agents/src/index.ts'),panel=await load('Hato-plugins/modules/ui/mcp-panel/src/index.ts'),s=store();service.activate(s.ctx);
  const ctx=panelCtx(s);
  const event=(action,inputs={},extra={})=>panel.onEvent(ctx,{action,key:action,inputs,...extra});
  try{

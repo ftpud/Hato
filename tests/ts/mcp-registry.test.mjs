@@ -24,7 +24,7 @@ function harness() {
     async permission(name, value) { context('settings').events.emit('settings.change', { module: 'internal-mcp', section: 'mcp:provider', key: name, value }); await tick(); await tick(); } };
 }
 test('module MCP registration is discovered, denied by default, permission checked on every call, and workspace scope is trusted', async () => {
-  const { McpRegistry } = await load('modules/services/internal-mcp/src/registry.ts');
+  const { McpRegistry } = await load('Hato-plugins/modules/services/internal-mcp/src/registry.ts');
   const { exportMcpTools } = await load('sdk/mcp.ts');
   const h = harness(); let changed = 0, executions = 0;
   const registry = new McpRegistry(h.context('internal-mcp'), [{ name: 'modules_list', description: 'Modules', inputSchema: { type: 'object' } }], () => changed++);
@@ -47,7 +47,7 @@ test('module MCP registration is discovered, denied by default, permission check
   registry.stop();
 });
 test('permission save failures keep confirmed policy; inactive providers disappear and cannot be called', async () => {
-  const { McpRegistry } = await load('modules/services/internal-mcp/src/registry.ts');
+  const { McpRegistry } = await load('Hato-plugins/modules/services/internal-mcp/src/registry.ts');
   const h = harness();
   h.state.set('provider.mcp', { generation: 1, title: 'Example', tools: [{ name: 'echo', description: 'Echo', inputSchema: { type: 'object' } }] });
   const registry = new McpRegistry(h.context('internal-mcp'), [], () => {});
@@ -62,7 +62,7 @@ test('permission save failures keep confirmed policy; inactive providers disappe
 });
 
 test('only the active provider generation handles a command during a hot swap', async () => {
-  const { McpRegistry } = await load('modules/services/internal-mcp/src/registry.ts');
+  const { McpRegistry } = await load('Hato-plugins/modules/services/internal-mcp/src/registry.ts');
   const { exportMcpTools } = await load('sdk/mcp.ts');
   const h = harness(), executions = [];
   const registry = new McpRegistry(h.context('internal-mcp'), [], () => {});

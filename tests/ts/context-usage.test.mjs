@@ -16,7 +16,7 @@ test('missing and invalid context reports stay unknown instead of looking empty'
 });
 
 test('ACP usage notifications update live state and model changes clear stale usage', async () => {
-  const built = await esbuild.build({ entryPoints: ['modules/services/acp/src/index.ts'], bundle: true, format: 'esm', write: false });
+  const built = await esbuild.build({ entryPoints: ['Hato-plugins/modules/services/acp/src/index.ts'], bundle: true, format: 'esm', write: false });
   const mod = (await import('data:text/javascript;base64,' + Buffer.from(built.outputFiles[0].text).toString('base64'))).default;
   let feed;
   const events = [];

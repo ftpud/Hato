@@ -238,6 +238,8 @@
         disable: (id, opts) => call("plugins.disable", Object.assign({ id }, opts || {})),
         setRoot: (id) => call("plugins.setRoot", { id: id || null }),
         install: (path) => call("plugins.install", { path }),
+        rollback: (id) => call("plugins.rollback", { id }),
+        installMany: (paths) => call("plugins.installMany", { paths }),
         uninstall: (id) => call("plugins.uninstall", { id }),
         rescan: () => call("plugins.rescan", {}),
       },

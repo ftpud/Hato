@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as esbuild from 'esbuild';
 import { builtinPanelDefs, pluginsHost } from './plugin-fixture.mjs';
-const built = await esbuild.build({ stdin: { contents: 'export * from "./modules/ui/workspace-layout/src/model"; export * from "./modules/ui/workspace-layout/src/panel-sharing"; export * from "./modules/ui/workspace-layout/src/defaults";', resolveDir: process.cwd() }, bundle: true, format: 'esm', write: false });
+const built = await esbuild.build({ stdin: { contents: 'export * from "./Hato-plugins/modules/ui/workspace-layout/src/model"; export * from "./Hato-plugins/modules/ui/workspace-layout/src/panel-sharing"; export * from "./Hato-plugins/modules/ui/workspace-layout/src/defaults";', resolveDir: process.cwd() }, bundle: true, format: 'esm', write: false });
 const M = await import('data:text/javascript;base64,' + Buffer.from(built.outputFiles[0].text).toString('base64'));
 M.setPanels(builtinPanelDefs());
 const shares = { viewer: 'space-1', 'git-changes': 'space-1' };
@@ -46,7 +46,7 @@ test('independent panels stay visible; reconciled groups show at most one member
 });
 
 test('Panel sharing settings persist and file opens replace the active diff panel', async t => {
-  const bundle = await esbuild.build({ entryPoints: ['modules/ui/workspace-layout/src/index.ts'], bundle: true, format: 'esm', write: false });
+  const bundle = await esbuild.build({ entryPoints: ['Hato-plugins/modules/ui/workspace-layout/src/index.ts'], bundle: true, format: 'esm', write: false });
   const mod = (await import('data:text/javascript;base64,' + Buffer.from(bundle.outputFiles[0].text).toString('base64'))).default;
   t.after(() => mod.deactivate());
   const values = new Map([['workspace.selected', { id: 'ws' }]]), listeners = new Map(), saved = new Map([['panel-sharing.v1', {}]]);

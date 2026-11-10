@@ -4,8 +4,8 @@ import { readFile } from 'node:fs/promises';
 import * as esbuild from 'esbuild';
 let generation = 0;
 async function panel() {
-  const file = 'modules/ui/workflows-panel/src/index.ts';
-  const built = await esbuild.build({ stdin: { contents: (await readFile(file, 'utf8')) + '\nexport { S, rememberChatHistory };', resolveDir: process.cwd() + '/modules/ui/workflows-panel/src', loader: 'ts' }, bundle: true, format: 'esm', write: false });
+  const file = 'Hato-plugins/modules/ui/workflows-panel/src/index.ts';
+  const built = await esbuild.build({ stdin: { contents: (await readFile(file, 'utf8')) + '\nexport { S, rememberChatHistory };', resolveDir: process.cwd() + '/Hato-plugins/modules/ui/workflows-panel/src', loader: 'ts' }, bundle: true, format: 'esm', write: false });
   return import('data:text/javascript;base64,' + Buffer.from(built.outputFiles[0].text).toString('base64') + '#' + generation++);
 }
 const message = n => ({ key: `agent-msg-${n}`, role: 'user', text: `Message ${n}` });

@@ -64,6 +64,10 @@ pub struct Kernel {
     staged: Mutex<HashMap<String, Arc<Generation>>>,
     pub shutting_down: AtomicBool,
     pub boot_report: Mutex<Vec<Value>>,
+    pub setup_status: Mutex<Option<String>>,
+    boot_lock: Mutex<()>,
+    plugin_install_lock: Mutex<()>,
+    self_updates: Mutex<std::collections::HashSet<String>>,
     pub started: Instant,
 }
 
@@ -101,6 +105,10 @@ impl Kernel {
             staged: Mutex::new(HashMap::new()),
             shutting_down: AtomicBool::new(false),
             boot_report: Mutex::new(Vec::new()),
+            setup_status: Mutex::new(None),
+            boot_lock: Mutex::new(()),
+            plugin_install_lock: Mutex::new(()),
+            self_updates: Mutex::new(std::collections::HashSet::new()),
             started: Instant::now(),
         });
         // RPC deadline reaper.
@@ -152,6 +160,10 @@ impl Kernel {
         }
         for dir in sorted_dirs(&self.cfg.plugins_dir()) {
             match plugins::read_manifest(&dir) {
+                Ok(m) if self.cfg.dev_watch && out.iter().any(|d| d.manifest.id == m.id) => {
+                    // Explicit developer mode uses the editable checkout, including its manifest.
+                    // Installed marketplace overrides remain on disk for normal launches.
+                }
                 Ok(m) if out.iter().any(|d| d.manifest.id == m.id) => {
                     let index = out.iter().position(|d| d.manifest.id == m.id).unwrap();
                     out[index] = Discovered { manifest: m, dir, source: Source::User };
@@ -245,6 +257,18 @@ impl Kernel {
     /// falling back to last-known-good on failure. Activations run in parallel; calls queue
     /// until the target module finished `activate()`.
     pub fn boot(&self) {
+        let Some(_boot) = self.boot_lock.try_lock() else { return };
+        if !self.cfg.modules_dir().is_dir() {
+            *self.setup_status.lock() = Some("Downloading and verifying plugins for first launch…".into());
+            self.ui.send(UiMsg::ModulesChanged);
+        }
+        if let Err(e) = crate::bootstrap::ensure_runtime(&self.cfg) {
+            *self.setup_status.lock() = Some(format!("Plugin setup failed: {e:#}. Connect to the internet and retry."));
+            log::error!("plugin setup: {e:#}");
+            self.ui.send(UiMsg::ModulesChanged);
+            return;
+        }
+        *self.setup_status.lock() = None;
         let discovered = self.register_discovered();
         let enabled: Vec<&Discovered> = discovered.iter().filter(|d| self.plugins.is_enabled(&d.manifest.id, d.source)).collect();
         for d in &enabled {
@@ -540,8 +564,16 @@ impl Kernel {
 
     /// Copy a plugin folder into the kernel-owned plugins dir (disabled until enabled).
     pub fn install_plugin(&self, requester: &Generation, from: &str) -> HResult<Value> {
+        let _install = self.plugin_install_lock.lock();
+        let result = self.install_plugin_inner(requester, from, false)?;
+        if result["pendingActivation"] == true { self.finish_self_update(requester)?; }
+        Ok(result)
+    }
+
+    fn install_plugin_inner(&self, requester: &Generation, from: &str, approved: bool) -> HResult<Value> {
         let src = std::path::PathBuf::from(crate::util::canonical_string(std::path::Path::new(from)).map_err(|e| HostError::new("ENOENT", format!("{from}: {e}")))?);
         let m = plugins::read_manifest(&src).map_err(|e| HostError::invalid(format!("not a plugin folder: {e}")))?;
+        if self.self_updates.lock().contains(&m.id) { return Err(HostError::new("EBUSY", "a live update for this plugin is still pending")); }
         let dst = self.cfg.plugins_dir().join(&m.id);
         let replacing = dst.exists();
         let detail = format!(
@@ -550,7 +582,7 @@ impl Kernel {
             if replacing { "This REPLACES the installed copy." } else { "" },
             if m.capabilities.is_empty() { "none".into() } else { m.capabilities.join(", ") },
             if m.calls.is_empty() { "none".into() } else { m.calls.join(", ") });
-        self.require_approval(requester, "plugins.install", &format!("Install plugin '{}'?", m.display_name()), &detail)?;
+        if !approved { self.require_approval(requester, "plugins.install", &format!("Install plugin '{}'?", m.display_name()), &detail)?; }
         // Prepare and validate before touching the installed copy or running generation.
         let pending = self.cfg.plugins_dir().join(format!(".pending-{}", m.id));
         if pending.exists() { std::fs::remove_dir_all(&pending)?; }
@@ -560,12 +592,12 @@ impl Kernel {
             return Err(HostError::invalid("plugin has no runnable JavaScript bundle"));
         }
         let escalation = self.grants.escalation(&m);
-        if !escalation.is_empty() {
+        if !approved && !escalation.is_empty() {
             self.require_approval(requester, "plugins.enable", "Approve updated plugin permissions?", &escalation.join("\n"))?;
             self.grants.record_approval(&m.id, &escalation);
         }
         let was_enabled = self.plugin_enabled(&m.id);
-        // Keep the requesting generation alive through its reply; its new seed is used on restart.
+        // Self replacement is queued until the requesting event/RPC has completed.
         let pending_restart = m.id == requester.module_id;
         let was_active = self.router.active(&m.id).is_some();
         let backup = self.cfg.plugins_dir().join(format!(".backup-{}", m.id));
@@ -582,9 +614,7 @@ impl Kernel {
             // Existing generations use the snapshot/health-check swap path, preserving resources.
             if was_active {
                 let code = std::fs::read_to_string(plugins::user_seed(&dst, &m).unwrap())?;
-                let outcome = self.stage(requester, &id, &code, "plugin", false).and_then(|staged| {
-                    self.activate_staged(Some(requester), &id, staged["stageId"].as_str().unwrap(), false, false)
-                });
+                let outcome = self.activate_installed(requester, &id, &code);
                 if let Err(e) = outcome {
                     let _ = std::fs::remove_dir_all(&dst);
                     if replacing { let _ = std::fs::rename(&backup, &dst); }
@@ -597,15 +627,164 @@ impl Kernel {
                         let _ = rx.recv_timeout(Duration::from_secs(35));
                     }
                 }
+                if self.router.active(&id).is_none() {
+                    let error = self.router.last_error(&id).unwrap_or_else(|| "plugin activation failed".into());
+                    let _ = std::fs::remove_dir_all(&dst);
+                    if replacing { let _ = std::fs::rename(&backup, &dst); }
+                    self.register_discovered();
+                    return Err(HostError::new("EACTIVATE", error));
+                }
             }
         }
-        if replacing { let _ = std::fs::remove_dir_all(&backup); }
+        if replacing && !pending_restart { let _ = std::fs::remove_dir_all(&backup); }
         self.audit.record(&requester.module_id, requester.gen_id, "plugins.install", &id, "ok", Some("native-user"));
         self.after_plugin_change(&id);
-        Ok(json!({"id": id, "enabled": was_enabled, "dir": dst.to_string_lossy(), "pendingRestart": pending_restart}))
+        Ok(json!({"id": id, "enabled": was_enabled, "dir": dst.to_string_lossy(), "pendingRestart": false, "pendingActivation": pending_restart && was_enabled}))
+    }
+
+    /// Install a prepared set under one trusted approval. Validation precedes any changes.
+    /// If an activation fails, restore disk copies and previously active generations.
+    pub fn install_plugins(&self, requester: &Generation, paths: &[String]) -> HResult<Value> {
+        let _install = self.plugin_install_lock.lock();
+        if paths.is_empty() || paths.len() > 128 { return Err(HostError::invalid("expected 1–128 plugin paths")); }
+        let transaction = plugins::StagingDir::new(&self.cfg.plugins_dir(), "transaction")?;
+        let backup = transaction.path.join("previous");
+        std::fs::create_dir_all(&backup)?;
+        let mut prepared = Vec::new();
+        let mut ids = std::collections::HashSet::new();
+        let mut manifests = Vec::new();
+        let mut escalations = Vec::new();
+        for path in paths {
+            let dir = PathBuf::from(crate::util::canonical_string(std::path::Path::new(path)).map_err(HostError::from)?);
+            let m = plugins::read_manifest(&dir).map_err(|e| HostError::invalid(e.to_string()))?;
+            if self.self_updates.lock().contains(&m.id) { return Err(HostError::new("EBUSY", "a live update for this plugin is still pending")); }
+            if !ids.insert(m.id.clone()) || plugins::user_seed(&dir, &m).is_none() {
+                return Err(HostError::invalid("duplicate plugin or missing bundle"));
+            }
+            let immutable = transaction.path.join("prepared").join(&m.id);
+            plugins::copy_plugin_dir(&dir, &immutable)?;
+            let m = plugins::read_manifest(&immutable).map_err(|e| HostError::invalid(e.to_string()))?;
+            if plugins::user_seed(&immutable, &m).is_none() { return Err(HostError::invalid("missing prepared bundle")); }
+            for permission in self.grants.escalation(&m) { escalations.push(format!("{}: {permission}", m.id)); }
+            prepared.push(immutable);
+            manifests.push(m);
+        }
+        self.require_approval(requester, "plugins.install", "Install plugin updates?", &format!(
+            "Plugins: {}\n\nAdditional permissions:\n{}\n\nEnabled plugins update live. Previous versions remain available for rollback.",
+            manifests.iter().map(|m| m.display_name()).collect::<Vec<_>>().join(", "),
+            if escalations.is_empty() { "None".into() } else { escalations.join("\n") }))?;
+        for m in &manifests { self.grants.record_approval(&m.id, &self.grants.escalation(m)); }
+        let mut previous = Vec::new();
+        for m in &manifests {
+            let dir = self.cfg.plugins_dir().join(&m.id);
+            let existed = dir.is_dir();
+            if existed { plugins::copy_plugin_dir(&dir, &backup.join(&m.id))?; }
+            previous.push((m.id.clone(), existed, self.plugin_enabled(&m.id), self.router.active(&m.id).map(|g| g.version)));
+        }
+        let mut results = Vec::new();
+        for path in &prepared {
+            match self.install_plugin_inner(requester, &path.to_string_lossy(), true) {
+                Ok(value) => results.push(value),
+                Err(error) => {
+                    let mut failures = Vec::new();
+                    for (id, existed, enabled, _) in &previous {
+                        let dir = self.cfg.plugins_dir().join(id);
+                        if dir.exists() { if let Err(e) = std::fs::remove_dir_all(&dir) { failures.push(e.to_string()); } }
+                        if *existed { if let Err(e) = std::fs::rename(backup.join(id), &dir) { failures.push(e.to_string()); } }
+                        self.plugins.set_enabled(id, *enabled);
+                        let _ = std::fs::remove_dir_all(self.cfg.plugins_dir().join(format!(".backup-{id}")));
+                    }
+                    self.register_discovered();
+                    for (id, _, _, version) in previous.iter().rev() {
+                        if let Some(v) = version {
+                            if self.router.active(id).map(|g| g.version) != Some(*v) {
+                                if let Err(e) = self.rollback(None, id, Some(*v), false, false) { failures.push(format!("{id}: {e}")); }
+                            }
+                        } else if self.router.active(id).is_some() { self.unload_plugin(id); }
+                    }
+                    let _ = std::fs::remove_dir_all(&backup);
+                    self.after_plugin_change("");
+                    if failures.is_empty() { return Err(error); }
+                    return Err(HostError::new("EROLLBACK", format!("{error}; restore errors: {}", failures.join("; "))));
+                }
+            }
+        }
+        let _ = std::fs::remove_dir_all(&backup);
+        if results.iter().any(|r| r["pendingActivation"] == true) { self.finish_self_update(requester)?; }
+        Ok(json!({"plugins": results}))
+    }
+
+    fn activate_installed(&self, requester: &Generation, id: &str, code: &str) -> HResult<Value> {
+        let staged = self.stage(requester, id, code, "plugin", false)?;
+        let stage_id = staged["stageId"].as_str().ok_or_else(|| HostError::invalid("missing staged generation"))?;
+        let result = self.activate_staged(None, id, stage_id, false, false);
+        if result.is_err() { let _ = self.discard(stage_id); }
+        result
+    }
+
+    fn finish_self_update(&self, requester: &Generation) -> HResult<()> {
+        let old = self.router.gen(requester.gen_id).ok_or_else(|| HostError::not_found("requesting generation disappeared"))?;
+        let kernel = self.arc();
+        let id = requester.module_id.clone();
+        let dir = self.cfg.plugins_dir().join(&id);
+        let manifest = plugins::read_manifest(&dir).map_err(|e| HostError::invalid(e.to_string()))?;
+        let seed = plugins::user_seed(&dir, &manifest).ok_or_else(|| HostError::invalid("missing update bundle"))?;
+        let code = std::fs::read_to_string(&seed)?;
+        self.self_updates.lock().insert(id.clone());
+        std::thread::spawn(move || {
+            let start = Instant::now();
+            while old.inflight.load(Ordering::SeqCst) > 0 && start.elapsed() < Duration::from_secs(180) {
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            let _install = kernel.plugin_install_lock.lock();
+            let backup = kernel.cfg.plugins_dir().join(format!(".backup-{id}"));
+            // Another update or explicit activation wins; never overwrite it with a stale job.
+            if kernel.router.active(&id).map(|g| g.gen_id) != Some(old.gen_id)
+                || std::fs::read_to_string(&seed).ok().as_deref() != Some(code.as_str()) {
+                kernel.self_updates.lock().remove(&id);
+                return;
+            }
+            let result = if old.inflight.load(Ordering::SeqCst) != 0 {
+                Err(HostError::new("EBUSY", "plugin did not become idle for its update"))
+            } else {
+                kernel.activate_installed(&old, &id, &code)
+            };
+            if result.is_err() {
+                let _ = std::fs::remove_dir_all(&dir);
+                if backup.exists() { let _ = std::fs::rename(&backup, &dir); }
+                kernel.register_discovered();
+            } else { let _ = std::fs::remove_dir_all(&backup); }
+            let text = match result { Ok(_) => format!("{id} updated live"), Err(e) => format!("{id} update kept the previous version: {e}") };
+            kernel.ui.send(UiMsg::Toast { level: if kernel.router.active(&id).map(|g| g.gen_id) == Some(old.gen_id) { "error".into() } else { "success".into() }, text });
+            kernel.self_updates.lock().remove(&id);
+            kernel.after_plugin_change(&id);
+        });
+        Ok(())
+    }
+
+    pub fn rollback_plugin(&self, requester: &Generation, id: &str) -> HResult<Value> {
+        let (code, manifest) = {
+            let store = self.artifacts.lock();
+            let rec = store.get(id).ok_or_else(|| HostError::not_found("plugin has no versions"))?;
+            let target = rec.previous.iter().rev().find(|v| Some(**v) != rec.active && rec.versions.iter().any(|r| r.version == **v && r.status != "failed"))
+                .ok_or_else(|| HostError::not_found("plugin has no previous healthy version"))?;
+            let (code, manifest, _) = store.load(id, *target)?;
+            (code, manifest)
+        };
+        let temp = self.cfg.plugins_dir().join(format!(".rollback-{}", crate::util::random_hex(8)));
+        let dir = temp.join(id);
+        std::fs::create_dir_all(dir.join("dist"))?;
+        let result = (|| {
+            std::fs::write(dir.join("manifest.json"), serde_json::to_string(&manifest).map_err(|e| HostError::invalid(e.to_string()))?)?;
+            std::fs::write(dir.join("dist").join(format!("{id}.mjs")), code)?;
+            self.install_plugin(requester, &dir.to_string_lossy())
+        })();
+        let _ = std::fs::remove_dir_all(temp);
+        result
     }
 
     pub fn uninstall_plugin(&self, requester: &Generation, id: &str) -> HResult<Value> {
+        let _install = self.plugin_install_lock.lock();
         if self.plugin_source(id) != Some(Source::User) {
             return Err(HostError::invalid("only user-installed plugins can be uninstalled; disable built-ins instead"));
         }
@@ -662,7 +841,8 @@ impl Kernel {
                 "enabled": self.plugins.is_enabled(id, source), "active": active.as_ref().map(|g| g.label()),
                 "provides": m.provides, "requires": m.requires, "dependencies": m.dependencies, "runsOn": m.placement(),
                 "capabilities": m.capabilities, "calls": m.calls, "pendingApprovals": self.grants.escalation(m),
-                "contributes": m.contributes, "lastError": self.router.last_error(id),
+                "contributes": m.contributes, "metadata": m.metadata,
+                "canRollback": self.artifacts.lock().get(id).map(|r| r.previous.iter().any(|v| Some(*v) != r.active && r.versions.iter().any(|x| x.version == *v && x.status != "failed"))).unwrap_or(false), "lastError": self.router.last_error(id),
                 "dir": if source == Source::User { Value::String(dir.to_string_lossy().into_owned()) } else { Value::Null },
             })
         }).collect();

@@ -68,6 +68,9 @@ pub struct Manifest {
     /// forwards this data; it never interprets it.
     #[serde(default, skip_serializing_if = "Value::is_null")]
     pub contributes: Value,
+    /// Opaque manifest metadata retained for module-owned package/version presentation.
+    #[serde(flatten)]
+    pub metadata: std::collections::BTreeMap<String, Value>,
 }
 
 impl Manifest {

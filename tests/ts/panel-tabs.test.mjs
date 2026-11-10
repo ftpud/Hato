@@ -18,7 +18,7 @@ function context(service) {
 }
 test('terminal tabs attach independent shells, retain selection, and close the selected PTY', async () => {
   const calls = [];
-  const mod = await moduleAt('modules/ui/terminal-panel/src/index.ts');
+  const mod = await moduleAt('Hato-plugins/modules/ui/terminal-panel/src/index.ts');
   const c = context(async (_, method, args) => { calls.push({ method, ...args }); return { pty: args.workspaceId + ':' + args.key }; });
   await mod.activate(c.ctx);
   await mod.onEvent(c.ctx, { action: 'new' });
@@ -36,7 +36,7 @@ test('terminal tabs attach independent shells, retain selection, and close the s
   assert.equal(walk(mod.render()).find(n => n.type === 'terminal').pty, 'one:main');
 });
 test('viewer retains file tabs and closing active file selects its neighbor', async () => {
-  const mod = await moduleAt('modules/ui/viewer/src/index.ts');
+  const mod = await moduleAt('Hato-plugins/modules/ui/viewer/src/index.ts');
   const c = context(async (_, method, args) => { assert.equal(method, 'open'); return { relativePath: args.relativePath, document: args.relativePath }; });
   await mod.activate(c.ctx);
   for (const path of ['src/a.ts', 'src/b.ts']) {
@@ -56,7 +56,7 @@ test('viewer retains file tabs and closing active file selects its neighbor', as
 });
 
 test('Markdown files render by default and the source toggle persists without reopening the document', async () => {
-  const mod = await moduleAt('modules/ui/viewer/src/index.ts');
+  const mod = await moduleAt('Hato-plugins/modules/ui/viewer/src/index.ts');
   const saved = [];
   let opens = 0;
   const c = context(async (_, method, args) => {
@@ -77,7 +77,7 @@ test('Markdown files render by default and the source toggle persists without re
 });
 
 test('terminal blocks split in both directions, resize, preserve PTYs across workspace switches and close independently', async () => {
-  const mod = await moduleAt('modules/ui/terminal-panel/src/index.ts');
+  const mod = await moduleAt('Hato-plugins/modules/ui/terminal-panel/src/index.ts');
   const calls = [];
   const c = context(async (_, method, args) => { calls.push({ method, ...args }); return { pty: args.workspaceId + ':' + args.key }; });
   await mod.activate(c.ctx);
@@ -116,7 +116,7 @@ test('terminal blocks split in both directions, resize, preserve PTYs across wor
 });
 
 test('late terminal attaches from another workspace never replace current block contents', async () => {
-  const mod = await moduleAt('modules/ui/terminal-panel/src/index.ts');
+  const mod = await moduleAt('Hato-plugins/modules/ui/terminal-panel/src/index.ts');
   let release;
   const c = context(async (_, method, args) => {
     if (args.workspaceId === 'one' && args.key !== 'main') return new Promise(resolve => { release = () => resolve({ pty: 'stale' }); });

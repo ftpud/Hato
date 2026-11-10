@@ -6,7 +6,7 @@ const walk = n => [n, ...(n.children || []).flatMap(walk)];
 const branch = (name, current = false, remote = false) => ({ ref: `refs/${remote ? 'remotes' : 'heads'}/${name}`, name, current, commit: 'abcd123', upstream: null, worktree: null });
 const catalog = (workspaceId = 'one', current = 'main') => ({ workspaceId, repo: true, current, head: 'abcd123', remotes: ['origin'], local: [branch('main', current === 'main'), branch('feature/welcome', current === 'feature/welcome')], remote: [branch('origin/feature/remote', false, true)] });
 async function fixture(call) {
-  const built = await esbuild.build({ entryPoints: ['modules/ui/git-branch/src/index.ts'], bundle: true, format: 'esm', write: false });
+  const built = await esbuild.build({ entryPoints: ['Hato-plugins/modules/ui/git-branch/src/index.ts'], bundle: true, format: 'esm', write: false });
   const mod = (await import('data:text/javascript;base64,' + Buffer.from(built.outputFiles[0].text).toString('base64') + '#' + ++generation)).default;
   const watchers = new Map(), events = new Map(), calls = [];
   const ctx = { state: { get: () => ({ id: 'one' }), watch(k, fn) { watchers.set(k, fn); } }, events: { on(k, fn) { events.set(k, fn); } }, ui: { invalidate() {} }, modules: { async call(target, method, args) { assert.equal(target, 'git'); calls.push([method, args]); return call ? call(method, args) : catalog(args.workspaceId); } } };

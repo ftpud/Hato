@@ -4,7 +4,7 @@ import { randomBytes } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import * as esbuild from 'esbuild';
 Object.defineProperty(globalThis.crypto, 'randomHex', { value: n => randomBytes(n).toString('hex'), configurable: true });
-const result = await esbuild.build({ entryPoints: ['modules/services/terminals/src/tools.ts'], bundle: true, format: 'esm', write: false });
+const result = await esbuild.build({ entryPoints: ['Hato-plugins/modules/services/terminals/src/tools.ts'], bundle: true, format: 'esm', write: false });
 const { terminalTools } = await import('data:text/javascript;base64,' + Buffer.from(result.outputFiles[0].text).toString('base64'));
 const scope = { workspaceId: 'ws', machineId: 'local', conversationId: 'c' };
 function fixture() {

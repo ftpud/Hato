@@ -20,7 +20,7 @@ test('SSH ACP detects interactive-only tools and carries their PATH into npm ins
     await writeFile(rc, `case $- in *i*) ;; *) return ;; esac\nexport PATH='${bin}':/usr/bin:/bin\necho startup-noise\n`);
     const shell = join(dir, 'shell');
     await writeFile(shell, `#!/bin/sh\nexec /bin/bash --noprofile --rcfile '${rc}' "$@"\n`, { mode: 0o755 });
-    const built = await esbuild.build({ entryPoints: ['modules/services/acp/src/index.ts'], bundle: true, format: 'esm', write: false });
+    const built = await esbuild.build({ entryPoints: ['Hato-plugins/modules/services/acp/src/index.ts'], bundle: true, format: 'esm', write: false });
     const { detect, default: mod } = await import('data:text/javascript;base64,' + Buffer.from(built.outputFiles[0].text).toString('base64'));
     const desc = { id: 'acp-test', location: 'ssh', machineId: 'ssh:acp-test', rootAbsolutePath: dir, ssh: { profileId: 'acp-test', host: 'test', port: 22, user: 'test' } };
     const calls = [];

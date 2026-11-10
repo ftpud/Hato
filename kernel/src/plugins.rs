@@ -128,6 +128,19 @@ pub fn user_seed(dir: &Path, m: &Manifest) -> Option<PathBuf> {
     (is_js && entry.is_file()).then_some(entry)
 }
 
+/// Kernel-private staging directory, cleaned on every return path.
+pub struct StagingDir { pub path: PathBuf }
+impl StagingDir {
+    pub fn new(parent: &Path, prefix: &str) -> std::io::Result<Self> {
+        let path = parent.join(format!(".{prefix}-{}", crate::util::random_hex(8)));
+        std::fs::create_dir_all(&path)?;
+        Ok(Self { path })
+    }
+}
+impl Drop for StagingDir {
+    fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.path); }
+}
+
 /// Recursively copy a plugin directory, skipping VCS metadata and dependency folders.
 pub fn copy_plugin_dir(from: &Path, to: &Path) -> std::io::Result<u64> {
     let mut total = 0u64;

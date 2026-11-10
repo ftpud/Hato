@@ -76,3 +76,7 @@ path = "kernel/tests/arch_gate.rs"
 [[test]]
 name = "ssh_builtin"
 path = "kernel/tests/ssh_builtin.rs"
+
+[[test]]
+name = "plugin_runtime"
+path = "kernel/tests/plugin_runtime.rs"

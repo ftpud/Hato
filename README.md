@@ -14,9 +14,14 @@ toolchain, Rust stable, Node.js 20 or newer, Git and OpenSSH, then run:
 git clone https://github.com/ftpud/Hato.git
 cd Hato
 npm ci
-npm run modules:build
-cargo run -- --root .
+npm run plugins:setup
+npm run dev -- --root .
 ```
+
+Plugin sources live only in the separate `Hato-plugins/` checkout. `npm run dev` builds and
+watches them, activating TypeScript changes without restarting the app. Packaged applications
+install their pinned initial plugin set on first launch and keep it in app data for offline use.
+See [the runtime migration guide](docs/PLUGIN_RUNTIME.md) for updates and publishing.
 
 Source launches use the same Dock and app-switcher icon as the packaged macOS app.
 

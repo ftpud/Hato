@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as esbuild from 'esbuild';
 async function load() {
-  const r = await esbuild.build({ entryPoints: ['modules/services/files/src/skills.ts'], bundle: true, format: 'esm', write: false });
+  const r = await esbuild.build({ entryPoints: ['Hato-plugins/modules/services/files/src/skills.ts'], bundle: true, format: 'esm', write: false });
   return import('data:text/javascript;base64,' + Buffer.from(r.outputFiles[0].text).toString('base64'));
 }
 const missing = () => Object.assign(new Error('missing'), { code: 'ENOENT' });

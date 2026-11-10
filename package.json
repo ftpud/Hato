@@ -9,7 +9,10 @@
     "modules:build": "node tools/build-modules.mjs",
     "modules:watch": "node tools/build-modules.mjs --watch",
     "typecheck": "tsc --noEmit -p .",
-    "test": "npm run typecheck && node --test tests/ts/*.test.mjs"
+    "test": "npm run typecheck && node --test tests/ts/*.test.mjs",
+    "dev": "node tools/dev.mjs",
+    "plugins:lock": "node tools/lock-plugins.mjs",
+    "plugins:setup": "node tools/setup-plugins.mjs"
   },
   "devDependencies": {
     "esbuild": "0.24.2",

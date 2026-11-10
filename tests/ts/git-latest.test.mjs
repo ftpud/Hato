@@ -10,7 +10,7 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
-const built = await esbuild.build({ entryPoints: [path.join(root, "modules/services/git/src/index.ts")], bundle: true, format: "esm", platform: "neutral", target: "es2020", write: false });
+const built = await esbuild.build({ entryPoints: [path.join(root, "Hato-plugins/modules/services/git/src/index.ts")], bundle: true, format: "esm", platform: "neutral", target: "es2020", write: false });
 const git = (await import("data:text/javascript;base64," + Buffer.from(built.outputFiles[0].text).toString("base64"))).default;
 
 function fixture() {

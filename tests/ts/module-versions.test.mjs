@@ -6,7 +6,7 @@ const load = async path => {
   const b = await esbuild.build({ entryPoints: [path], bundle: true, format: 'esm', write: false });
   return import('data:text/javascript;base64,' + Buffer.from(b.outputFiles[0].text).toString('base64'));
 };
-const { moduleVersions } = await load('modules/ui/workspace-layout/src/module-versions.ts');
+const { moduleVersions } = await load('Hato-plugins/modules/ui/workspace-layout/src/module-versions.ts');
 const version = (version, origin, status = 'ok') => ({ version, origin, status });
 
 test('selector uses the exact imported seed and only successfully activated custom builds', () => {
@@ -22,7 +22,7 @@ test('older kernels use healthy seed history and do not invent an updated build'
 });
 
 test('Modules switches both directions without compiling and retains the active build on denial', async t => {
-  const mod = (await load('modules/ui/workspace-layout/src/index.ts')).default;
+  const mod = (await load('Hato-plugins/modules/ui/workspace-layout/src/index.ts')).default;
   t.after(() => mod.deactivate());
   const m = { id: 'files', kind: 'service', seedVersion: 1, active: { version: 2, label: 'files@0002' }, previous: [1], versions: [version(1, 'seed'), version(2, 'build')], lastError: null };
   const calls = []; let deny = false;

@@ -7,7 +7,7 @@ async function load(entry) {
   return (await import('data:text/javascript;base64,' + Buffer.from(r.outputFiles[0].text).toString('base64') + '#' + (++moduleLoad))).default;
 }
 test('new chats retain the remembered provider and fall back when it is unavailable', async () => {
-  const mod = await load('modules/services/ai-sessions/src/index.ts');
+  const mod = await load('Hato-plugins/modules/services/ai-sessions/src/index.ts');
   let preferred = 'claude', inserted, patch;
   const ctx = { modules: { async call(_, method, args) {
     if (method === 'resolve') return { id: 'ws', machineId: 'local' };
@@ -28,7 +28,7 @@ test('new chats retain the remembered provider and fall back when it is unavaila
   assert.equal(inserted.acpProfileId, 'codex');
 });
 test('chat auto-connects once and keeps secondary controls behind the cog', async () => {
-  const mod = await load('modules/ui/ai/src/index.ts');
+  const mod = await load('Hato-plugins/modules/ui/ai/src/index.ts');
   const calls = [];
   const view = { activeId: 'c', conversations: [{ id: 'c', title: 'Chat 1' }], profiles: [{ id: 'claude', provider: 'claude', name: 'Claude' }], workspace: { machineId: 'local', root: '/test' }, active: { conversation: { id: 'c', acpProfileId: 'claude' }, messages: [], live: null } };
   const ctx = { state: { get: () => ({ id: 'ws' }), watch() {} }, events: { on() {}, emit() {} }, ui: { invalidate() {} }, modules: { async call(_, method) { calls.push(method); if (method === 'view') return view; if (method === 'connect') view.active.live = { status: 'ready' }; } } };
@@ -58,7 +58,7 @@ test('chat auto-connects once and keeps secondary controls behind the cog', asyn
 });
 
 test('steering cancels once, retains follow-ups, and submits them after the active turn ends', async () => {
-  const mod = await load('modules/services/ai-sessions/src/index.ts');
+  const mod = await load('Hato-plugins/modules/services/ai-sessions/src/index.ts');
   const listeners = {}, prompts = [], stored = [];
   let cancels = 0;
   const ctx = {
@@ -93,7 +93,7 @@ test('steering cancels once, retains follow-ups, and submits them after the acti
 });
 
 test('pictures can be attached, removed, sent without text and retained on send failure', async () => {
-  const mod = await load('modules/ui/ai/src/index.ts');
+  const mod = await load('Hato-plugins/modules/ui/ai/src/index.ts');
   const picture = { name: 'test.png', mimeType: 'image/png', data: 'iVBORw0KGgo=' };
   const view = { activeId: 'img-c', conversations: [], profiles: [], workspace: {}, active: { conversation: { id: 'img-c' }, messages: [], live: { status: 'ready' } } };
   let fail = true, sent;
@@ -116,7 +116,7 @@ test('pictures can be attached, removed, sent without text and retained on send 
 });
 
 test('image-only prompts are persisted and passed to ACP, including steering', async () => {
-  const mod = await load('modules/services/ai-sessions/src/index.ts');
+  const mod = await load('Hato-plugins/modules/services/ai-sessions/src/index.ts');
   const picture = { name: 'test.png', mimeType: 'image/png', data: 'iVBORw0KGgo=' };
   const listeners = {}, prompts = [], stored = [];
   let support = true;
@@ -143,7 +143,7 @@ test('image-only prompts are persisted and passed to ACP, including steering', a
 });
 
 test('model picker searches advertised metadata, selects the right config and preserves draft attachments', async () => {
-  const mod = await load('modules/ui/ai/src/index.ts');
+  const mod = await load('Hato-plugins/modules/ui/ai/src/index.ts');
   const picture = { name: 'image.png', mimeType: 'image/png', data: 'iVBORw0KGgo=' };
   const configOptions = [{ id: 'agent-model', category: 'model', type: 'select', currentValue: 'one', options: [{ value: 'one', name: 'First model', description: 'Fast tasks' }, { value: 'two', name: 'Second model', description: 'Deep reasoning' }] }];
   const view = { profiles: [{ id: 'provider', name: 'Codex ACP' }], conversations: [], workspace: {}, active: { conversation: { id: 'picker', acpProfileId: 'provider' }, live: { status: 'ready', configOptions }, messages: [] } };
@@ -169,7 +169,7 @@ test('model picker searches advertised metadata, selects the right config and pr
 });
 
 test('Skills lists only active workspace files and invokes the explicit workspace path', async () => {
-  const mod = await load('modules/ui/ai/src/index.ts');
+  const mod = await load('Hato-plugins/modules/ui/ai/src/index.ts');
   const skills = [{ name: 'Review changes', description: 'Review this workspace', path: '.agents/skills/review/SKILL.md' }];
   let selected = { id: 'one' };
   let skillState = { workspaceId: 'one', skills };
@@ -197,7 +197,7 @@ test('Skills lists only active workspace files and invokes the explicit workspac
 });
 
 test('existing history projects embedded image data as a preview and replayed image blocks stay out of text', async () => {
-  const mod = await load('modules/services/ai-sessions/src/index.ts');
+  const mod = await load('Hato-plugins/modules/services/ai-sessions/src/index.ts');
   const data = '/9j/' + 'ABCD'.repeat(200);
   const listeners = {};
   const ctx = { events: { on: (topic, fn) => { listeners[topic] = fn; }, emit() {} }, state: { set() {}, get() {}, watch() {} }, modules: { async call(_, method) {
@@ -224,7 +224,7 @@ test('existing history projects embedded image data as a preview and replayed im
 });
 
 test('chat renders at most 20 cards, pages older messages and returns to latest without deleting history', async () => {
-  const mod = await load('modules/ui/ai/src/index.ts');
+  const mod = await load('Hato-plugins/modules/ui/ai/src/index.ts');
   const messages = Array.from({ length: 200 }, (_, i) => ({ key: 'm' + (i + 1), role: 'user', text: 'Message ' + (i + 1) }));
   const view = { activeId: 'c', conversations: [{ id: 'c', title: 'Chat' }], profiles: [{ id: 'codex', name: 'Codex', provider: 'codex' }], workspace: { id: 'ws', machineId: 'local', root: '/test' },
     active: { conversation: { id: 'c', acpProfileId: 'codex' }, messages, hasOlder: false, live: { status: 'ready' } } };
@@ -253,7 +253,7 @@ test('chat renders at most 20 cards, pages older messages and returns to latest 
 });
 
 test('scroll history grows in batches, stays bounded to 60 and collapses to 20 at the latest end', async () => {
-  const mod = await load('modules/ui/ai/src/index.ts');
+  const mod = await load('Hato-plugins/modules/ui/ai/src/index.ts');
   const messages = Array.from({ length: 200 }, (_, i) => ({ key: 'm' + (i + 1), role: 'user', text: String(i + 1) }));
   const view = { activeId: 'c', conversations: [], profiles: [{ id: 'codex', name: 'Codex', provider: 'codex' }], workspace: { id: 'ws', machineId: 'local', root: '/test' },
     active: { conversation: { id: 'c', acpProfileId: 'codex' }, messages, hasOlder: false, live: { status: 'ready' } } };
@@ -291,7 +291,7 @@ test('scroll history grows in batches, stays bounded to 60 and collapses to 20 a
 });
 
 test('chat composer divider restores workspace size and keeps draft across resizing and reload', async () => {
-  const mod = await load('modules/ui/ai/src/index.ts');
+  const mod = await load('Hato-plugins/modules/ui/ai/src/index.ts');
   const view = { activeId: 'c', conversations: [{ id: 'c', title: 'Chat' }], profiles: [{ id: 'claude', provider: 'claude', name: 'Claude' }], workspace: { machineId: 'local', root: '/test' }, active: { conversation: { id: 'c', acpProfileId: 'claude' }, messages: [], live: { status: 'ready' } } };
   const stored = new Map([['ws', 0.3], ['other', 0.2]]), watchers = new Map(), saved = [];
   let workspace = { id: 'ws' };
@@ -326,7 +326,7 @@ test('chat composer divider restores workspace size and keeps draft across resiz
 });
 
 test('new chats copy active settings and live defaults without session identity', async () => {
-  const mod = await load('modules/services/ai-sessions/src/index.ts');
+  const mod = await load('Hato-plugins/modules/services/ai-sessions/src/index.ts');
   const previous = { id: 'old', workspaceId: 'ws', acpProfileId: 'codex', approvalPolicy: 'autopilot', mcpSelection: [], config: { reasoning: 'high' }, providerSessionId: 'private-session' };
   let inserted;
   const ctx = { modules: { async call(_, method, args) {
@@ -356,7 +356,7 @@ test('new chats copy active settings and live defaults without session identity'
 });
 
 test('sessions search and both chat popovers use an opaque semantic background', async () => {
-  const mod = await load('modules/ui/ai/src/index.ts');
+  const mod = await load('Hato-plugins/modules/ui/ai/src/index.ts');
   const view = { activeId: 'one', profiles: [{ id: 'codex', name: 'Codex' }], conversations: [{ id: 'one', title: 'Fix login', acpProfileId: 'codex' }, { id: 'two', title: 'Polish UI' }], workspace: { name: 'Hato' }, active: { conversation: { id: 'one' }, messages: [], live: { status: 'ready' } } };
   const ctx = { state: { get: () => ({ id: 'ws' }), watch() {} }, events: { on() {}, emit() {} }, ui: { invalidate() {} }, modules: { async call() { return view; } } };
   await mod.activate(ctx);
@@ -372,8 +372,8 @@ test('sessions search and both chat popovers use an opaque semantic background',
 });
 
 test('chat MCP selections preserve other servers and connect configured transports with OAuth', async () => {
-  const mod = await load('modules/services/ai-sessions/src/index.ts');
-  const auth = await load('modules/services/mcp-auth/src/index.ts');
+  const mod = await load('Hato-plugins/modules/services/ai-sessions/src/index.ts');
+  const auth = await load('Hato-plugins/modules/services/mcp-auth/src/index.ts');
   const server = { id: 'remote', name: 'Remote', transport: 'http', url: 'https://example.com/mcp', auth: { type: 'oauth' } };
   const authCtx = { modules: { async call(target, method, args) {
     assert.equal(target, 'persistence');
@@ -419,7 +419,7 @@ test('chat MCP selections preserve other servers and connect configured transpor
 });
 
 test('chat catalog lists enabled configured servers without exposing credentials', async () => {
-  const mod = await load('modules/services/ai-sessions/src/index.ts');
+  const mod = await load('Hato-plugins/modules/services/ai-sessions/src/index.ts');
   const ctx = { modules: { async call(_, method) {
     if (method === 'resolve') return { id: 'ws' };
     if (method === 'conversations.list' || method === 'profiles') return [];
@@ -437,7 +437,7 @@ test('chat catalog lists enabled configured servers without exposing credentials
 
 test('switching providers preserves an active agent and selecting the same provider does nothing', async () => {
   for (const status of ['busy', 'starting']) {
-    const mod = await load('modules/services/ai-sessions/src/index.ts');
+    const mod = await load('Hato-plugins/modules/services/ai-sessions/src/index.ts');
     const mutations = [];
     const ctx = { modules: { async call(service, method, args) {
       if (method === 'conversations.get') return { id: 'switch', workspaceId: 'ws', acpProfileId: 'codex' };
@@ -454,7 +454,7 @@ test('switching providers preserves an active agent and selecting the same provi
 
 test('ACP reports a crashed turn once and suppresses errors for intentional stops', async () => {
   for (const intentional of [false, true]) {
-    const mod = await load('modules/services/acp/src/index.ts');
+    const mod = await load('Hato-plugins/modules/services/acp/src/index.ts');
     let ended;
     const events = [];
     const ctx = { modules: { async call() { return [{ id: 'codex' }, { id: 'claude' }]; } },

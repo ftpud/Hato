@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as esbuild from 'esbuild';
 const load = async () => {
-  const b = await esbuild.build({ entryPoints: ['modules/services/module-dev/src/index.ts'], bundle: true, format: 'esm', write: false });
+  const b = await esbuild.build({ entryPoints: ['Hato-plugins/modules/services/module-dev/src/index.ts'], bundle: true, format: 'esm', write: false });
   return (await import('data:text/javascript;base64,' + Buffer.from(b.outputFiles[0].text).toString('base64'))).default;
 };
 

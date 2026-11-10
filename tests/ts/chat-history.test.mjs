@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import * as esbuild from 'esbuild';
 let generation = 0;
 async function session() {
-  const result = await esbuild.build({ entryPoints: ['modules/services/ai-sessions/src/index.ts'], bundle: true, format: 'esm', write: false });
+  const result = await esbuild.build({ entryPoints: ['Hato-plugins/modules/services/ai-sessions/src/index.ts'], bundle: true, format: 'esm', write: false });
   return (await import('data:text/javascript;base64,' + Buffer.from(result.outputFiles[0].text).toString('base64') + '#' + (++generation))).default;
 }
 function fixture(total) {

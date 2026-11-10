@@ -2,8 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as esbuild from 'esbuild';
 const load = async (entry) => import('data:text/javascript;base64,' + Buffer.from((await esbuild.build({ entryPoints: [entry], bundle: true, format: 'esm', write: false })).outputFiles[0].text).toString('base64'));
-const S = await load('modules/services/git/src/status.ts');
-const P = await load('modules/ui/git-panel/src/model.ts');
+const S = await load('Hato-plugins/modules/services/git/src/status.ts');
+const P = await load('Hato-plugins/modules/ui/git-panel/src/model.ts');
 const G = await load('sdk/git.ts');
 
 test('porcelain -z status parses kinds, staging and renames', () => {

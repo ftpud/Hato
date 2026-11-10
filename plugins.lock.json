@@ -1,0 +1,451 @@
+{
+  "schemaVersion": 1,
+  "revision": "9b2d0b5c6c06ec52f746abf42d637bc3ff902428",
+  "baseUrl": "https://raw.githubusercontent.com/ftpud/Hato-plugins/9b2d0b5c6c06ec52f746abf42d637bc3ff902428/",
+  "modules": [
+    {
+      "id": "persistence",
+      "kind": "service",
+      "manifest": {
+        "path": "packages/foundation/0.1.1/persistence/manifest.json",
+        "sha256": "b57e9c2779c1b5ef5b40d6e2bcb232d248035bb15176968a3224bb22a47054ff"
+      },
+      "bundle": {
+        "path": "packages/foundation/0.1.1/persistence/dist/persistence.mjs",
+        "sha256": "3939c652cc9b46ce75a372289e2ec201826c5dc15729f5dfa8a16215bd713054"
+      }
+    },
+    {
+      "id": "workspace",
+      "kind": "service",
+      "manifest": {
+        "path": "packages/foundation/0.1.1/workspace/manifest.json",
+        "sha256": "f06218a0606fd6b541cb05c35d959b51b7784b4ce901fe0010b4639340404dce"
+      },
+      "bundle": {
+        "path": "packages/foundation/0.1.1/workspace/dist/workspace.mjs",
+        "sha256": "0629a4a26fb064adf5c23fc5c743e3355722245410e5647d765606de247da3ee"
+      }
+    },
+    {
+      "id": "projects",
+      "kind": "service",
+      "manifest": {
+        "path": "packages/foundation/0.1.1/projects/manifest.json",
+        "sha256": "742d771e2fef730ae7e2b2f2ac4a4f7d9bd54bb3a1f170bff4fdf426b09993d5"
+      },
+      "bundle": {
+        "path": "packages/foundation/0.1.1/projects/dist/projects.mjs",
+        "sha256": "ab4a532bf940effc5c96463ed434d30ba5dacc8f9e6558e46a2b65fe57ee34f6"
+      }
+    },
+    {
+      "id": "files",
+      "kind": "service",
+      "manifest": {
+        "path": "packages/foundation/0.1.1/files/manifest.json",
+        "sha256": "8e3390612f4eff48193760250c1ddc8feda3194f5999bb064427e248bd81b872"
+      },
+      "bundle": {
+        "path": "packages/foundation/0.1.1/files/dist/files.mjs",
+        "sha256": "55a93864792fcf44e5f3b54e9c8842f5f3a0385c3cb10a6031093b381d01b3a5"
+      }
+    },
+    {
+      "id": "terminals",
+      "kind": "service",
+      "manifest": {
+        "path": "packages/foundation/0.1.1/terminals/manifest.json",
+        "sha256": "ff72663f3f7d567f1db70840c52760b69eed9579645c764fc6148033f8ed57d1"
+      },
+      "bundle": {
+        "path": "packages/foundation/0.1.1/terminals/dist/terminals.mjs",
+        "sha256": "05ed134dde496b38e55cdb027e0f412882187975f13afcd39a2cb759bb405204"
+      }
+    },
+    {
+      "id": "workspace-layout",
+      "kind": "ui",
+      "manifest": {
+        "path": "packages/foundation/0.1.1/workspace-layout/manifest.json",
+        "sha256": "215a05c5e26c58e3edd7f5c97c767667167e0ffca802945f9dfc87586bb498e5"
+      },
+      "bundle": {
+        "path": "packages/foundation/0.1.1/workspace-layout/dist/workspace-layout.mjs",
+        "sha256": "4a2a685d5e4349e6b544675f4770ade40b5e25708bd6e34f762253bb4d945551"
+      }
+    },
+    {
+      "id": "settings",
+      "kind": "ui",
+      "manifest": {
+        "path": "packages/foundation/0.1.1/settings/manifest.json",
+        "sha256": "e063d7f482a7c25032c99f3cac69420e2d7ffff771838cd0a112c51fa099c44f"
+      },
+      "bundle": {
+        "path": "packages/foundation/0.1.1/settings/dist/settings.mjs",
+        "sha256": "55824e8cebeb99ff26d9f167d498d306908a9104d8d138bd1a9edd8e389b9d93"
+      }
+    },
+    {
+      "id": "module-dev",
+      "kind": "service",
+      "manifest": {
+        "path": "packages/foundation/0.1.1/module-dev/manifest.json",
+        "sha256": "3326435d719a3df28d4948fbdc86a64bac395547356a9c27227c93e433924cc0"
+      },
+      "bundle": {
+        "path": "packages/foundation/0.1.1/module-dev/dist/module-dev.mjs",
+        "sha256": "44088e520993e866f7f546ec4a8bc553024a4c0ff0d2c461184c8f109aed3bf4"
+      }
+    },
+    {
+      "id": "explorer",
+      "kind": "ui",
+      "manifest": {
+        "path": "packages/foundation/0.1.1/explorer/manifest.json",
+        "sha256": "2f9e25812c43276f738c8baf5145ffe01985aab09b9d517d0930facb6e3b9877"
+      },
+      "bundle": {
+        "path": "packages/foundation/0.1.1/explorer/dist/explorer.mjs",
+        "sha256": "4d282b22d2867252438bea53567a82b5c65bfb653f21d2523c692b4435176260"
+      }
+    },
+    {
+      "id": "viewer",
+      "kind": "ui",
+      "manifest": {
+        "path": "packages/foundation/0.1.1/viewer/manifest.json",
+        "sha256": "708157d89d103e94009485c1cfa2012d67a002d9ca18edca48a16e9aecee4b6f"
+      },
+      "bundle": {
+        "path": "packages/foundation/0.1.1/viewer/dist/viewer.mjs",
+        "sha256": "8c95d271b1c9860b8a97501a560db323592c554afa6882229c047e92a1a35617"
+      }
+    },
+    {
+      "id": "terminal-panel",
+      "kind": "ui",
+      "manifest": {
+        "path": "packages/foundation/0.1.1/terminal-panel/manifest.json",
+        "sha256": "808298872b9b60f344bf4d644c49d1512ee595bae600ffd62c9f7752420f645d"
+      },
+      "bundle": {
+        "path": "packages/foundation/0.1.1/terminal-panel/dist/terminal-panel.mjs",
+        "sha256": "c323a2084356509830a651d9c780837a5f5cbb9c69e062da2ebbf62a5f8f1c6d"
+      }
+    },
+    {
+      "id": "projects-panel",
+      "kind": "ui",
+      "manifest": {
+        "path": "packages/foundation/0.1.1/projects-panel/manifest.json",
+        "sha256": "10e20d02abf5150445cabbe42f2190d87a3b892b7e86c2d62e3702bf87b006ab"
+      },
+      "bundle": {
+        "path": "packages/foundation/0.1.1/projects-panel/dist/projects-panel.mjs",
+        "sha256": "8b9b89c1351de40f7e4416810359dcbbf159346fb360d2132f467f2ea499e58e"
+      }
+    },
+    {
+      "id": "left-sidebar",
+      "kind": "ui",
+      "manifest": {
+        "path": "packages/foundation/0.1.1/left-sidebar/manifest.json",
+        "sha256": "98656e3e1b48c17dcff050cad9fd204f9f72c379e756fd3f3b29c3358e4e241d"
+      },
+      "bundle": {
+        "path": "packages/foundation/0.1.1/left-sidebar/dist/left-sidebar.mjs",
+        "sha256": "181d7915eb50c7b1f69609165b244dc367b7de92761b0f45973c9c1350767771"
+      }
+    },
+    {
+      "id": "sidebar",
+      "kind": "ui",
+      "manifest": {
+        "path": "packages/foundation/0.1.1/sidebar/manifest.json",
+        "sha256": "0330c90f158055b4476e25141dfbdc5027f8c62ec7ee6437ede95617ce2e12bd"
+      },
+      "bundle": {
+        "path": "packages/foundation/0.1.1/sidebar/dist/sidebar.mjs",
+        "sha256": "54c4695434c2c4bda91d91b14557c7c3b767db862d8525fd7ba60bab53d88ed5"
+      }
+    },
+    {
+      "id": "acp",
+      "kind": "service",
+      "manifest": {
+        "path": "packages/core-acp/0.1.1/acp/manifest.json",
+        "sha256": "1719e249f9379ddbc8db00cc31e34cb1f999a4f24afcd1bd032a5e7af6a8ada2"
+      },
+      "bundle": {
+        "path": "packages/core-acp/0.1.1/acp/dist/acp.mjs",
+        "sha256": "b92e69fdf48988b8e4d1a45c41c9eab5198cf30c0323e1c9539bfc17892725b3"
+      }
+    },
+    {
+      "id": "ai-sessions",
+      "kind": "service",
+      "manifest": {
+        "path": "packages/core-acp/0.1.1/ai-sessions/manifest.json",
+        "sha256": "79deef7baee22b423ed74563c25bac0107080e3ba3e9af0f9833bb03cb3a0234"
+      },
+      "bundle": {
+        "path": "packages/core-acp/0.1.1/ai-sessions/dist/ai-sessions.mjs",
+        "sha256": "72b5a4721186271dce400f7dd8656c05d2ad8b965cfd27043330b975b4b681bf"
+      }
+    },
+    {
+      "id": "ai",
+      "kind": "ui",
+      "manifest": {
+        "path": "packages/core-acp/0.1.1/ai/manifest.json",
+        "sha256": "02402b022223d28e31fdc35a2c55dd91de9116c3d5000e1f05712a421a0d6943"
+      },
+      "bundle": {
+        "path": "packages/core-acp/0.1.1/ai/dist/ai.mjs",
+        "sha256": "8941a03d34b058fdcc3d67cbea0c03993275fb67e41b39db3a1c62dc093dd601"
+      }
+    },
+    {
+      "id": "internal-mcp",
+      "kind": "service",
+      "manifest": {
+        "path": "packages/core-acp/0.1.1/internal-mcp/manifest.json",
+        "sha256": "47ce6e9ce2eb2fa6eed2a6c76de7938be30d564cdab3fcf48e44bf85e34e9dae"
+      },
+      "bundle": {
+        "path": "packages/core-acp/0.1.1/internal-mcp/dist/internal-mcp.mjs",
+        "sha256": "035c7e9953491f6dedcde682e22ed35bf32ad2707965eb2b28f4c2a763f353cc"
+      }
+    },
+    {
+      "id": "internal-local-mcp",
+      "kind": "service",
+      "manifest": {
+        "path": "packages/core-acp/0.1.1/internal-local-mcp/manifest.json",
+        "sha256": "be921dd11a41d8e06d27d2dca3c9a35c6101df206a6e9175d31811210ec0e8e1"
+      },
+      "bundle": {
+        "path": "packages/core-acp/0.1.1/internal-local-mcp/dist/internal-local-mcp.mjs",
+        "sha256": "443883c429780650afe50f98ca2ea2705ef21967dc52ece4ea35b910d3445013"
+      }
+    },
+    {
+      "id": "internal-remote-mcp",
+      "kind": "service",
+      "manifest": {
+        "path": "packages/core-acp/0.1.1/internal-remote-mcp/manifest.json",
+        "sha256": "8e1804bcd11ef541727c847d9f5f69db6c8bf645190549a88e1b1e7ec1bd4ebe"
+      },
+      "bundle": {
+        "path": "packages/core-acp/0.1.1/internal-remote-mcp/dist/internal-remote-mcp.mjs",
+        "sha256": "2997285d06a1c0a9ec9868851d67dab06aba14eb3de62887cc3add2e6141b7aa"
+      }
+    },
+    {
+      "id": "mcp-auth",
+      "kind": "service",
+      "manifest": {
+        "path": "packages/core-acp/0.1.1/mcp-auth/manifest.json",
+        "sha256": "b69ba38a1229dda2cb77da62bd359f223310d38d2a5afa08a8e58fe4916adc40"
+      },
+      "bundle": {
+        "path": "packages/core-acp/0.1.1/mcp-auth/dist/mcp-auth.mjs",
+        "sha256": "b9f603a128def689a2449656d1a84961823a26ea4f60675fc6eaf4e11397b01c"
+      }
+    },
+    {
+      "id": "agent-runner",
+      "kind": "service",
+      "manifest": {
+        "path": "packages/core-acp/0.1.1/agent-runner/manifest.json",
+        "sha256": "d55751cf3766f3f31354d2c420e4c40f2104fcdccab46ea891396adb60aae76b"
+      },
+      "bundle": {
+        "path": "packages/core-acp/0.1.1/agent-runner/dist/agent-runner.mjs",
+        "sha256": "2e2d1594a66c0be09f171715534224df6b06e87078dd52b2aeba7aa9fa320e7b"
+      }
+    },
+    {
+      "id": "mcp-panel",
+      "kind": "ui",
+      "manifest": {
+        "path": "packages/core-acp/0.1.1/mcp-panel/manifest.json",
+        "sha256": "3ba1e0db8bc506f40ef69afc0c35b331d8536b5e50ad7452a7191fcea81a2f32"
+      },
+      "bundle": {
+        "path": "packages/core-acp/0.1.1/mcp-panel/dist/mcp-panel.mjs",
+        "sha256": "d64854eab8244f192d207dab5a8483fe0c59ebc562660a5a0defe24c211b8020"
+      }
+    },
+    {
+      "id": "git",
+      "kind": "service",
+      "manifest": {
+        "path": "packages/git/0.1.1/git/manifest.json",
+        "sha256": "098cf0ff58c5047dcb1a6e97fda0981ac313ac55509b41d2cef22e10fba4d80b"
+      },
+      "bundle": {
+        "path": "packages/git/0.1.1/git/dist/git.mjs",
+        "sha256": "a23b014c8064bf951d7bc5d0a4688b0f794436515ad27a25bf162eb2e3a9102b"
+      }
+    },
+    {
+      "id": "git-panel",
+      "kind": "ui",
+      "manifest": {
+        "path": "packages/git/0.1.1/git-panel/manifest.json",
+        "sha256": "eb9cd6ace2a84de0283713fe71bf442e21472501e8aeddf9e19efa587d9436c2"
+      },
+      "bundle": {
+        "path": "packages/git/0.1.1/git-panel/dist/git-panel.mjs",
+        "sha256": "6a00e2907d9f6f2370e55f2c1d3c7f83441b2466d5098127937db9d7fc5be9c7"
+      }
+    },
+    {
+      "id": "git-branch",
+      "kind": "ui",
+      "manifest": {
+        "path": "packages/git/0.1.1/git-branch/manifest.json",
+        "sha256": "fa8dd247a303d122d040f20fa61d5943093965f1e61bd240b826609aeeaec4f0"
+      },
+      "bundle": {
+        "path": "packages/git/0.1.1/git-branch/dist/git-branch.mjs",
+        "sha256": "7474d6961080dcd0a29f796254246923e8de9d34224e71486bab0e2a4521bdd9"
+      }
+    },
+    {
+      "id": "git-changes",
+      "kind": "ui",
+      "manifest": {
+        "path": "packages/git/0.1.1/git-changes/manifest.json",
+        "sha256": "df04dee8c10a97fe69c796ab43cbc209eef5f8d528f50aa9712ae61c6e6c3c43"
+      },
+      "bundle": {
+        "path": "packages/git/0.1.1/git-changes/dist/git-changes.mjs",
+        "sha256": "44473eb74e3ac4368f89e0233c2d6440205cc93290332d26b1a9fae7878fd368"
+      }
+    },
+    {
+      "id": "git-tasks",
+      "kind": "service",
+      "manifest": {
+        "path": "packages/git/0.1.1/git-tasks/manifest.json",
+        "sha256": "4eb6ecb802333424f18a6eedac23adc6a12389ec965c538e23c14106605bb7b9"
+      },
+      "bundle": {
+        "path": "packages/git/0.1.1/git-tasks/dist/git-tasks.mjs",
+        "sha256": "ae6bef2d9f65428320c4c58be9df9b636f7466d6f5b9fb88100eaca1511ef907"
+      }
+    },
+    {
+      "id": "claude-usage",
+      "kind": "ui",
+      "manifest": {
+        "path": "packages/claude-acp/0.1.1/claude-usage/manifest.json",
+        "sha256": "bf681dd990582d5c90fd8769857636f66ae8ea40b2294b21fd834f823c1cd6d5"
+      },
+      "bundle": {
+        "path": "packages/claude-acp/0.1.1/claude-usage/dist/claude-usage.mjs",
+        "sha256": "8ae61d5fca06c8ee93421ce241308053dacd13ae335583d2e291bf55eefe933b"
+      }
+    },
+    {
+      "id": "codex-usage",
+      "kind": "ui",
+      "manifest": {
+        "path": "packages/codex-acp/0.1.1/codex-usage/manifest.json",
+        "sha256": "5b1ccc0ddc024d4b40c9a894d6ecd1f9efa30a29497f619b1c744910476b6f6f"
+      },
+      "bundle": {
+        "path": "packages/codex-acp/0.1.1/codex-usage/dist/codex-usage.mjs",
+        "sha256": "f8164c37cf154bef414569bee728dc10dd2d75be0a0dd98b0eda5c48f5f44c36"
+      }
+    },
+    {
+      "id": "workflows",
+      "kind": "service",
+      "manifest": {
+        "path": "packages/automation/0.1.1/workflows/manifest.json",
+        "sha256": "2757b34c6428e4b413665132d55d17dc87b64baa1eb77f77a2d797fb6055505d"
+      },
+      "bundle": {
+        "path": "packages/automation/0.1.1/workflows/dist/workflows.mjs",
+        "sha256": "97b38b6d6fbd6919e0b6444d42c0fd4be8e91c7dc5b5107feab730706e93c01b"
+      }
+    },
+    {
+      "id": "workflow-runner",
+      "kind": "service",
+      "manifest": {
+        "path": "packages/automation/0.1.1/workflow-runner/manifest.json",
+        "sha256": "e4ab5415504d9a2ad8fe9f0b716c22da154d61bf8065b98b748d38cd271a0c16"
+      },
+      "bundle": {
+        "path": "packages/automation/0.1.1/workflow-runner/dist/workflow-runner.mjs",
+        "sha256": "af91eec3f2dcf99fa1a7227bd3510958ca91517aa3bd2d761fafd38482c28dc3"
+      }
+    },
+    {
+      "id": "workflows-panel",
+      "kind": "ui",
+      "manifest": {
+        "path": "packages/automation/0.1.1/workflows-panel/manifest.json",
+        "sha256": "ae75eb291ff294a649183f74e7507a54447bf4edaeba6fcc40bc0a53e47bf00b"
+      },
+      "bundle": {
+        "path": "packages/automation/0.1.1/workflows-panel/dist/workflows-panel.mjs",
+        "sha256": "a18d4f0d78f15a4081fd2dbd50d7a4b8e003e8166acb68485baf993cee722ac3"
+      }
+    },
+    {
+      "id": "persistent-agents",
+      "kind": "service",
+      "manifest": {
+        "path": "packages/automation/0.1.1/persistent-agents/manifest.json",
+        "sha256": "0d033e7449a7a94266a6c7437139a29c5315a9abe0a757a0cbe00d35975d5df9"
+      },
+      "bundle": {
+        "path": "packages/automation/0.1.1/persistent-agents/dist/persistent-agents.mjs",
+        "sha256": "bd04f0544ec096378eea89ac7acd0b57bbf8b4362800e267ac06e669a1fb79df"
+      }
+    },
+    {
+      "id": "agents-panel",
+      "kind": "ui",
+      "manifest": {
+        "path": "packages/automation/0.1.1/agents-panel/manifest.json",
+        "sha256": "55d8c8aa16560e7d3b0ee4fa6ca124073d93934214acb9baf2ea113dd48da526"
+      },
+      "bundle": {
+        "path": "packages/automation/0.1.1/agents-panel/dist/agents-panel.mjs",
+        "sha256": "607730b3cfa216d0f43ea6e85d62fffdecaa47ab91cbc9bb66c923fd09f7c394"
+      }
+    },
+    {
+      "id": "remote-runtime",
+      "kind": "service",
+      "manifest": {
+        "path": "packages/remote/0.1.1/remote-runtime/manifest.json",
+        "sha256": "da4dc86bf5db50186770a73d67660fac79515eef6880f9eb394415a3f8fa6a3d"
+      },
+      "bundle": {
+        "path": "packages/remote/0.1.1/remote-runtime/dist/remote-runtime.mjs",
+        "sha256": "0f74c22a1a0fcb03e3aed8fc21d63918e822cbbe688608260b55c93a5148a91c"
+      }
+    },
+    {
+      "id": "remote-panel",
+      "kind": "ui",
+      "manifest": {
+        "path": "packages/remote/0.1.1/remote-panel/manifest.json",
+        "sha256": "6a35ea8392c16f4cb723581d6f443ec6ac7014c325d86765876b76ba96b006b5"
+      },
+      "bundle": {
+        "path": "packages/remote/0.1.1/remote-panel/dist/remote-panel.mjs",
+        "sha256": "763b2f5866b38289aa562343249f264626d276147bfaf84fb821b6d26b82ab02"
+      }
+    }
+  ]
+}

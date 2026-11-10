@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug)]
 pub struct Config {
-    /// Repository root containing `modules/` (module source) and `build/modules` (seed artifacts).
+    /// Native host root containing the SDK and pinned initial plugin lock.
     pub repo_root: PathBuf,
     /// Application data directory (sqlite, artifacts, registry, logs, ssh sockets, worktrees, shared).
     pub data_dir: PathBuf,
@@ -60,7 +60,7 @@ impl Config {
             Some(p) => p,
             None => find_repo_root(&cwd)
                 .or_else(|| std::env::current_exe().ok().and_then(|e| find_repo_root(&e)))
-                .ok_or_else(|| anyhow::anyhow!("cannot locate repository root containing modules/; pass --repo-root"))?,
+                .ok_or_else(|| anyhow::anyhow!("cannot locate repository host root containing plugins.lock.json or grants/; pass --repo-root"))?,
         };
         let repo_root = PathBuf::from(canonical_string(&repo_root)?);
         let data_dir = match data_dir {
@@ -81,8 +81,16 @@ impl Config {
         Ok(cfg)
     }
 
-    pub fn modules_dir(&self) -> PathBuf { under(&self.repo_root, "modules") }
-    pub fn seed_dir(&self) -> PathBuf { under(&self.repo_root, "build/modules") }
+    /// Editable checkout in development; persistent downloaded runtime in packaged launches.
+    pub fn plugin_root(&self) -> PathBuf {
+        let checkout = self.repo_root.join("Hato-plugins");
+        if checkout.join("modules").is_dir() { checkout }
+        else if self.repo_root.join("modules").is_dir() { self.repo_root.clone() }
+        else { self.runtime_dir().join("plugins") }
+    }
+    pub fn runtime_dir(&self) -> PathBuf { under(&self.data_dir, "runtime") }
+    pub fn modules_dir(&self) -> PathBuf { self.plugin_root().join("modules") }
+    pub fn seed_dir(&self) -> PathBuf { self.plugin_root().join("build/modules") }
     pub fn artifacts_dir(&self) -> PathBuf { under(&self.data_dir, "artifacts") }
     pub fn registry_file(&self) -> PathBuf { under(&self.data_dir, "module-registry.json") }
     pub fn approved_grants_file(&self) -> PathBuf { under(&self.data_dir, "approved-grants.json") }
@@ -114,6 +122,7 @@ impl Config {
             self.registry_file(),
             self.approved_grants_file(),
             self.plugins_dir(),
+            self.runtime_dir(),
             self.plugin_registry_file(),
         ]
     }
@@ -132,7 +141,7 @@ fn esbuild_platform_pkg() -> String {
 fn find_repo_root(start: &Path) -> Option<PathBuf> {
     let mut cur = Some(start);
     while let Some(p) = cur {
-        if p.join("modules").is_dir() && p.join("grants").is_dir() {
+        if p.join("grants").is_dir() || p.join("plugins.lock.json").is_file() {
             return Some(p.to_path_buf());
         }
         cur = p.parent();

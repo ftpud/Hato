@@ -3,12 +3,23 @@
     "target": "ES2020",
     "module": "ESNext",
     "moduleResolution": "Bundler",
-    "lib": ["ES2020"],
+    "lib": [
+      "ES2020"
+    ],
     "strict": true,
     "noImplicitAny": false,
     "skipLibCheck": true,
     "noEmit": true,
-    "types": []
+    "types": [],
+    "baseUrl": ".",
+    "paths": {
+      "@hato/sdk/*": [
+        "sdk/*"
+      ]
+    }
   },
-  "include": ["sdk/**/*.ts", "modules/**/*.ts"]
+  "include": [
+    "sdk/**/*.ts",
+    "Hato-plugins/modules/**/*.ts"
+  ]
 }

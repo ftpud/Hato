@@ -10,8 +10,8 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..")
 export function builtinPlugins(overrides = {}) {
   const out = [];
   for (const kind of ["services", "ui"]) {
-    for (const id of fs.readdirSync(path.join(root, "modules", kind)).sort()) {
-      const file = path.join(root, "modules", kind, id, "manifest.json");
+    for (const id of fs.readdirSync(path.join(root, "Hato-plugins", "modules", kind)).sort()) {
+      const file = path.join(root, "Hato-plugins", "modules", kind, id, "manifest.json");
       if (!fs.existsSync(file)) continue;
       const m = JSON.parse(fs.readFileSync(file, "utf8"));
       out.push({

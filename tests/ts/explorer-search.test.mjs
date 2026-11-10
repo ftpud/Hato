@@ -8,7 +8,7 @@ const walk = n => [n, ...(n.children || []).flatMap(walk)];
 const settle = () => new Promise(r => setTimeout(r, 600));
 
 test('explorer hides ignored files by default and searches file contents on demand', async () => {
-  const { default: mod } = await load('modules/ui/explorer/src/index.ts');
+  const { default: mod } = await load('Hato-plugins/modules/ui/explorer/src/index.ts');
   const ws = { id: 'ws', view: { previewPath: null, ui: {} } };
   const calls = [];
   const ctx = { events: { on() {} }, state: { get: () => ws, watch() {} }, ui: { invalidate() {} }, modules: { async call(module, method, args) {
@@ -48,9 +48,9 @@ test('explorer hides ignored files by default and searches file contents on dema
 });
 
 test('git helpers parse check-ignore, ignored listings and grep output', async () => {
-  const G = await load('modules/services/files/src/gitignore.ts');
+  const G = await load('Hato-plugins/modules/services/files/src/gitignore.ts');
   const runs = [];
-  const reply = { 'check-ignore': { code: 0, stdout: 'build/\0.env\0' }, 'ls-files': { code: 0, stdout: 'node_modules/\0dist/\0.env\0' },
+  const reply = { 'check-ignore': { code: 0, stdout: 'build/\0.env\0' }, 'ls-files': { code: 0, stdout: 'node_Hato-plugins/modules/\0dist/\0.env\0' },
     grep: { code: 0, stdout: 'src/a.ts\x003\x00  const x = 1\nREADME.md\x0010\x00x marks\n' } };
   const ctx = { host: { capabilities: { async request() { return { grant: 'g' }; } }, process: { async run(_g, req, opts) {
     runs.push({ executable: req.executable, args: req.args, stdin: opts.stdin });
@@ -61,7 +61,7 @@ test('git helpers parse check-ignore, ignored listings and grep output', async (
   assert.deepEqual([...ignored].sort(), ['.env', '.git', 'build']);
   assert.equal(runs[0].stdin, 'build/\0.env\0src/\0', 'directories are queried with a trailing slash');
   const set = await G.ignoredSet(ctx, d);
-  assert.ok(G.isIgnored(set, 'node_modules/react/index.js') && G.isIgnored(set, 'dist') && G.isIgnored(set, '.env') && !G.isIgnored(set, 'src/a.ts'));
+  assert.ok(G.isIgnored(set, 'node_Hato-plugins/modules/react/index.js') && G.isIgnored(set, 'dist') && G.isIgnored(set, '.env') && !G.isIgnored(set, 'src/a.ts'));
   const r = await G.grepFiles(ctx, d, 'x', false);
   assert.deepEqual(r.files, [{ relativePath: 'src/a.ts', matches: [{ line: 3, text: 'const x = 1' }] }, { relativePath: 'README.md', matches: [{ line: 10, text: 'x marks' }] }]);
   assert.ok(!runs.at(-1).args.includes('--no-exclude-standard'));
@@ -70,7 +70,7 @@ test('git helpers parse check-ignore, ignored listings and grep output', async (
 });
 
 test('workflow agents are hidden by default behind a toggle next to the filter', async () => {
-  const { default: mod } = await load('modules/ui/agents-panel/src/index.ts');
+  const { default: mod } = await load('Hato-plugins/modules/ui/agents-panel/src/index.ts');
   const ws = { id: 'ws' };
   const agent = (id, extra = {}) => ({ id, name: id, status: 'ready', profile: { name: 'Codex' }, machineId: 'local', workspaceId: 'ws', mcps: [], ...extra });
   const list = [agent('mine'), agent('run', { workflow: { runId: 'r', blockId: 'b' } }), agent('Workflow configurator', { workflow: { configurator: true } })];

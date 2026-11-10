@@ -13,7 +13,7 @@ async function load(rel) {
 }
 
 test("unified diff parse + apply (with offset and multiple hunks)", async () => {
-  const m = await load("modules/services/module-dev/src/index.ts");
+  const m = await load("Hato-plugins/modules/services/module-dev/src/index.ts");
   const src = ["a", "b", "c", "d", "e", "f", "g"].join("\n");
   const patch = ["--- a/src/x.ts", "+++ b/src/x.ts", "@@ -2,2 +2,2 @@", " b", "-c", "+C", "@@ -6,1 +6,2 @@", " f", "+F2"].join("\n");
   const files = m.parseUnifiedDiff(patch);
@@ -61,7 +61,7 @@ test("language detection + short ids", async () => {
 });
 
 test("persistence: migrations are transactional, idempotent and owned by TS", async () => {
-  const m = (await load("modules/services/persistence/src/index.ts")).default;
+  const m = (await load("Hato-plugins/modules/services/persistence/src/index.ts")).default;
   const execs = [];
   let applied = [];
   const host = {
@@ -80,14 +80,14 @@ test("persistence: migrations are transactional, idempotent and owned by TS", as
 });
 
 test("persistence refuses private key material", async () => {
-  const m = (await load("modules/services/persistence/src/index.ts")).default;
+  const m = (await load("Hato-plugins/modules/services/persistence/src/index.ts")).default;
   const ctx = { host: { db: { openNamespace: async () => "h", exec: async () => ({}), query: async () => [], transaction: async () => ({}) } }, log: { info() {} } };
   await m.activate(ctx);
   await assert.rejects(m.methods["ssh.upsert"](ctx, { profile: { id: "p", host: "h", port: 22, user: "u", authRef: "-----BEGIN OPENSSH PRIVATE KEY-----" } }), /private key/);
 });
 
 test("projects-panel renders keyed tree rows with separate select/expand actions", async () => {
-  const m = (await load("modules/ui/projects-panel/src/index.ts")).default;
+  const m = (await load("Hato-plugins/modules/ui/projects-panel/src/index.ts")).default;
   const state = new Map();
   const ctx = {
     state: { get: (k) => state.get(k), watch() {}, set() {} },
@@ -110,7 +110,7 @@ test("projects-panel renders keyed tree rows with separate select/expand actions
 });
 
 test("projects-panel animates rows whose workspace has an active AI chat or background agent", async () => {
-  const m = (await load("modules/ui/projects-panel/src/index.ts")).default;
+  const m = (await load("Hato-plugins/modules/ui/projects-panel/src/index.ts")).default;
   const watchers = new Map();
   let expanded = true;
   const state = new Map([["ai-sessions.busy", { "task:t1": 2 }]]);

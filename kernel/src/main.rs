@@ -23,6 +23,11 @@ fn main() {
         let k = Kernel::new(cfg.clone(), UiBridge::disconnected()).expect("kernel");
         k.boot();
         eprintln!("[headless] boot completed in {} ms: {}", t0.elapsed().as_millis(), serde_json::to_string(&*k.boot_report.lock()).unwrap_or_default());
+        if let Some(error) = k.setup_status.lock().clone() {
+            eprintln!("{error}");
+            k.shutdown();
+            std::process::exit(1);
+        }
         let ok = match &cfg.headless_script {
             Some(s) => hato_kernel::headless::run(&k, s).unwrap_or_else(|e| {
                 eprintln!("{e:#}");

@@ -92,7 +92,6 @@ jobs:
         with:
           key: macos-${{ matrix.arch }}
       - run: npm ci
-      - run: npm run modules:build
       - run: |
           python3 tools/release/set-build-version.py
           cargo build --release --locked

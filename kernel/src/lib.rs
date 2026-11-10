@@ -4,6 +4,7 @@ pub mod approvals;
 pub mod artifacts;
 pub mod audit;
 pub mod bridge;
+pub mod bootstrap;
 pub mod config;
 pub mod grants;
 pub mod handles;

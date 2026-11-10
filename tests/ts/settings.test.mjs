@@ -31,7 +31,7 @@ test("module settings validate edits, serialize saves and report failures withou
 });
 
 test("Settings discovers live contributions, routes edits, closes and removes inactive providers", async () => {
-  const { default: mod } = await load("modules/ui/settings/src/index.ts");
+  const { default: mod } = await load("Hato-plugins/modules/ui/settings/src/index.ts");
   let active = true;
   const emitted = [], stopped = [];
   const state = { sections: [{ key: "general", title: "Example preferences", fields: [{ key: "enabled", type: "toggle", label: "Enabled", value: true }] }], error: null };
@@ -46,13 +46,13 @@ test("Settings discovers live contributions, routes edits, closes and removes in
   assert.ok(walk(tree).some(n => n.type === "choice" && n.text === "Example preferences"));
   mod.onEvent(ctx, { action: "selectCategory", value: JSON.stringify(["example", "general"]) });
   const toggle = walk(mod.render(ctx)).find((n) => n.type === "toggle");
-  assert.ok(!walk(mod.render(ctx)).some(n => n.key === "plugins-hint"));
+  assert.ok(!walk(mod.render(ctx)).some(n => n.key === "plugin-tabs"));
   assert.equal(mod.snapshot().selectedCategory, JSON.stringify(["example", "general"]));
   mod.onEvent(ctx, { action: "change", key: toggle.key, value: false });
   assert.deepEqual(emitted, [{ topic: "settings.change", payload: { module: "example", section: "general", key: "enabled", value: false } }]);
   active = false; await mod.methods.open(ctx);
   assert.ok(!walk(mod.render(ctx)).some((n) => n.type === "toggle"));
-  assert.ok(walk(mod.render(ctx)).some(n => n.key === "plugins-hint"));
+  assert.ok(walk(mod.render(ctx)).some(n => n.key === "plugin-tabs"));
   assert.deepEqual(stopped, ["example.settings"]);
   mod.onEvent(ctx, { action: "close" });
   assert.equal(mod.render(ctx).key, "settings-closed");
@@ -60,7 +60,7 @@ test("Settings discovers live contributions, routes edits, closes and removes in
 });
 
 test("modules can publish multiple independent categories with identical section keys across providers", async () => {
-  const { default: mod } = await load("modules/ui/settings/src/index.ts");
+  const { default: mod } = await load("Hato-plugins/modules/ui/settings/src/index.ts");
   const values = {
     'one.settings': { sections: [
       { key: 'general', title: 'One general', description: 'General options', fields: [{ key: 'value', label: 'One value', type: 'toggle', value: true }] },
@@ -97,7 +97,7 @@ test('ordered settings validate all items and support movable spacers without dr
 });
 
 test('settings search, grouped navigation, table layout and order controls route confirmed edits', async () => {
-  const { default: mod } = await load('modules/ui/settings/src/index.ts');
+  const { default: mod } = await load('Hato-plugins/modules/ui/settings/src/index.ts');
   const fields = [{ key: 'items', label: 'Left top', type: 'order', value: '["a","b"]', allowSpacers: true, items: [{ id: 'a', label: 'Files' }, { id: 'b', label: 'Git' }] }];
   const value = { sections: [{ key: 'sidebar-order', title: 'Sidebar order & spacers', group: 'Workspace', fields }, { key: 'table', title: 'Table display', group: 'Appearance', layout: 'table', fields: [{ key: 'density', label: 'Row density', type: 'select', value: 'compact', options: [{ value: 'compact', label: 'Compact' }] }] }] };
   const emitted = [];
@@ -119,6 +119,6 @@ test('settings search, grouped navigation, table layout and order controls route
   await mod.onEvent(ctx, { action: 'search', value: 'no such setting' });
   assert.ok(walk(mod.render(ctx)).some(n => n.text === 'No matching settings.'));
   await mod.methods.open(ctx, { category: 'plugins' });
-  assert.ok(walk(mod.render(ctx)).some(n => n.key === 'plugins-hint'), 'explicit page navigation clears the search');
+  assert.ok(walk(mod.render(ctx)).some(n => n.key === 'plugin-tabs'), 'explicit page navigation clears the search');
   mod.deactivate();
 });

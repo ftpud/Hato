@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import * as esbuild from 'esbuild';
 
 async function fixture(edgeType = "use", callerType = "chatbox") {
-  const built = await esbuild.build({ entryPoints: ['modules/services/workflow-runner/src/engine.ts'], bundle: true, format: 'esm', write: false });
+  const built = await esbuild.build({ entryPoints: ['Hato-plugins/modules/services/workflow-runner/src/engine.ts'], bundle: true, format: 'esm', write: false });
   const E = await import('data:text/javascript;base64,' + Buffer.from(built.outputFiles[0].text).toString('base64') + '#' + Math.random());
   E.initEngine({}, () => {});
   const blocks = [{ id: 'agent', type: callerType }, { id: 'server', type: 'mcp', mcp: { serverId: 'configured' } }];

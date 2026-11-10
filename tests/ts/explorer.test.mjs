@@ -11,7 +11,7 @@ const walk = node => [node, ...(node.children || []).flatMap(walk)];
 const settle = () => new Promise(resolve => setTimeout(resolve, 200));
 
 test('tree sorts directories first, expands lazily and assigns file type icons', async () => {
-  const { treeRows, fileIcon, directories } = await load('modules/ui/explorer/src/model.ts');
+  const { treeRows, fileIcon, directories } = await load('Hato-plugins/modules/ui/explorer/src/model.ts');
   const dirs = directories([entry('src', 'dir'), entry('README.md'), entry('src/index.ts'), entry('package.json')]);
   assert.deepEqual(treeRows(dirs, new Set(), null).map(row => row.key), ['src', 'package.json', 'README.md']);
   assert.equal(treeRows(dirs, new Set(['src']), 'src/index.ts')[1].selected, true);
@@ -23,7 +23,7 @@ test('tree sorts directories first, expands lazily and assigns file type icons',
 });
 
 test('file tree opens files in the viewer and filters workspace results while retaining expansion', async () => {
-  const { default: mod } = await load('modules/ui/explorer/src/index.ts');
+  const { default: mod } = await load('Hato-plugins/modules/ui/explorer/src/index.ts');
   const selected = { id: 'ws', name: 'Workspace', view: { previewPath: null } };
   const calls = [];
   const ctx = { events: { on() {} }, state: { get: () => selected, watch() {} }, ui: { invalidate() {} }, modules: { async call(module, method, args) {
@@ -55,7 +55,7 @@ test('file tree opens files in the viewer and filters workspace results while re
 });
 
 test('old workspace searches cannot overwrite a newly selected workspace', async () => {
-  const { default: mod } = await load('modules/ui/explorer/src/index.ts');
+  const { default: mod } = await load('Hato-plugins/modules/ui/explorer/src/index.ts');
   let selected = { id: 'one', view: {} }, watcher, resolveSearch;
   const ctx = { events: { on() {} }, state: { get: () => selected, watch: (_, callback) => { watcher = callback; } }, ui: { invalidate() {} }, modules: { async call(_, method, args) {
     if (method === 'list') return { entries: [entry(args.workspaceId + '.txt')] };
@@ -74,7 +74,7 @@ test('old workspace searches cannot overwrite a newly selected workspace', async
 });
 
 test('scoped search includes ancestors, caches listings and avoids symlink and .git traversal', async () => {
-  const { searchFiles } = await load('modules/services/files/src/search.ts');
+  const { searchFiles } = await load('Hato-plugins/modules/services/files/src/search.ts');
   const calls = [], grants = [];
   const entries = { '.': [entry('src', 'dir'), entry('.git', 'dir'), entry('linked', 'symlink')], src: [entry('src/nested', 'dir')], 'src/nested': [entry('src/nested/target.ts')] };
   const ctx = { host: { capabilities: { async request(args) { grants.push(args); return { grant: 'scope' }; } }, fs: { async list(grant, path) { calls.push(path); assert.equal(grant, 'scope'); return { entries: entries[path] || [] }; } } } };

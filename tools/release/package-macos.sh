@@ -6,15 +6,14 @@ app="$PWD/dist/Hato.app"
 contents="$app/Contents"
 # Recreate generated staging directories on persistent runners.
 rm -rf "$app" "$PWD/dist/image"
-mkdir -p "$contents/MacOS" "$contents/Resources" "$contents/build" "$contents/node_modules/@esbuild"
+mkdir -p "$contents/MacOS" "$contents/Resources" "$contents/node_modules/@esbuild"
 bash tools/release/build-icon.sh assets/hato-icon.png "$contents/Resources/Hato.icns"
 cp target/release/hato "$contents/MacOS/hato"
 cp tools/release/launcher.sh "$contents/MacOS/hato-launcher"
 chmod +x "$contents/MacOS/hato-launcher"
 printf '%s\n' "$RELEASE_VERSION" > "$contents/Resources/release-version"
-cp -R modules grants sdk "$contents/"
-cp plugins.catalogue.json "$contents/"
-cp -R build/modules "$contents/build/"
+cp -R grants sdk "$contents/"
+cp plugins.lock.json "$contents/"
 # Preserve the existing module build capability without requiring Node on users' Macs.
 cp -R "node_modules/@esbuild/darwin-$MACOS_ARCH" "$contents/node_modules/@esbuild/"
 for arch in x86_64 aarch64; do

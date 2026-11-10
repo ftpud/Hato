@@ -145,7 +145,7 @@ export interface NativeHost {
     activate(id: string, stageId: string, opts?: { force?: boolean }): Promise<{ ok: boolean; version: number; label: string; previous: string | null; swapMs: number }>;
     rollback(id: string, opts?: { toVersion?: number; force?: boolean }): Promise<{ ok: boolean; version: number; label: string; previous: string | null }>;
     discard(stageId: string): Promise<void>;
-    sourceInfo(): Promise<{ repoRoot: string; modulesRoot: string; buildTool: string | null }>;
+    sourceInfo(): Promise<{ repoRoot: string; sdkRoot: string; modulesRoot: string; buildTool: string | null }>;
   };
   /** Remote runtime (`hato daemon`): holds terminals/processes across disconnects and hosts
    *  plugins on the workspace machine. Requires the `remote.daemon` capability. */
@@ -172,7 +172,11 @@ export interface NativeHost {
     /** Pin the window root to a plugin providing "shell.root" (null = automatic). */
     setRoot(id: string | null): Promise<void>;
     /** Copy a local plugin folder into the kernel-owned plugins dir (stays disabled). */
-    install(path: string): Promise<{ id: string; enabled: boolean; dir: string; pendingRestart?: boolean }>;
+    install(path: string): Promise<{ id: string; enabled: boolean; dir: string; pendingRestart?: boolean; pendingActivation?: boolean }>;
+    /** Reinstall the previous healthy artifact, including deferred live self replacement. */
+    rollback(id: string): Promise<{ id: string; pendingActivation?: boolean }>;
+    /** Validate a prepared set, approve once, update live, and restore prior versions on failure. */
+    installMany(paths: string[]): Promise<{ plugins: { id: string; pendingActivation?: boolean }[] }>;
     uninstall(id: string): Promise<{ id: string; uninstalled: true; disabled: string[] }>;
     /** Pick up plugin folders added on disk. */
     rescan(): Promise<{ added: string[] }>;
@@ -220,6 +224,8 @@ export interface PluginInfo {
   pendingApprovals: string[];
   /** Module-interpreted contributions from the manifest (see sdk/plugins.ts). */
   contributes: any;
+  metadata?: Record<string, Json>;
+  canRollback?: boolean;
   lastError: string | null;
   dir: string | null;
 }

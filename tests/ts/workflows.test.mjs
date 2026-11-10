@@ -105,7 +105,7 @@ function fakeAgents(mcp, respond) {
 }
 
 async function runtime(respond = async () => 'ok') {
-  const mod = (await load('modules/services/workflow-runner/src/index.ts')).default;
+  const mod = (await load('Hato-plugins/modules/services/workflow-runner/src/index.ts')).default;
   const { host, mcp } = fakeHost(), db = fakeDb();
   host.db = db.api;
   const agents = fakeAgents(mcp, respond);
@@ -307,7 +307,7 @@ test('meetings keep attributed transcripts and per-participant cursors', async (
   assert.equal(out(run, 'room').status, 'idle');
   assert.ok(out(run, 'room').log.some(entry => entry.kind === 'tool' && entry.text.includes('publish')));
   assert.ok(out(run, 'room').log.some(entry => entry.kind === 'response' && entry.text.includes('proposal A')));
-  const { blockRunView } = await load('modules/ui/workflows-panel/src/runs.ts');
+  const { blockRunView } = await load('Hato-plugins/modules/ui/workflows-panel/src/runs.ts');
   const nodes = blockRunView(run, run.definition.blocks.find(b => b.id === 'room'), out(run, 'room'), 'test');
   assert.ok(nodes.some(n => n.key.endsWith(':transcript') && n.scroll));
   assert.ok(nodes.some(n => n.key.endsWith(':activity-section') && n.children.some(c => c.action === 'toggleActivity')));
@@ -324,7 +324,7 @@ test('configurator endpoints read and write only their own project', async () =>
 });
 
 test('workflows panel renders the designer canvas and edits a draft', async () => {
-  const mod = (await load('modules/ui/workflows-panel/src/index.ts')).default;
+  const mod = (await load('Hato-plugins/modules/ui/workflows-panel/src/index.ts')).default;
   const calls = [], emitted = [], watchers = new Map();
   let delayedGet;
   const def = { id: 'wf', name: 'WF', version: 1, createdAt: '', updatedAt: '', blocks: [B('start', 'start_button', { prompt: 'go', position: { x: 10, y: 10 } }), B('lead', 'ai', { prompt: '{{input}}', position: { x: 300, y: 10 } })], edges: [] };
@@ -417,7 +417,7 @@ test('workflows panel renders the designer canvas and edits a draft', async () =
 });
 
 test('pulses follow exact send/return boundaries once, on the matching connection', async () => {
-  const { transferEdges } = await load('modules/ui/workflows-panel/src/transfers.ts');
+  const { transferEdges } = await load('Hato-plugins/modules/ui/workflows-panel/src/transfers.ts');
   const now = Date.now();
   const edges = [{ key: 'call', from: 'agent', to: 'tool' }, { key: 'unused', from: 'agent', to: 'other' }];
   const run = { id: 'pulse-run', transfers: [
@@ -434,7 +434,7 @@ test('pulses follow exact send/return boundaries once, on the matching connectio
 });
 
 test('workflow reports scroll within a bounded output area and retain supplied text', async () => {
-  const { blockRunView } = await load('modules/ui/workflows-panel/src/runs.ts');
+  const { blockRunView } = await load('Hato-plugins/modules/ui/workflows-panel/src/runs.ts');
   const output = '# Report\n\n' + 'Evidence line\n'.repeat(700);
   const nodes = blockRunView({ id: 'run', status: 'succeeded' }, B('report', 'markdown'), { blockId: 'report', status: 'succeeded', runs: 1, output }, 'test');
   const box = nodes.find(n => n.key.endsWith(':out'));
@@ -444,7 +444,7 @@ test('workflow reports scroll within a bounded output area and retain supplied t
 });
 
 test('Terminal Control uses scoped daemon PTYs and rejects other workspace terminals', async () => {
-  const { terminalAction } = await load('modules/services/workflow-runner/src/terminal.ts');
+  const { terminalAction } = await load('Hato-plugins/modules/services/workflow-runner/src/terminal.ts');
   const ops = [], released = [];
   const ctx = { host: {
     capabilities: { request: async () => ({ grant: 'g' }), release: async g => released.push(g) },
@@ -484,7 +484,7 @@ test('Terminal Control errors appear on the called block and return on its exact
 });
 
 test('library selection shows logs for idle Meeting and Terminal blocks', async t => {
-  const mod = (await load('modules/ui/workflows-panel/src/index.ts')).default;
+  const mod = (await load('Hato-plugins/modules/ui/workflows-panel/src/index.ts')).default;
   t.after(() => mod.deactivate());
   const def = { id: 'logs', name: 'Logs', blocks: [B('room', 'meeting'), B('term', 'terminal_control')], edges: [] };
   const at = new Date().toISOString();

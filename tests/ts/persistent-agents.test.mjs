@@ -11,7 +11,7 @@ test('persistent agent models support negotiated option groups and legacy models
  assert.equal(relativeAgentPath('.agents/agents/test.md'),'.agents/agents/test.md');
 });
 test('background panel boots with no selection and never starts or stops chat sessions',async()=>{
- const mod=(await load('modules/ui/agents-panel/src/index.ts')).default;
+ const mod=(await load('Hato-plugins/modules/ui/agents-panel/src/index.ts')).default;
  const calls=[];
  const ctx={state:{get(){},watch(){}},events:{on(){}},ui:{invalidate(){}},modules:{call:(...a)=>{calls.push(a);throw Error('unexpected call');}}};
  await mod.activate(ctx);
@@ -20,7 +20,7 @@ test('background panel boots with no selection and never starts or stops chat se
  mod.deactivate();assert.deepEqual(calls,[]);
 });
 test('background panel selects provider, skill, MCP and agent file independently of chatbox',async()=>{
- const mod=(await load('modules/ui/agents-panel/src/index.ts')).default;
+ const mod=(await load('Hato-plugins/modules/ui/agents-panel/src/index.ts')).default;
  const calls=[],emitted=[];let created=false;
  const session={id:'a',name:'Worker',activity:'Running the current tests',profile:{name:'Fixture',provider:'fixture'},machineId:'local',workspaceName:'WS',status:'ready',configOptions:[],models:{currentModelId:'x',availableModels:[{modelId:'x'}]},revision:1};
  const ctx={events:{on(){},emit:(topic,value)=>emitted.push({topic,value})},state:{get:k=>k==='workspace.selected'?{id:'ws',name:'WS'}:{agents:false},watch(){}},ui:{invalidate(){}},modules:{async call(module,method,args){
@@ -40,7 +40,7 @@ test('background panel selects provider, skill, MCP and agent file independently
  mod.deactivate();assert.ok(!calls.some(c=>c.method==='stop'));
 });
 test('agents panel edits, clears and removes the selected agent without an MCP shortcut',async()=>{
- const mod=(await load('modules/ui/agents-panel/src/index.ts')).default;
+ const mod=(await load('Hato-plugins/modules/ui/agents-panel/src/index.ts')).default;
  const calls=[],emitted=[];let removed=false;
  const session={id:'a',name:'Worker',profile:{id:'fixture',name:'Fixture'},machineId:'local',status:'ready',agentFile:'AGENTS.md',skills:['.agents/skills/test/SKILL.md'],mcps:[],workspaceMcp:true,revision:1};
  const ctx={events:{on(){},emit:(topic,value)=>emitted.push({topic,value})},state:{get:k=>k==='workspace.selected'?{id:'ws',name:'WS'}:{agents:true},watch(){}},ui:{invalidate(){}},modules:{async call(module,method,args){
@@ -100,7 +100,7 @@ test('agents panel edits, clears and removes the selected agent without an MCP s
 });
 
 test('existing chatbox binds background session and routes prompts without using regular chat service',async()=>{
- const mod=(await load('modules/ui/ai/src/index.ts')).default;
+ const mod=(await load('Hato-plugins/modules/ui/ai/src/index.ts')).default;
  const handlers={},calls=[],requests=[],published=[];
  const normal={profiles:[],conversations:[],active:null};
  const page={session:{id:'worker',name:'Worker',workspaceId:'ws',profile:{id:'fixture',name:'Fixture'},status:'ready',mcps:[],skills:[],models:{currentModelId:'x',availableModels:[{modelId:'x',name:'X'}]},configOptions:[]},messages:[{key:'m',role:'assistant',text:'Background history'}],before:null,queued:[],permissions:[]};
@@ -148,7 +148,7 @@ test('agent activity shows current output, tool status and approval waits instea
  assert.ok(agentActivity(view).endsWith('Newest activity'));assert.ok(agentActivity(view).length<=180);
 });
 test('list activity refreshes revised sessions without replacing the daemon runtime',async()=>{
- const mod=(await load('modules/services/persistent-agents/src/index.ts')).default;
+ const mod=(await load('Hato-plugins/modules/services/persistent-agents/src/index.ts')).default;
  let revision=1,reads=0,text='Inspecting source';
  const row=()=>({id:'worker',workspaceId:'ws',status:'busy',revision});
  const ctx={modules:{call:async()=>({id:'ws',machineId:'local',location:'local'})},host:{daemon:{ensure:async()=>({bin:'/hato',dir:'/runtime'}),request:async(_target,operation,args)=>{
@@ -164,7 +164,7 @@ test('list activity refreshes revised sessions without replacing the daemon runt
  assert.equal((await mod.methods.list(ctx,{workspaceId:'ws'}))[0].activity,'Running tests');assert.equal(reads,2);
 });
 test('working agent icon rotates while visible and stops after panel deactivation',async()=>{
- const mod=(await load('modules/ui/agents-panel/src/index.ts')).default;
+ const mod=(await load('Hato-plugins/modules/ui/agents-panel/src/index.ts')).default;
  let invalidations=0;
  const ctx={events:{on(){}},state:{get:k=>k==='workspace.selected'?{id:'ws'}:{agents:true},watch(){}},ui:{invalidate(){invalidations++;}},modules:{async call(_module,method){
   if(method==='catalog')return{profiles:[]};
@@ -181,7 +181,7 @@ test('working agent icon rotates while visible and stops after panel deactivatio
 
 
 test('workflow MCP preparation refreshes OAuth only for selected enabled servers', async () => {
- const mod=(await load('modules/services/persistent-agents/src/index.ts')).default;
+ const mod=(await load('Hato-plugins/modules/services/persistent-agents/src/index.ts')).default;
  const requests=[];
  const servers=[{id:'github',name:'GitHub',transport:'http',command:'',args:[],env:[],url:'https://example.com/mcp',auth:{type:'oauth'}},{id:'unused',name:'Unused',transport:'http',url:'https://unused.example/mcp',auth:{type:'oauth'}}];
  const ctx={modules:{async call(service,method,args){

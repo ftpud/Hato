@@ -726,7 +726,7 @@ fn dispatch(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: &Value) -> H
             let all = k.modules_json();
             let status = all.as_array().and_then(|a| a.iter().find(|x| x["id"] == id).cloned()).unwrap_or(Value::Null);
             let grant = k.grants.install_grant(id).cloned();
-            let rel = dir.strip_prefix(&k.cfg.repo_root).map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+            let rel = dir.strip_prefix(k.cfg.plugin_root()).map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
             Ok(json!({"manifest": m, "sourceDir": rel, "installGrant": grant, "status": status, "logs": k.logs.tail(id, 20)}))
         }
         "modules.logs" => {
@@ -737,7 +737,7 @@ fn dispatch(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: &Value) -> H
         }
         "modules.sourceInfo" => {
             gen.caps.require("modules.read")?;
-            Ok(json!({"repoRoot": k.cfg.repo_root.to_string_lossy(), "modulesRoot": k.cfg.modules_dir().to_string_lossy(),
+            Ok(json!({"repoRoot": k.cfg.plugin_root().to_string_lossy(), "sdkRoot": k.cfg.repo_root.join("sdk").to_string_lossy(), "modulesRoot": k.cfg.modules_dir().to_string_lossy(),
                       "buildTool": k.cfg.build_tool().map(|p| p.to_string_lossy().into_owned())}))
         }
         "modules.stage" => {
@@ -786,6 +786,15 @@ fn dispatch(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: &Value) -> H
         "plugins.install" => {
             gen.caps.require("plugins.manage")?;
             k.install_plugin(gen, arg_str(args, "path")?)
+        }
+        "plugins.installMany" => {
+            gen.caps.require("plugins.manage")?;
+            let paths: Vec<String> = serde_json::from_value(args.get("paths").cloned().unwrap_or(Value::Null)).map_err(|_| HostError::invalid("paths must be an array of strings"))?;
+            k.install_plugins(gen, &paths)
+        }
+        "plugins.rollback" => {
+            gen.caps.require("plugins.manage")?;
+            k.rollback_plugin(gen, arg_str(args, "id")?)
         }
         "plugins.uninstall" => {
             gen.caps.require("plugins.manage")?;
@@ -973,9 +982,9 @@ fn spawn_spec(k: &Kernel, g: &ScopeGrant, req: &Value) -> HResult<SpawnSpec> {
                     return Err(HostError::denied(format!("build argument {a} is not permitted (output must go to stdout)")));
                 }
                 if !a.starts_with('-') {
-                    let p = k.cfg.repo_root.join(a);
+                    let p = k.cfg.plugin_root().join(a);
                     let real = canonical_string(&p).map_err(|_| HostError::not_found(format!("entry {a} not found")))?;
-                    if !path_within(&k.cfg.modules_dir().to_string_lossy(), &real) {
+                    if !path_within(&canonical_string(&k.cfg.modules_dir()).map_err(HostError::from)?, &real) {
                         return Err(HostError::denied("build entry must be inside modules/"));
                     }
                 }

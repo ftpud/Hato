@@ -10,7 +10,6 @@ version="${RELEASE_VERSION:-$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | h
 esbuild_version="$(node -p "require('./package.json').devDependencies.esbuild")"
 
 npm ci --no-audit --no-fund >/dev/null
-npm run -s modules:build
 cargo build --release --locked --target x86_64-pc-windows-gnu
 
 # Prefer static musl daemons (any distribution); fall back to glibc from this machine.
@@ -29,11 +28,10 @@ fi
 
 stage="dist/windows/Hato"
 rm -rf dist/windows
-mkdir -p "$stage/build" "$stage/node_modules/@esbuild/win32-x64"
+mkdir -p "$stage/node_modules/@esbuild/win32-x64"
 x86_64-w64-mingw32-strip -o "$stage/hato.exe" target/x86_64-pc-windows-gnu/release/hato.exe
-cp -R modules grants sdk "$stage/"
-cp plugins.catalogue.json "$stage/"
-cp -R build/modules "$stage/build/"
+cp -R grants sdk "$stage/"
+cp plugins.lock.json "$stage/"
 # Keeps in-app module builds working without Node on the Windows side.
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT

@@ -33,7 +33,7 @@ test('watcher releases a handle whose startup completes after shutdown', async (
   assert.deepEqual(released,['late']);
 });
 test('Git panel reruns after changes arrive during an in-flight status request', async () => {
-  const mod=(await load('modules/ui/git-panel/src/index.ts')).default;
+  const mod=(await load('Hato-plugins/modules/ui/git-panel/src/index.ts')).default;
   const handlers={}, state={'workspace.selected':{id:'w'},'workspace-layout.panels':{git:true}};
   let finish, calls=0;
   const ctx={moduleId:'git-panel',state:{get:k=>state[k],set(){},watch(){}},ui:{invalidate(){}},events:{on:(topic,fn)=>handlers[topic]=fn,emit(){}},modules:{call:async(m,f)=>{

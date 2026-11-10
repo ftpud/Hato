@@ -6,7 +6,7 @@ import { P, builtinPlugins } from "./plugin-fixture.mjs";
 
 const load = async (entry) => import("data:text/javascript;base64," + Buffer.from((await esbuild.build({ entryPoints: [entry], bundle: true, format: "esm", platform: "neutral", write: false })).outputFiles[0].text).toString("base64") + "#" + Math.random());
 const U = await load("sdk/usage-limits.ts");
-const M = await load("modules/ui/workspace-layout/src/model.ts");
+const M = await load("Hato-plugins/modules/ui/workspace-layout/src/model.ts");
 
 test("Claude /usage Markdown yields used percent per window", () => {
   const md = "## Usage\n\n> Claude max subscription usage\n\n### Limits\n\n**5-hour limit** — **42%** · Resets Nov 4, 3:00 PM\n\n`████░░`\n\n**Weekly · all models** — **7%**\n\n**Weekly · Opus** — **12.5%** · Resets Nov 9, 10:00 AM PST\n";
@@ -52,13 +52,13 @@ test("bar item contributions are validated and offered once on their default bar
 
 test("sidebar draws a rule between adjacent buttons of different shared spaces, not over spacers", async () => {
   const { pluginsHost } = await import("./plugin-fixture.mjs");
-  const left = (await load("modules/ui/left-sidebar/src/index.ts")).default;
+  const left = (await load("Hato-plugins/modules/ui/left-sidebar/src/index.ts")).default;
   const values = new Map([["workspace-layout.panelSharing", { files: "space-2", git: "space-2", remote: "space-2", viewer: "space-1", "git-changes": "space-1", workflows: "space-1" }],
     ["workspace-layout.sidebarOrder", { "left-top": ["projects", "files", "git", "remote", "@spacer:x", "viewer", "git-changes", "workflows", "terminal"] }]]);
   const ctx = { host: { plugins: pluginsHost() }, state: { get: k => values.get(k), watch() {} }, events: { on() { return () => {}; } }, ui: { invalidate() {} }, log: { warn() {} } };
   await left.activate(ctx);
   assert.deepEqual(left.render().children.map(n => n.key), ["projects", "group-rule:files", "files", "git", "remote", "@spacer:x", "viewer", "git-changes", "workflows", "group-rule:terminal", "terminal"]);
   values.set("workspace-layout.sidebarGrouping", false);
-  const off = (await load("modules/ui/left-sidebar/src/index.ts")).default; await off.activate(ctx);
+  const off = (await load("Hato-plugins/modules/ui/left-sidebar/src/index.ts")).default; await off.activate(ctx);
   assert.ok(!off.render().children.some(n => n.key.startsWith("group-rule:")));
 });

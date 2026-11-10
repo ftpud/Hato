@@ -10,7 +10,7 @@ const walk = node => [node, ...(node.children || []).flatMap(walk)];
 const block = (id, type) => ({ id, type, label: id, prompt: '', position: { x: 0, y: 0 } });
 
 test('Meeting participants retain distinct name colors and left borders across messages', async () => {
-  const { blockRunView, participantColor } = await load('modules/ui/workflows-panel/src/runs.ts');
+  const { blockRunView, participantColor } = await load('Hato-plugins/modules/ui/workflows-panel/src/runs.ts');
   const room = block('room', 'meeting');
   const run = { id: 'run', definition: { blocks: [block('alice', 'ai'), block('bob', 'chatbox'), room] } };
   const at = new Date().toISOString();
@@ -31,7 +31,7 @@ test('Meeting participants retain distinct name colors and left borders across m
 });
 
 test('Chatbox session status supersedes an old completed invocation and exposes permission review', async () => {
-  const { blockRunView, blockStatus } = await load('modules/ui/workflows-panel/src/runs.ts');
+  const { blockRunView, blockStatus } = await load('Hato-plugins/modules/ui/workflows-panel/src/runs.ts');
   const chat = block('chat', 'chatbox'), run = { id: 'run', status: 'succeeded' };
   const state = { blockId: 'chat', status: 'succeeded', runs: 1, log: [], sessionId: 'session', agentActivity: { status: 'busy', text: 'Reading status' } };
   let nodes = blockRunView(run, chat, state, 'test');
@@ -52,7 +52,7 @@ test('Chatbox session status supersedes an old completed invocation and exposes 
 });
 
 test('workflow gateway queries the actual Chatbox session while preserving run state and session scope', async () => {
-  const mod = (await load('modules/services/workflows/src/index.ts')).default;
+  const mod = (await load('Hato-plugins/modules/services/workflows/src/index.ts')).default;
   const W = await load('sdk/workflows.ts');
   const run = { id: 'run', projectId: 'project', status: 'succeeded', definition: { blocks: [block('chat', 'chatbox')] }, blocks: [{ blockId: 'chat', sessionId: 'session', status: 'succeeded', log: [] }] };
   let status = 'busy', wrongScope = false, unavailable = false;
@@ -97,7 +97,7 @@ test('workflow gateway queries the actual Chatbox session while preserving run s
 });
 
 test('completed Chatboxes keep polling live activity and retain drafts while the agent is busy', async t => {
-  const mod = (await load('modules/ui/workflows-panel/src/index.ts')).default;
+  const mod = (await load('Hato-plugins/modules/ui/workflows-panel/src/index.ts')).default;
   t.after(() => mod.deactivate());
   const def = { id: 'chatflow', name: 'Chat', blocks: [block('chat', 'chatbox')], edges: [] };
   let status = 'ready', detailCalls = 0, sent = 0;
@@ -132,7 +132,7 @@ test('completed Chatboxes keep polling live activity and retain drafts while the
 
 
 test('compact preview preserves designer rows and branch arrangement without packing', async () => {
-  const { preview } = await load('modules/ui/workflows-panel/src/runs.ts');
+  const { preview } = await load('Hato-plugins/modules/ui/workflows-panel/src/runs.ts');
   const blocks = [
     { ...block('a', 'ai'), position: { x: -100, y: 200 } },
     { ...block('b', 'ai'), position: { x: 200, y: 200 } },
@@ -161,7 +161,7 @@ test('compact preview preserves designer rows and branch arrangement without pac
 });
 
 test('compact connectors use facing sides and short curves, including backward responses', async () => {
-  const { preview } = await load('modules/ui/workflows-panel/src/runs.ts');
+  const { preview } = await load('Hato-plugins/modules/ui/workflows-panel/src/runs.ts');
   const def = { blocks: [
     { ...block('a', 'ai'), position: { x: 0, y: 0 } },
     { ...block('b', 'ai'), position: { x: 300, y: 0 } },
@@ -180,7 +180,7 @@ test('compact connectors use facing sides and short curves, including backward r
 
 
 test('uneven designer row gaps compress individually instead of inheriting the smallest gap scale', async () => {
-  const { preview } = await load('modules/ui/workflows-panel/src/runs.ts');
+  const { preview } = await load('Hato-plugins/modules/ui/workflows-panel/src/runs.ts');
   const blocks = [0, 24, 400, 900, 1200].map((y, i) => ({ ...block(String(i), 'ai'), position: { x: i * 300, y } }));
   const canvas = preview('uneven', { blocks, edges: [] }, undefined, undefined, { maxHeight: 400 });
   const items = canvas.children[0].items;
@@ -193,7 +193,7 @@ test('uneven designer row gaps compress individually instead of inheriting the s
 
 
 test('Chatbox shows streamed reasoning and tool status in chat with a compact status line', async () => {
-  const { blockRunView } = await load('modules/ui/workflows-panel/src/runs.ts');
+  const { blockRunView } = await load('Hato-plugins/modules/ui/workflows-panel/src/runs.ts');
   const state = { blockId: 'chat', status: 'running', runs: 1, log: [],
     agentActivity: { status: 'busy', text: 'Thinking: first line\n' + 'more detail '.repeat(30) },
     agentMessages: [
@@ -223,7 +223,7 @@ test('Chatbox shows streamed reasoning and tool status in chat with a compact st
 
 
 test('an unstarted Chatbox exposes its composer after an empty run', async t => {
-  const mod = (await load('modules/ui/workflows-panel/src/index.ts')).default;
+  const mod = (await load('Hato-plugins/modules/ui/workflows-panel/src/index.ts')).default;
   t.after(() => mod.deactivate());
   const def = { id: 'chatflow', name: 'Chat', blocks: [block('chat', 'chatbox')], edges: [] };
   let started = false, sent = '';

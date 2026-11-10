@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import * as esbuild from 'esbuild';
 const tick = () => new Promise(resolve => setImmediate(resolve));
 test('font preferences restore, apply immediately, persist, and keep the confirmed font after a failed save', async () => {
-  const built = await esbuild.build({ entryPoints: ['modules/ui/workspace-layout/src/index.ts'], bundle: true, format: 'esm', write: false });
+  const built = await esbuild.build({ entryPoints: ['Hato-plugins/modules/ui/workspace-layout/src/index.ts'], bundle: true, format: 'esm', write: false });
   const mod = (await import('data:text/javascript;base64,' + Buffer.from(built.outputFiles[0].text).toString('base64'))).default;
   const state = new Map(), listeners = new Map(), calls = [];
   let fail = false;
@@ -44,7 +44,7 @@ test('font preferences restore, apply immediately, persist, and keep the confirm
 });
 
 test('appearance reset restores all UI preferences and keeps the top bar visible', async () => {
-  const built = await esbuild.build({ entryPoints: ['modules/ui/workspace-layout/src/index.ts'], bundle: true, format: 'esm', write: false });
+  const built = await esbuild.build({ entryPoints: ['Hato-plugins/modules/ui/workspace-layout/src/index.ts'], bundle: true, format: 'esm', write: false });
   const mod = (await import('data:text/javascript;base64,' + Buffer.from(built.outputFiles[0].text).toString('base64'))).default;
   const state = new Map(), listeners = new Map(), persisted = new Map(), emitted = [];
   const ctx = { moduleId: 'workspace-layout', host: { env: { info: () => ({ repoRoot: '/runtime', dataDir: '/data' }) } }, state: { get: k => state.get(k), set: (k, v) => state.set(k, v), watch() {} },

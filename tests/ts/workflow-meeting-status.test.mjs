@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import * as esbuild from 'esbuild';
 let generation = 0;
 async function fixture() {
-  const built = await esbuild.build({ entryPoints: ['modules/services/workflow-runner/src/engine.ts'], bundle: true, format: 'esm', write: false });
+  const built = await esbuild.build({ entryPoints: ['Hato-plugins/modules/services/workflow-runner/src/engine.ts'], bundle: true, format: 'esm', write: false });
   const E = await import('data:text/javascript;base64,' + Buffer.from(built.outputFiles[0].text).toString('base64') + '#' + generation++);
   let saves = 0;
   E.initEngine({ modules: { call: async () => null }, host: { process: { terminate: async () => {} } } }, () => { saves++; });

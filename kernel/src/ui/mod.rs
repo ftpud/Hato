@@ -1285,6 +1285,16 @@ impl Shell {
     }
 
     fn render_safe_mode(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        if let Some(status) = self.kernel.setup_status.lock().clone() {
+            let kernel = self.kernel.clone();
+            return v_flex().size_full().p_4().gap_3()
+                .child(div().text_lg().font_weight(FontWeight::BOLD).child("Plugin setup"))
+                .child(div().text_sm().child(status))
+                .child(Button::new("setup::retry").label("Retry setup").on_click(move |_, _, _| {
+                    let kernel = kernel.clone();
+                    std::thread::spawn(move || kernel.boot());
+                })).into_any_element();
+        }
         let mods = self.kernel.modules_json();
         let mut list = v_flex().gap_1();
         for m in mods.as_array().cloned().unwrap_or_default() {

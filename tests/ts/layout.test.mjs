@@ -7,7 +7,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
-const r = await esbuild.build({ entryPoints: [path.join(root, "modules/ui/workspace-layout/src/model.ts")], bundle: true, format: "esm", platform: "neutral", write: false });
+const r = await esbuild.build({ entryPoints: [path.join(root, "Hato-plugins/modules/ui/workspace-layout/src/model.ts")], bundle: true, format: "esm", platform: "neutral", write: false });
 const M = await import("data:text/javascript;base64," + Buffer.from(r.outputFiles[0].text).toString("base64"));
 import { builtinPanelDefs, pluginsHost } from "./plugin-fixture.mjs";
 M.setPanels(builtinPanelDefs());
@@ -86,7 +86,7 @@ test("Settings migrates old layouts once and respects later placement", () => {
 });
 
 test("collapsed panes use full-name restore buttons without reserving columns or rows", async () => {
-  const built = await esbuild.build({ entryPoints: [path.join(root, 'modules/ui/workspace-layout/src/index.ts')], bundle: true, format: 'esm', write: false });
+  const built = await esbuild.build({ entryPoints: [path.join(root, 'Hato-plugins/modules/ui/workspace-layout/src/index.ts')], bundle: true, format: 'esm', write: false });
   const mod = (await import('data:text/javascript;base64,' + Buffer.from(built.outputFiles[0].text).toString('base64'))).default;
   const layout = M.defaultLayout();
   layout.collapsed = { projects: true, files: true, viewer: true };
@@ -122,7 +122,7 @@ test('new default-hidden panels stay hidden in older saved layouts instead of do
 });
 
 test('anime appearance restores preferences and switches without changing panel layout', async () => {
-  const built = await esbuild.build({ entryPoints: [path.join(root, 'modules/ui/workspace-layout/src/index.ts')], bundle: true, format: 'esm', write: false });
+  const built = await esbuild.build({ entryPoints: [path.join(root, 'Hato-plugins/modules/ui/workspace-layout/src/index.ts')], bundle: true, format: 'esm', write: false });
   const mod = (await import('data:text/javascript;base64,' + Buffer.from(built.outputFiles[0].text).toString('base64'))).default;
   const settings = new Map([['appearance.theme', 'anime'], ['appearance.panelOpacity', 'airy'], ['appearance.projectsBackground', 'visible']]);
   const events = new Map(), state = new Map();

@@ -19,7 +19,7 @@ test('workflow choices flatten advertised model/reasoning groups and preserve un
 });
 
 test('model discovery reuses existing metadata and removes only its own prompt-free probes', async () => {
-  const mod = (await load('modules/services/workflows/src/index.ts')).default;
+  const mod = (await load('Hato-plugins/modules/services/workflows/src/index.ts')).default;
   const W = await load('sdk/workflows.ts');
   const requests = [], profile = { id: 'provider', executable: 'test-adapter', args: [], name: 'Provider' };
   const ctx = { modules: { call: async (_id, method) => {
@@ -46,14 +46,14 @@ test('model discovery reuses existing metadata and removes only its own prompt-f
 });
 
 test('agent startup applies the selected model before model-specific reasoning', async () => {
-  const mod = (await load('modules/services/agent-runner/src/index.ts')).default;
+  const mod = (await load('Hato-plugins/modules/services/agent-runner/src/index.ts')).default;
   const listeners = new Map(), requests = [], dbWrites = [];
   const ctx = { modules: { call: async () => null }, log: { error() {}, info() {} }, host: {
     env: { info: () => ({ platform: 'linux' }) },
     db: { openNamespace: async () => 'db', query: async () => [], exec: async (_db, sql, args) => { dbWrites.push({ sql, args }); return { changes: 1 }; } },
     capabilities: { request: async () => ({ grant: 'grant' }), release: async () => {} }, resources: { release: async () => {} },
     streams: { listen: async (handle, opts, onData) => { if (opts.channel === 'stdout') listeners.set(handle, onData); return { close: async () => {} }; } },
-    process: { spawn: async () => ({ handle: 'process' }), closeStdin: async () => {}, write: async (handle, data) => {
+    process: { run: async () => ({ code: 0, stdout: '__HATO_EXEC__=/usr/local/bin/test\n__HATO_PATH__=/usr/local/bin:/usr/bin\n', stderr: '' }), spawn: async () => ({ handle: 'process' }), closeStdin: async () => {}, write: async (handle, data) => {
       const request = JSON.parse(data); requests.push(request);
       let result;
       if (request.method === 'initialize') result = { protocolVersion: 1, agentCapabilities: { loadSession: true } };

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import * as esbuild from 'esbuild';
 const walk = n => [n, ...(n.children || []).flatMap(walk)];
 test('project filtering reveals matching tasks under collapsed parents and keeps forms out of the list', async () => {
-  const built = await esbuild.build({ entryPoints: ['modules/ui/projects-panel/src/index.ts'], bundle: true, format: 'esm', write: false });
+  const built = await esbuild.build({ entryPoints: ['Hato-plugins/modules/ui/projects-panel/src/index.ts'], bundle: true, format: 'esm', write: false });
   const mod = (await import('data:text/javascript;base64,' + Buffer.from(built.outputFiles[0].text).toString('base64'))).default;
   const watchers = new Map();
   const ctx = { state: { get: () => ({ id: 'project:p:root' }), watch(key, fn) { watchers.set(key, fn); } }, events: { on() {} }, ui: { invalidate() {} }, modules: { async call() { return [
@@ -56,7 +56,7 @@ test('Windows paths into WSL resolve to a distribution and a Linux path', async 
 });
 
 test('on Windows the add form offers WSL projects instead of native local paths', async () => {
-  const built = await esbuild.build({ entryPoints: ['modules/ui/projects-panel/src/index.ts'], bundle: true, format: 'esm', write: false });
+  const built = await esbuild.build({ entryPoints: ['Hato-plugins/modules/ui/projects-panel/src/index.ts'], bundle: true, format: 'esm', write: false });
   const mod = (await import('data:text/javascript;base64,' + Buffer.from(built.outputFiles[0].text + '\n// windows').toString('base64'))).default;
   const calls = [];
   const ctx = { host: { env: { info: () => ({ platform: 'windows' }) } }, state: { get: () => null, watch() {} }, events: { on() {} }, ui: { invalidate() {} }, modules: { async call(target, method, args) {
@@ -81,7 +81,7 @@ test('on Windows the add form offers WSL projects instead of native local paths'
 });
 
 const addProject = async () => {
-  const built = await esbuild.build({ entryPoints: ['modules/ui/projects-panel/src/add-project.ts'], bundle: true, format: 'esm', write: false });
+  const built = await esbuild.build({ entryPoints: ['Hato-plugins/modules/ui/projects-panel/src/add-project.ts'], bundle: true, format: 'esm', write: false });
   return import('data:text/javascript;base64,' + Buffer.from(built.outputFiles[0].text).toString('base64'));
 };
 
@@ -103,7 +103,7 @@ test('the SSH form validates per field and never collects a password', async () 
 });
 
 test('locked password projects connect on click, then select', async () => {
-  const built = await esbuild.build({ entryPoints: ['modules/ui/projects-panel/src/index.ts'], bundle: true, format: 'esm', write: false });
+  const built = await esbuild.build({ entryPoints: ['Hato-plugins/modules/ui/projects-panel/src/index.ts'], bundle: true, format: 'esm', write: false });
   const mod = (await import('data:text/javascript;base64,' + Buffer.from(built.outputFiles[0].text).toString('base64'))).default;
   const calls = [];
   const project = { id: 'r', name: 'Remote', rootPath: '/srv', host: 'me@box', kind: 'ssh', auth: 'password', needsPassword: true, offline: 'Password needed', tasks: [], expanded: false };
@@ -127,7 +127,7 @@ test('stored password choice reaches the kernel profile without a key path', asy
 });
 
 test('a failed add keeps its error in the dialog after the tree reloads', async () => {
-  const built = await esbuild.build({ entryPoints: ['modules/ui/projects-panel/src/index.ts'], bundle: true, format: 'esm', write: false });
+  const built = await esbuild.build({ entryPoints: ['Hato-plugins/modules/ui/projects-panel/src/index.ts'], bundle: true, format: 'esm', write: false });
   const mod = (await import('data:text/javascript;base64,' + Buffer.from(built.outputFiles[0].text).toString('base64'))).default;
   const ctx = { state: { get: () => null, watch() {} }, events: { on() {} }, ui: { invalidate() {} }, host: { env: { info: () => ({ platform: 'linux' }) } }, modules: { async call(m, f) { if (f === 'addLocal') throw new Error('no such folder'); return []; } } };
   await mod.activate(ctx);

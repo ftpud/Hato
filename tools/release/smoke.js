@@ -9,15 +9,12 @@ export default {
     const baseline = modules.find(m => m.id === "workspace-layout");
     if (!baseline?.seedVersion || !baseline.versions.some(v => v.version === baseline.seedVersion && v.sha256 === baseline.active.sha256))
       throw new Error("Packaged module baseline does not match the imported seed");
-    // Isolated release smoke data only: exercise the bundled compiler and stage a
-    // large module so process-output backpressure cannot ship as a build timeout.
+    // Production has no editable sources or seed bundles inside the app package.
+    // Its first-run installer supplies the persistent runtime from the pinned repository.
     await T("test.approvals", { policy: "allow" });
-    const built = await ctx.modules.call("module-dev", "build", { id: "workspace-layout" }, { timeoutMs: 150000 });
-    if (!built.ok || !built.stageId) throw new Error(`Packaged self-configuration build failed: ${built.error || built.diagnostics || "no staged artifact"}`);
-    const scan = await ctx.modules.call("module-dev", "scanUpdates", { full: true }, { timeoutMs: 300000 });
-    const checkedLayout = scan.modules.find(m => m.id === "workspace-layout");
-    if (!checkedLayout?.builtHash || checkedLayout.builtHash !== baseline.active.sha256)
-      throw new Error(`Packaged module rescan failed: ${checkedLayout?.diagnostics || "incorrect bundle hash"}`);
+    const paths = (await ctx.modules.call("module-dev", "describe", {id:"workspace-layout"})).runtime;
+    if (!paths.modulesRoot.startsWith(ctx.host.env.info().dataDir + '/runtime/'))
+      throw new Error('Release did not boot from the persistent plugin runtime');
     // A new JavaScript plugin must install and load without Node or npm.
     const id = "hato-release-smoke";
     const source = `${ctx.host.env.info().dataDir}/smoke-source/${id}`;
@@ -30,6 +27,6 @@ export default {
     const health = await ctx.modules.call(id, "health", {});
     if (!health?.ok) throw new Error("Installed JavaScript plugin did not respond");
     await T("test.pluginUninstall", { id });
-    await T("test.done", { ok: true, report: { moduleBuild: built.label, rescan: "large bundle checked within QuickJS limits", javascriptPlugin: "installed, enabled, called and removed" } });
+    await T("test.done", { ok: true, report: { runtime: paths.modulesRoot, javascriptPlugin: "installed, enabled, called and removed" } });
   },
 };
