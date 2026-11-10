@@ -131,7 +131,7 @@ impl Kernel {
         let mut out: Vec<Discovered> = Vec::new();
         let sorted_dirs = |d: &std::path::Path| -> Vec<PathBuf> {
             let Ok(rd) = std::fs::read_dir(d) else { return Vec::new() };
-            let mut dirs: Vec<PathBuf> = rd.filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.join("manifest.json").is_file()).collect();
+            let mut dirs: Vec<PathBuf> = rd.filter_map(|e| e.ok().map(|e| e.path())).filter(|p| !p.file_name().unwrap_or_default().to_string_lossy().starts_with('.') && p.join("manifest.json").is_file()).collect();
             dirs.sort();
             dirs
         };
@@ -153,7 +153,8 @@ impl Kernel {
         for dir in sorted_dirs(&self.cfg.plugins_dir()) {
             match plugins::read_manifest(&dir) {
                 Ok(m) if out.iter().any(|d| d.manifest.id == m.id) => {
-                    log::error!("user plugin {} reuses the id of a built-in plugin; skipped", dir.display());
+                    let index = out.iter().position(|d| d.manifest.id == m.id).unwrap();
+                    out[index] = Discovered { manifest: m, dir, source: Source::User };
                 }
                 Ok(m) => out.push(Discovered { manifest: m, dir, source: Source::User }),
                 Err(e) => log::error!("invalid user plugin in {}: {e}", dir.display()),
@@ -541,9 +542,6 @@ impl Kernel {
     pub fn install_plugin(&self, requester: &Generation, from: &str) -> HResult<Value> {
         let src = std::path::PathBuf::from(crate::util::canonical_string(std::path::Path::new(from)).map_err(|e| HostError::new("ENOENT", format!("{from}: {e}")))?);
         let m = plugins::read_manifest(&src).map_err(|e| HostError::invalid(format!("not a plugin folder: {e}")))?;
-        if self.plugin_source(&m.id) == Some(Source::Builtin) {
-            return Err(HostError::invalid(format!("'{}' is a built-in plugin id", m.id)));
-        }
         let dst = self.cfg.plugins_dir().join(&m.id);
         let replacing = dst.exists();
         let detail = format!(
@@ -553,17 +551,47 @@ impl Kernel {
             if m.capabilities.is_empty() { "none".into() } else { m.capabilities.join(", ") },
             if m.calls.is_empty() { "none".into() } else { m.calls.join(", ") });
         self.require_approval(requester, "plugins.install", &format!("Install plugin '{}'?", m.display_name()), &detail)?;
-        if replacing {
-            self.unload_plugin(&m.id);
-            std::fs::remove_dir_all(&dst)?;
+        // Prepare and validate before touching the installed copy or running generation.
+        let pending = self.cfg.plugins_dir().join(format!(".pending-{}", m.id));
+        if pending.exists() { std::fs::remove_dir_all(&pending)?; }
+        plugins::copy_plugin_dir(&src, &pending)?;
+        if plugins::user_seed(&pending, &m).is_none() {
+            let _ = std::fs::remove_dir_all(&pending);
+            return Err(HostError::invalid("plugin has no runnable JavaScript bundle"));
         }
-        plugins::copy_plugin_dir(&src, &dst)?;
+        let escalation = self.grants.escalation(&m);
+        if !escalation.is_empty() {
+            self.require_approval(requester, "plugins.enable", "Approve updated plugin permissions?", &escalation.join("\n"))?;
+            self.grants.record_approval(&m.id, &escalation);
+        }
+        let was_enabled = self.plugin_enabled(&m.id);
+        // Keep the requesting generation alive through its reply; its new seed is used on restart.
+        let pending_restart = m.id == requester.module_id;
+        let was_active = self.router.active(&m.id).is_some();
+        let backup = self.cfg.plugins_dir().join(format!(".backup-{}", m.id));
+        if backup.exists() { std::fs::remove_dir_all(&backup)?; }
+        if replacing { std::fs::rename(&dst, &backup)?; }
+        if let Err(e) = std::fs::rename(&pending, &dst) {
+            if replacing { let _ = std::fs::rename(&backup, &dst); }
+            return Err(e.into());
+        }
+        self.plugins.set_enabled(&m.id, was_enabled);
         self.register_discovered();
         let id = m.id.clone();
-        let was_enabled = self.plugin_enabled(&id);
-        if replacing && was_enabled {
-            // Reload the new copy.
-            if let Some(d) = self.discover_all().into_iter().find(|d| d.manifest.id == id) {
+        if was_enabled && !pending_restart {
+            // Existing generations use the snapshot/health-check swap path, preserving resources.
+            if was_active {
+                let code = std::fs::read_to_string(plugins::user_seed(&dst, &m).unwrap())?;
+                let outcome = self.stage(requester, &id, &code, "plugin", false).and_then(|staged| {
+                    self.activate_staged(Some(requester), &id, staged["stageId"].as_str().unwrap(), false, false)
+                });
+                if let Err(e) = outcome {
+                    let _ = std::fs::remove_dir_all(&dst);
+                    if replacing { let _ = std::fs::rename(&backup, &dst); }
+                    self.register_discovered();
+                    return Err(e);
+                }
+            } else if let Some(d) = self.discover_all().into_iter().find(|d| d.manifest.id == id) {
                 if self.router.fence(&id).is_ok() {
                     if let Some(rx) = self.load_plugin(&d) {
                         let _ = rx.recv_timeout(Duration::from_secs(35));
@@ -571,9 +599,10 @@ impl Kernel {
                 }
             }
         }
+        if replacing { let _ = std::fs::remove_dir_all(&backup); }
         self.audit.record(&requester.module_id, requester.gen_id, "plugins.install", &id, "ok", Some("native-user"));
         self.after_plugin_change(&id);
-        Ok(json!({"id": id, "enabled": was_enabled, "dir": dst.to_string_lossy()}))
+        Ok(json!({"id": id, "enabled": was_enabled, "dir": dst.to_string_lossy(), "pendingRestart": pending_restart}))
     }
 
     pub fn uninstall_plugin(&self, requester: &Generation, id: &str) -> HResult<Value> {

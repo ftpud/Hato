@@ -32,6 +32,7 @@ rm -rf dist/windows
 mkdir -p "$stage/build" "$stage/node_modules/@esbuild/win32-x64"
 x86_64-w64-mingw32-strip -o "$stage/hato.exe" target/x86_64-pc-windows-gnu/release/hato.exe
 cp -R modules grants sdk "$stage/"
+cp plugins.catalogue.json "$stage/"
 cp -R build/modules "$stage/build/"
 # Keeps in-app module builds working without Node on the Windows side.
 work="$(mktemp -d)"

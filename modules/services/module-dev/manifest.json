@@ -5,7 +5,18 @@
   "entry": "src/index.ts",
   "moduleApiVersion": 1,
   "dependencies": [],
-  "capabilities": ["modules.read","modules.admin","modules.source.read","modules.source.write","process.build","fs.scope"],
+  "capabilities": [
+    "modules.read",
+    "modules.admin",
+    "modules.source.read",
+    "modules.source.write",
+    "process.build",
+    "fs.scope"
+  ],
   "stateVersion": 1,
-  "description": "Module source browse/patch, esbuild builds, staging, activation and rollback."
+  "description": "Module source browse/patch, esbuild builds, staging, activation and rollback.",
+  "author": "Hato contributors",
+  "version": "0.1.0",
+  "pluginPackage": "foundation",
+  "pluginType": "System"
 }

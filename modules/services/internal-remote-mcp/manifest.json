@@ -20,5 +20,9 @@
   ],
   "runsOn": "either",
   "stateVersion": 1,
-  "description": "Machine-side, workspace-scoped MCP for background agents and terminals; daemon hosted or standalone locally."
+  "description": "Machine-side, workspace-scoped MCP for background agents and terminals; daemon hosted or standalone locally.",
+  "author": "Hato contributors",
+  "version": "0.1.0",
+  "pluginPackage": "core-acp",
+  "pluginType": "AI"
 }

@@ -172,7 +172,7 @@ export interface NativeHost {
     /** Pin the window root to a plugin providing "shell.root" (null = automatic). */
     setRoot(id: string | null): Promise<void>;
     /** Copy a local plugin folder into the kernel-owned plugins dir (stays disabled). */
-    install(path: string): Promise<{ id: string; enabled: boolean; dir: string }>;
+    install(path: string): Promise<{ id: string; enabled: boolean; dir: string; pendingRestart?: boolean }>;
     uninstall(id: string): Promise<{ id: string; uninstalled: true; disabled: string[] }>;
     /** Pick up plugin folders added on disk. */
     rescan(): Promise<{ added: string[] }>;

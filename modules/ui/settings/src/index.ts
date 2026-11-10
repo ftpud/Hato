@@ -1,3 +1,4 @@
+import { marketNodes, marketTab, refreshMarket, installPackage } from './marketplace';
 import type { AppModule, ModuleContext, PluginInfo, SettingsExport, SettingsSection, SettingField, UiNode } from "../../../../sdk/types";
 import { parseOrder, SPACER_PREFIX } from "../../../../sdk/settings-order";
 import { uiTable, normalizeTableStyle } from "../../../../sdk/ui-table";
@@ -229,6 +230,7 @@ function pluginsPage(): UiNode[] {
   const user = plugins.filter((p) => p.source === "user");
   const builtin = plugins.filter((p) => p.source === "builtin");
   return [
+    ...marketNodes(plugins, pluginBusy !== null),
     { type: "label", key: "plugins-hint", text: "Everything in Hato is a plugin. Disable built-ins you do not need, or install your own: a folder with manifest.json and a built dist/<id>.mjs. New plugins stay disabled until you enable them and approve their permissions.", size: "sm", color: "muted", wrap: true },
     { type: "row", key: "plugin-tools", gap: 6, children: [
       { type: "button", key: "install", text: "Install from folder…", action: "plugin:install", small: true, variant: "primary", disabled: pluginBusy !== null },
@@ -257,6 +259,9 @@ async function pluginAction(ctx: ModuleContext, action: string, value: any) {
     } finally { pluginBusy = null; await refresh(ctx); }
   };
   switch (action) {
+    case "marketTab": marketTab(String(value)); ctx.ui.invalidate(); return;
+    case "marketRefresh": return run("Checking marketplace…", async () => { await refreshMarket(ctx); return "Marketplace is up to date"; });
+    case "marketInstall": return run("Installing package…", () => installPackage(ctx, String(value), plugins));
     case "setRoot": return run("Changing window root…", async () => { await ctx.host.plugins.setRoot(typeof value === "string" ? value : null); return null; });
     case "uninstall": return run(`Uninstalling ${value}…`, async () => { await ctx.host.plugins.uninstall(String(value)); return `Uninstalled ${value}`; });
     case "rescan": return run("Scanning plugins folder…", async () => { const r = await ctx.host.plugins.rescan(); return r.added.length ? `Found ${r.added.join(", ")}` : "No new plugins"; });

@@ -4,8 +4,20 @@
   "kind": "service",
   "entry": "src/index.ts",
   "moduleApiVersion": 1,
-  "dependencies": ["persistence","projects","workspace"],
-  "capabilities": ["fs.scope","process.scope","ssh.connect"],
+  "dependencies": [
+    "persistence",
+    "projects",
+    "workspace"
+  ],
+  "capabilities": [
+    "fs.scope",
+    "process.scope",
+    "ssh.connect"
+  ],
   "stateVersion": 1,
-  "description": "Git task branches with linked worktrees on the project machine; reconciliation."
+  "description": "Git task branches with linked worktrees on the project machine; reconciliation.",
+  "author": "Hato contributors",
+  "version": "0.1.0",
+  "pluginPackage": "git",
+  "pluginType": "Development"
 }

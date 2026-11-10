@@ -11,6 +11,7 @@ if [ ! -d "$runtime" ]; then
   for directory in modules grants sdk build; do
     ditto "$contents/$directory" "$staging/$directory"
   done
+  cp "$contents/plugins.catalogue.json" "$staging/"
   # rename(2) ensures another launch cannot observe a partially seeded runtime.
   if [ ! -d "$runtime" ]; then mv -n "$staging" "$runtime"; fi
   rm -rf "$staging"

@@ -31,5 +31,9 @@
         }
       }
     ]
-  }
+  },
+  "author": "Hato contributors",
+  "version": "0.1.0",
+  "pluginPackage": "foundation",
+  "pluginType": "System"
 }

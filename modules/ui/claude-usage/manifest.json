@@ -21,5 +21,9 @@
         "order": 10
       }
     ]
-  }
+  },
+  "author": "Hato contributors",
+  "version": "0.1.0",
+  "pluginPackage": "claude-acp",
+  "pluginType": "AI providers"
 }

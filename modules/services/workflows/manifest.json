@@ -25,5 +25,9 @@
   ],
   "runsOn": "ui",
   "stateVersion": 1,
-  "description": "Desktop gateway for visual workflows: installs the daemon workflow runtime, resolves providers, routes designer requests and contributes workflow self-configuration MCP commands."
+  "description": "Desktop gateway for visual workflows: installs the daemon workflow runtime, resolves providers, routes designer requests and contributes workflow self-configuration MCP commands.",
+  "author": "Hato contributors",
+  "version": "0.1.0",
+  "pluginPackage": "automation",
+  "pluginType": "Automation"
 }

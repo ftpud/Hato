@@ -14,5 +14,9 @@
     "remote.daemon"
   ],
   "stateVersion": 1,
-  "description": "Maps (workspace, key) to persistent native PTY handles, local or over SSH."
+  "description": "Maps (workspace, key) to persistent native PTY handles, local or over SSH.",
+  "author": "Hato contributors",
+  "version": "0.1.0",
+  "pluginPackage": "foundation",
+  "pluginType": "System"
 }

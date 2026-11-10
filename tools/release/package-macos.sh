@@ -13,6 +13,7 @@ cp tools/release/launcher.sh "$contents/MacOS/hato-launcher"
 chmod +x "$contents/MacOS/hato-launcher"
 printf '%s\n' "$RELEASE_VERSION" > "$contents/Resources/release-version"
 cp -R modules grants sdk "$contents/"
+cp plugins.catalogue.json "$contents/"
 cp -R build/modules "$contents/build/"
 # Preserve the existing module build capability without requiring Node on users' Macs.
 cp -R "node_modules/@esbuild/darwin-$MACOS_ARCH" "$contents/node_modules/@esbuild/"

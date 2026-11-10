@@ -4,8 +4,18 @@
   "kind": "service",
   "entry": "src/index.ts",
   "moduleApiVersion": 1,
-  "dependencies": ["persistence"],
-  "capabilities": ["net.fetch", "net.loopback", "ui.openUrl"],
+  "dependencies": [
+    "persistence"
+  ],
+  "capabilities": [
+    "net.fetch",
+    "net.loopback",
+    "ui.openUrl"
+  ],
   "stateVersion": 1,
-  "description": "OAuth sign-in and token refresh for remote MCP servers (browser + loopback redirect, PKCE)."
+  "description": "OAuth sign-in and token refresh for remote MCP servers (browser + loopback redirect, PKCE).",
+  "author": "Hato contributors",
+  "version": "0.1.0",
+  "pluginPackage": "core-acp",
+  "pluginType": "AI"
 }

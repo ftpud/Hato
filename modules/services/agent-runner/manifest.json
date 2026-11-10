@@ -19,5 +19,9 @@
   "description": "Owns independent ACP sessions and durable history inside the local or SSH daemon.",
   "calls": [
     "internal-remote-mcp"
-  ]
+  ],
+  "author": "Hato contributors",
+  "version": "0.1.0",
+  "pluginPackage": "core-acp",
+  "pluginType": "AI"
 }

@@ -16,5 +16,9 @@
     "process.scope"
   ],
   "stateVersion": 1,
-  "description": "Workspace-scoped file listing and native document handles."
+  "description": "Workspace-scoped file listing and native document handles.",
+  "author": "Hato contributors",
+  "version": "0.1.0",
+  "pluginPackage": "foundation",
+  "pluginType": "System"
 }

@@ -4,8 +4,20 @@
   "kind": "service",
   "entry": "src/index.ts",
   "moduleApiVersion": 1,
-  "dependencies": ["workspace","persistence","ai-sessions","internal-mcp"],
-  "capabilities": ["process.scope","ssh.connect"],
+  "dependencies": [
+    "workspace",
+    "persistence",
+    "ai-sessions",
+    "internal-mcp"
+  ],
+  "capabilities": [
+    "process.scope",
+    "ssh.connect"
+  ],
   "stateVersion": 1,
-  "description": "Agent Client Protocol client: profiles, transports, sessions, config options."
+  "description": "Agent Client Protocol client: profiles, transports, sessions, config options.",
+  "author": "Hato contributors",
+  "version": "0.1.0",
+  "pluginPackage": "core-acp",
+  "pluginType": "AI"
 }

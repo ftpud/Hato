@@ -21,5 +21,9 @@
         "order": 20
       }
     ]
-  }
+  },
+  "author": "Hato contributors",
+  "version": "0.1.0",
+  "pluginPackage": "codex-acp",
+  "pluginType": "AI providers"
 }

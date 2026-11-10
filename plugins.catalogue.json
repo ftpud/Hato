@@ -1,0 +1,149 @@
+{
+  "schemaVersion": 1,
+  "coreVersion": "0.1.0",
+  "packages": [
+    {
+      "id": "foundation",
+      "name": "Hato essentials",
+      "type": "System",
+      "core": true,
+      "author": "Hato contributors",
+      "version": "0.1.0",
+      "coreVersion": "^0.1.0",
+      "description": "Hato essentials services and panels.",
+      "dependencies": {},
+      "modules": [
+        "persistence",
+        "workspace",
+        "projects",
+        "files",
+        "terminals",
+        "workspace-layout",
+        "settings",
+        "module-dev",
+        "explorer",
+        "viewer",
+        "terminal-panel",
+        "projects-panel",
+        "left-sidebar",
+        "sidebar"
+      ]
+    },
+    {
+      "id": "core-acp",
+      "name": "Agent Client Protocol",
+      "type": "AI",
+      "core": true,
+      "author": "Hato contributors",
+      "version": "0.1.0",
+      "coreVersion": "^0.1.0",
+      "description": "Agent Client Protocol services and panels.",
+      "dependencies": {
+        "foundation": "^0.1.0"
+      },
+      "modules": [
+        "acp",
+        "ai-sessions",
+        "ai",
+        "internal-mcp",
+        "internal-local-mcp",
+        "internal-remote-mcp",
+        "mcp-auth",
+        "agent-runner",
+        "mcp-panel"
+      ]
+    },
+    {
+      "id": "git",
+      "name": "Git",
+      "type": "Development",
+      "core": true,
+      "author": "Hato contributors",
+      "version": "0.1.0",
+      "coreVersion": "^0.1.0",
+      "description": "Git services and panels.",
+      "dependencies": {
+        "foundation": "^0.1.0"
+      },
+      "modules": [
+        "git",
+        "git-panel",
+        "git-branch",
+        "git-changes",
+        "git-tasks"
+      ]
+    },
+    {
+      "id": "claude-acp",
+      "name": "Claude ACP",
+      "type": "AI providers",
+      "core": false,
+      "author": "Hato contributors",
+      "version": "0.1.0",
+      "coreVersion": "^0.1.0",
+      "description": "Claude ACP integration and plan usage bar. Requires the Claude adapter installed on the workspace machine.",
+      "dependencies": {
+        "foundation": "^0.1.0",
+        "core-acp": "^0.1.0"
+      },
+      "modules": [
+        "claude-usage"
+      ]
+    },
+    {
+      "id": "codex-acp",
+      "name": "Codex ACP",
+      "type": "AI providers",
+      "core": false,
+      "author": "Hato contributors",
+      "version": "0.1.0",
+      "coreVersion": "^0.1.0",
+      "description": "Codex ACP integration and plan usage bar. Requires the Codex adapter installed on the workspace machine.",
+      "dependencies": {
+        "foundation": "^0.1.0",
+        "core-acp": "^0.1.0"
+      },
+      "modules": [
+        "codex-usage"
+      ]
+    },
+    {
+      "id": "automation",
+      "name": "Workflows & agents",
+      "type": "Automation",
+      "core": false,
+      "author": "Hato contributors",
+      "version": "0.1.0",
+      "coreVersion": "^0.1.0",
+      "description": "Workflows & agents services and panels.",
+      "dependencies": {
+        "foundation": "^0.1.0",
+        "core-acp": "^0.1.0"
+      },
+      "modules": [
+        "workflows",
+        "workflow-runner",
+        "workflows-panel",
+        "persistent-agents",
+        "agents-panel"
+      ]
+    },
+    {
+      "id": "remote",
+      "name": "Remote workspaces",
+      "type": "Connectivity",
+      "core": false,
+      "author": "Hato contributors",
+      "version": "0.1.0",
+      "coreVersion": "^0.1.0",
+      "description": "Remote workspaces services and panels.",
+      "dependencies": {
+        "foundation": "^0.1.0"
+      },
+      "modules": [
+        "remote-runtime",
+        "remote-panel"
+      ]
+    }
+  ]
+}

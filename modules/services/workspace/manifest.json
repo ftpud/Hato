@@ -4,8 +4,18 @@
   "kind": "service",
   "entry": "src/index.ts",
   "moduleApiVersion": 1,
-  "dependencies": ["persistence","projects","git-tasks"],
-  "capabilities": ["events.publish"],
+  "dependencies": [
+    "persistence",
+    "projects",
+    "git-tasks"
+  ],
+  "capabilities": [
+    "events.publish"
+  ],
   "stateVersion": 1,
-  "description": "Resolves and selects workspaces (project root or task worktree) and per-workspace view state."
+  "description": "Resolves and selects workspaces (project root or task worktree) and per-workspace view state.",
+  "author": "Hato contributors",
+  "version": "0.1.0",
+  "pluginPackage": "foundation",
+  "pluginType": "System"
 }

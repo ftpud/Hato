@@ -27,5 +27,9 @@
       }
     ]
   },
-  "description": "Separate persistent agent manager and chat, independent of the existing chatbox."
+  "description": "Separate persistent agent manager and chat, independent of the existing chatbox.",
+  "author": "Hato contributors",
+  "version": "0.1.0",
+  "pluginPackage": "automation",
+  "pluginType": "Automation"
 }
