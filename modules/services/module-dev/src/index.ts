@@ -20,7 +20,7 @@ const grantShared = (ctx: ModuleContext) => (shared ??= ctx.host.capabilities.re
 async function moduleDir(ctx: ModuleContext, id: string): Promise<string> {
   const d: any = await ctx.host.modules.describe(id);
   // sourceDir is repo-relative, e.g. "modules/ui/projects-panel"
-  return String(d.sourceDir).replace(/^modules\//, "");
+  return String(d.sourceDir).replace(/\\/g, "/").replace(/^modules\//, "");
 }
 
 /** Normalize an agent-supplied path to a modules/-relative path inside the module directory. */

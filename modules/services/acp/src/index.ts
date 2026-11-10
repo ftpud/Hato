@@ -129,16 +129,29 @@ async function resolveProfile(ctx: ModuleContext, id: string, machineId: string)
 }
 
 /** Find the adapter executable on the workspace machine (login-shell PATH). Never installs anything. */
-async function detect(ctx: ModuleContext, desc: WorkspaceDescriptor, executable: string) {
+export async function detect(ctx: ModuleContext, desc: WorkspaceDescriptor, executable: string) {
   const g = await workspaceGrant(ctx, desc, "process");
   const target = await targetFor(ctx, desc);
-  if (executable.startsWith("/")) {
+  if (executable.startsWith("/") && desc.location !== "ssh") {
     const r = await ctx.host.process.run(g.grant, { target, executable: "test", args: ["-x", executable], cwd: desc.rootAbsolutePath }, { timeoutMs: 15000 });
     return { found: r.code === 0, path: executable, pathEnv: null as string | null };
   }
   if (desc.location === "ssh") {
-    const r = await ctx.host.process.run(g.grant, { target, executable: "sh", args: ["-c", 'command -v -- "$1"', "hato-detect", executable], cwd: desc.rootAbsolutePath, loginShell: true }, { timeoutMs: 20000 });
-    return { found: r.code === 0 && r.stdout.trim().length > 0, path: r.stdout.trim().split("\n").pop() || "", pathEnv: null };
+    const probe = async (pathEnv: string | null) => {
+      const r = await ctx.host.process.run(g.grant, { target, executable: "sh", args: ["-c", 'p=$(command -v -- "$1") || exit; printf "\\n__HATO_EXEC__=%s\\n" "$p"', "hato-detect", executable], cwd: desc.rootAbsolutePath, loginShell: true, ...(pathEnv ? { env: { PATH: pathEnv } } : {}) }, { timeoutMs: 20000 });
+      const path = /^__HATO_EXEC__=(.+)$/m.exec(r.stdout)?.[1] || "";
+      return { found: r.code === 0 && !!path, path, pathEnv };
+    };
+    const login = await probe(null);
+    if (login.found) return login;
+    // Version managers are often initialized only by interactive rc files (including bash's
+    // common early return in .bashrc). Capture that PATH without mixing startup output into ACP
+    // stdio, then pass it explicitly to the non-interactive agent/npm process.
+    const r = await ctx.host.process.run(g.grant, { target, executable: "sh", args: ["-c", 'exec "${SHELL:-/bin/sh}" -ic "$1"', "hato-shell-path", `exec /bin/sh -c 'printf "\\n__HATO_PATH__=%s\\n" "$PATH"'`], cwd: desc.rootAbsolutePath, loginShell: true }, { timeoutMs: 20000 });
+    const pathEnv = /^__HATO_PATH__=(.+)$/m.exec(r.stdout)?.[1] || null;
+    if (!pathEnv || r.code !== 0) return login;
+    const interactive = await probe(pathEnv);
+    return interactive.found ? interactive : login;
   }
   // Local: the GUI process may not inherit the user's shell PATH; ask the login shell.
   const shell = "/bin/zsh";
@@ -151,7 +164,7 @@ async function detect(ctx: ModuleContext, desc: WorkspaceDescriptor, executable:
 /** Runs npm on the workspace machine (local: absolute npm + login PATH; SSH: login shell). */
 async function npmRunner(ctx: ModuleContext, desc: WorkspaceDescriptor) {
   const det = await detect(ctx, desc, "npm");
-  if (!det.found) return { ok: false as const, error: `npm was not found on ${desc.machineId}; install Node.js there first`, run: null as any };
+  if (!det.found) return { ok: false as const, error: `npm was not found in the login or interactive shell PATH on ${desc.machineId}; check that Node.js and npm are available for this user`, run: null as any };
   const g = await workspaceGrant(ctx, desc, "process");
   const target = await targetFor(ctx, desc);
   const env: Record<string, string> = {};
