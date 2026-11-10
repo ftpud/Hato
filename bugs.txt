@@ -1,0 +1,27 @@
+Files -> reloads on changes, flicks
+files -> too heavy, need more spacing between lines, lighter labels, lighter icons, the expand arrow should look more like > v
+files -> group empty folders to folder1/folder2/folder3
+files -> when open tree, text selection happens on the file viewer?
+files -> git modified file indicator 
+
+ui -> add button to hide panel titles
+
+Editor -> middle click on tab should close it, right clict should give Close all to the right / Close all
+
+Terminals -> middle click on the tab should close tab
+
+Terminals -> background terminal update should show indicator
+
+AI Chatbox -> chatbox should work through the hatod/background as a background session
+
+--
+pi 2
+
+MD -> Run button for shell blocks that should open in a terminal (1 terminal per block)
+
+Diff tabs -> word wrap, side-by-side should be in the middle of screen with word-wrap enabled, and not out of bounds to the right
+
+git branch selection -> UI/UX should be reworked
+tabs/terminal tabs/filter text box -> need more spacing, it feels too tight
+chatbox -> when I paste an image, the input box gets collapsed
+

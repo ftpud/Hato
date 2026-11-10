@@ -41,3 +41,7 @@ Automated runs happen in Windows session 0, which has no desktop, so `hato.exe` 
 - In-app builds with `esbuild.exe`, hot reload keeping the selected workspace and terminal, plugin install.
 - Local scope enforcement: traversal, drive paths, data streams, device names, drive roots, kernel state.
 - `hato.exe` imports only DLLs that ship with Windows.
+
+```sh
+echo 123
+```

@@ -13,6 +13,10 @@ export interface AgentSpec {
   claudeSubscription: boolean; workspaceMcp?: boolean; daemon?: {bin:string;dir:string};
   /** Approve the agent's tool permissions (allow-once) without asking, also while the desktop is closed. */
   autopilot?: boolean;
+  /** Approval policy below autopilot: "auto-low" approves read/search/think/fetch tools only. */
+  approvalPolicy?: "ask" | "auto-low";
+  /** Provider session options (mode, reasoning and other advertised settings) reapplied on every connect. */
+  settings?: Record<string, string | boolean>;
   /** Workflow session ownership used for scoped tool activity tracing. */
   workflow?: { runId: string; blockId: string };
 }
@@ -20,6 +24,8 @@ export interface AgentSession extends AgentSpec {
   status: "starting" | "ready" | "busy" | "waiting" | "stopped" | "interrupted" | "error";
   contextSent?: boolean; sessionId: string | null; createdAt: string; updatedAt: string; error: string | null;
   configOptions: any[]; models: any; revision: number;
+  /** Legacy ACP session modes, last reported context usage and prompt capabilities of the connected provider. */
+  modes?: any; usage?: { used: number; size: number } | null; promptImages?: boolean;
   /** Desktop list projection of the latest activity; never drives the agent. */
   activity?: string;
 }
@@ -52,4 +58,18 @@ export function agentActivity(view: AgentView): string {
   if(latest?.role==="user"&&view.session.status==="busy")return "Working on: "+tail(latest.text);
   if(latest)return tail(latest.text);
   return view.session.status==="busy"?"Working…":view.session.status==="ready"?"Ready for a prompt":view.session.status;
+}
+
+export type AgentPolicy = "ask" | "auto-low" | "autopilot";
+export const agentPolicy = (s: { autopilot?: boolean; approvalPolicy?: string }): AgentPolicy =>
+  s.autopilot ? "autopilot" : s.approvalPolicy === "auto-low" ? "auto-low" : "ask";
+/** Tool kinds approved automatically under the "auto-low" policy (matches local chats). */
+export const LOW_RISK_TOOL_KINDS = new Set(["read", "search", "think", "fetch"]);
+/** Sanitized provider option map: bounded string ids with string or boolean values. */
+export function agentSettings(value: unknown): Record<string, string | boolean> {
+  const out: Record<string, string | boolean> = {};
+  if (!value || typeof value !== "object" || Array.isArray(value)) return out;
+  for (const [k, v] of Object.entries(value).slice(0, 32))
+    if (k && k.length <= 200 && (typeof v === "boolean" || (typeof v === "string" && v.length <= 500))) out[k] = v;
+  return out;
 }
