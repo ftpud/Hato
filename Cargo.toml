@@ -39,6 +39,13 @@ libc = "0.2"
 notify = { version = "=8.2.1", default-features = false, features = ["macos_fsevent"] }
 # HTTPS client for the capability-gated `net.fetch` primitive (OAuth discovery/token exchange).
 ureq = { version = "3", default-features = false, features = ["rustls", "platform-verifier"] }
+# Built-in SSH client: one connection per machine, channels in-process (no `ssh`/`wsl.exe` per call).
+# `ring` rather than the default aws-lc-rs, which needs CMake/NASM to cross-build for Windows.
+russh = { version = "0.65.1", default-features = false, features = ["ring", "rsa", "flate2"] }
+# known_hosts hashed host names (same versions russh uses).
+hmac = "0.13"
+sha1 = "0.11"
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "sync", "time", "macros"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-app-kit = { version = "=0.2.2", features = ["NSApplication", "NSImage"], optional = true }
@@ -65,3 +72,7 @@ opt-level = 2
 [[test]]
 name = "arch_gate"
 path = "kernel/tests/arch_gate.rs"
+
+[[test]]
+name = "ssh_builtin"
+path = "kernel/tests/ssh_builtin.rs"

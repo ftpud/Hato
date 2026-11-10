@@ -138,8 +138,8 @@ at opt-level 2. They are retained as background, not benchmarks for the current 
 
 ## Implementation decisions and verification limits
 
-* **SSH via system OpenSSH** (ControlMaster) + own SFTP v3 client instead of libssh2 — "or equivalent" per
-  §3; rationale in COMPATIBILITY.md.
+* **SSH via a built-in client** (`russh`, one connection per machine, channels in-process) + own SFTP v3
+  client instead of libssh2 — "or equivalent" per §3; details in COMPATIBILITY.md.
 * `sdk/` instead of `.sdk/` (visible directory; same role).
 * `select` is rendered as a native button + dropdown menu. Split panes support resizing and collapse;
   workspace-layout persists panel placement and top/bottom bar controls.

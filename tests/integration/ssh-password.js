@@ -42,18 +42,18 @@ async function run(ctx) {
   await T("test.approvals", { policy: "allow", secret: password });
   await ev("projects-panel", "addSsh", { inputs: form });
   const pr = await until(async () => { const p = (await call("projects", "tree")).find((x) => x.name === "Pw"); return p && p.isGit !== null ? p : null; }, 30000);
-  check("password project registered, Git detected over the master", pr?.isGit === true && pr.auth === "password" && !pr.offline, pr);
+  check("password project registered, Git detected over the connection", pr?.isGit === true && pr.auth === "password" && !pr.offline, pr);
   check("the dialog closes after adding", !find(await T("test.render", { module: "projects-panel" }), (n) => n.key === "add-modal"));
 
-  // Everything multiplexes over the master: no further prompts.
+  // Everything runs as channels of that connection: no further prompts.
   await log();
   const ws = `project:${pr.id}:root`;
   await ev("projects-panel", "selectWorkspace", { rowKey: ws });
   const desc = await call("workspace", "resolve", { workspaceId: ws });
   check("the descriptor carries the choice, no key", desc.ssh.auth === "password" && !desc.ssh.identityFile, desc.ssh);
   const listing = await call("files", "list", { workspaceId: ws, path: "." });
-  check("files work over the password master", JSON.stringify(listing).includes("hello.txt"), listing);
-  check("a live master never prompts again", !ops(await log()).includes("ssh.password"));
+  check("files work over the password connection", JSON.stringify(listing).includes("hello.txt"), listing);
+  check("a live connection never prompts again", !ops(await log()).includes("ssh.password"));
 
   // A server without password logins is refused without asking.
   await ev("projects-panel", "showSsh");
@@ -64,7 +64,9 @@ async function run(ctx) {
   await ev("projects-panel", "hideAdd");
 
   // After losing the connection, background work must not prompt; a click does.
-  await T("test.exec", { argv: ["pkill", "-f", `ssh -M -N .* -p ${port} `], cwd: "/" });
+  // The connection lives in this process: end it on the server side (that sshd's per-connection children).
+  const sshdPid = (await T("test.readFile", { path: `${data.replace(/\/data$/, "")}/${port}.pid` })).trim();
+  await T("test.exec", { argv: ["pkill", "-TERM", "-P", sshdPid], cwd: "/" });
   await until(async () => { await call("projects", "refresh", { projectId: pr.id }); return (await project(pr.id))?.needsPassword; }, 15000, 300);
   check("background work reports a lock", (await project(pr.id))?.needsPassword === true, await project(pr.id));
   check("background work never prompts", !ops(await log()).includes("ssh.password"));

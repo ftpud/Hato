@@ -7,10 +7,11 @@ projects on the Windows filesystem, and there is no Windows daemon or Windows-si
 ## Requirements
 
 * Windows 10 version 1903 or later, or Windows 11 (64-bit x86), with Direct3D 11.
-* WSL with at least one distribution (`wsl --install`). In that distribution:
+* For WSL projects: WSL with at least one distribution (`wsl --install`). In that distribution:
   * `git`, and the `openssh-sftp-server` package, which Hato uses for file access (often already present).
-  * `openssh-client`, for SSH projects: Windows' own OpenSSH has no connection multiplexing, so Hato uses the client in
-    the **default** distribution. Its `~/.ssh` keys, agent and `known_hosts` apply, and key paths are Linux paths.
+* SSH projects need no WSL: Hato has its own SSH client. It uses the Windows side's `%USERPROFILE%\.ssh` (keys and
+  `known_hosts`), the Windows OpenSSH agent service or Pageant, and key paths are Windows paths. Keys kept only in a
+  WSL distribution's `~/.ssh` must be copied there or added to the agent.
 
 ## Install and launch
 
@@ -28,10 +29,10 @@ A WSL project is a machine like an SSH host: `SshProfile.transport: "wsl"` keeps
 
 | Channel | SSH host | WSL distribution |
 | --- | --- | --- |
-| Command, PTY | `ssh` over ControlMaster | `wsl.exe -d <distro> --exec /bin/sh -c …` (ConPTY for terminals) |
+| Command, PTY | channels of the built-in SSH connection | `wsl.exe -d <distro> --exec /bin/sh -c …` (ConPTY for terminals) |
 | Files | SFTP subsystem | the distribution's `sftp-server` over the same pipe |
 | Daemon | Linux `hato` uploaded, `daemon ensure` | the same |
-| Forward to a Windows listener | `ssh -R` to a relay in the default distribution, then the relay | `hato daemon forward` relay |
+| Forward to a Windows listener | SSH reverse forward, connected to Windows' loopback directly | `hato daemon forward` relay |
 
 WSL2 does not share `127.0.0.1` with Windows under its default networking, so forwards go through a relay
 (`kernel/src/host/relay.rs`) over `wsl.exe`'s stdio. Linux daemons come with the package.

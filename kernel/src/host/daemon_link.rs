@@ -10,7 +10,8 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::PathBuf;
-use std::process::{Child, ChildStdin, Command, Stdio};
+use crate::host::stdio::{ProcHandle, Spawned};
+use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -50,8 +51,8 @@ impl DaemonTable {
 /// A long-lived `hato daemon ctl --stream` channel. Starting a channel per request costs a process
 /// launch locally (a `wsl.exe` on Windows, often hundreds of ms) plus one on the machine.
 struct CtlLink {
-    child: Mutex<Child>,
-    stdin: Mutex<ChildStdin>,
+    child: Mutex<ProcHandle>,
+    stdin: Mutex<Box<dyn Write + Send>>,
     pending: Arc<Mutex<HashMap<u64, crossbeam_channel::Sender<Value>>>>,
     next_id: AtomicU64,
     dead: Arc<AtomicBool>,
@@ -60,10 +61,12 @@ struct CtlLink {
 impl CtlLink {
     /// Start the channel and wait for its `ready` line. A daemon binary without `ctl-stream` exits
     /// with a usage error instead, which fails here (`EUNSUPPORTED`).
-    fn start(mut cmd: Command) -> HResult<CtlLink> {
-        cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
-        let mut child = cmd.spawn().map_err(|e| HostError::new("ENOEXEC", format!("daemon ctl: {e}")))?;
-        let (stdin, stdout) = (child.stdin.take().unwrap(), child.stdout.take().unwrap());
+    fn start(mut p: Spawned) -> HResult<CtlLink> {
+        let (stdin, stdout) = (p.stdin.take().unwrap(), p.stdout.take().unwrap());
+        if let Some(mut e) = p.stderr.take() {
+            std::thread::spawn(move || { let _ = std::io::copy(&mut e, &mut std::io::sink()); });
+        }
+        let child = p.handle;
         let pending: Arc<Mutex<HashMap<u64, crossbeam_channel::Sender<Value>>>> = Default::default();
         let dead = Arc::new(AtomicBool::new(false));
         let (p, d) = (pending.clone(), dead.clone());
@@ -84,7 +87,7 @@ impl CtlLink {
         });
         let link = CtlLink { child: Mutex::new(child), stdin: Mutex::new(stdin), pending, next_id: AtomicU64::new(1), dead };
         reader.map_err(HostError::io)?;
-        // Generous: on Windows this includes starting `wsl.exe` and an SSH session.
+        // Generous: on Windows a WSL channel includes starting `wsl.exe`.
         match ready_rx.recv_timeout(Duration::from_secs(30)) {
             Ok(()) => Ok(link),
             Err(_) => Err(HostError::new("EUNSUPPORTED", "the daemon binary has no ctl-stream (rebuild it)")), // `link` drops: killed
@@ -121,9 +124,7 @@ impl CtlLink {
 
 impl Drop for CtlLink {
     fn drop(&mut self) {
-        let mut c = self.child.lock();
-        let _ = c.kill();
-        let _ = c.wait();
+        self.child.lock().kill();
     }
 }
 
@@ -153,17 +154,7 @@ pub fn binary_for(data_dir: &std::path::Path, repo_root: &std::path::Path, os: &
 }
 
 fn run_ssh(master: &SshMaster, remote: &str, stdin: Option<&[u8]>, timeout: Duration) -> HResult<(i32, String, String)> {
-    let mut c = master.remote_command(remote);
-    c.stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() }).stdout(Stdio::piped()).stderr(Stdio::piped());
-    let mut child = c.spawn().map_err(|e| HostError::new("ENOEXEC", format!("ssh: {e}")))?;
-    if let (Some(data), Some(mut w)) = (stdin, child.stdin.take()) {
-        let data = data.to_vec();
-        std::thread::spawn(move || { let _ = w.write_all(&data); });
-    }
-    let (tx, rx) = crossbeam_channel::bounded(1);
-    std::thread::spawn(move || { let _ = tx.send(child.wait_with_output()); });
-    let out = rx.recv_timeout(timeout).map_err(|_| HostError::new("ETIMEDOUT", "remote command timed out"))?.map_err(HostError::io)?;
-    Ok((out.status.code().unwrap_or(-1), String::from_utf8_lossy(&out.stdout).into_owned(), String::from_utf8_lossy(&out.stderr).into_owned()))
+    master.exec(remote)?.collect(stdin, timeout)
 }
 
 /// Upload the matching daemon binary if the machine lacks it. Returns (binary, daemon home).
@@ -221,19 +212,8 @@ pub fn forward_reverse(master: &Arc<SshMaster>, local_port: u16, data_dir: &std:
         let (bin, _) = install(master, data_dir, repo_root)?;
         return master.relay_from_wsl(local_port, &bin);
     }
-    #[cfg(windows)]
-    {
-        let hop = SshMaster::new(crate::host::ssh::SshProfile { profile_id: "wsl-default".into(), host: String::new(), port: 22, user: "default".into(), identity_file: None, transport: Some("wsl".into()), auth: None });
-        hop.connect_default_distribution()?;
-        let (bin, _) = install(&hop, data_dir, repo_root)?;
-        let hop_port = hop.relay_from_wsl(local_port, &bin)?;
-        return master.forward_through_wsl(hop, hop_port);
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = (data_dir, repo_root);
-        master.forward_reverse(local_port)
-    }
+    // SSH: the built-in client connects forwarded channels to this machine's loopback directly.
+    master.forward_reverse(local_port)
 }
 
 /// Start the daemon on this machine (terminals/processes then survive app restarts).
@@ -268,15 +248,15 @@ fn ctl_link(table: &DaemonTable, info: &DaemonInfo, master: Option<&Arc<SshMaste
     if table.no_stream.lock().contains(&binary) {
         return Err(HostError::new("EUNSUPPORTED", "the daemon binary has no ctl-stream"));
     }
-    let cmd = match master {
-        Some(m) => m.remote_command(&format!("{} daemon ctl-stream --dir {}", sh_quote(&info.bin), sh_quote(&info.dir))),
+    let proc = match master {
+        Some(m) => m.exec(&format!("{} daemon ctl-stream --dir {}", sh_quote(&info.bin), sh_quote(&info.dir)))?,
         None => {
             let mut c = crate::util::command(&info.bin);
             c.args(["daemon", "ctl-stream", "--dir", &info.dir]);
-            c
+            Spawned::spawn(c, "daemon ctl")?
         }
     };
-    let l = Arc::new(CtlLink::start(cmd).inspect_err(|e| {
+    let l = Arc::new(CtlLink::start(proc).inspect_err(|e| {
         if e.code == "EUNSUPPORTED" {
             table.no_stream.lock().insert(binary);
         }

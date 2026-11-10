@@ -3,8 +3,8 @@
 //! deploying small helper files.
 use crate::util::{HResult, HostError};
 use parking_lot::Mutex;
+use crate::host::stdio::{ProcHandle, Spawned};
 use std::io::{Read, Write};
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
 const FXP_INIT: u8 = 1;
 const FXP_VERSION: u8 = 2;
@@ -48,9 +48,9 @@ impl Attrs {
 }
 
 struct Conn {
-    child: Child,
-    w: ChildStdin,
-    r: ChildStdout,
+    child: ProcHandle,
+    w: Box<dyn Write + Send>,
+    r: Box<dyn Read + Send>,
     next_id: u32,
     dead: bool,
 }
@@ -114,12 +114,15 @@ fn status_err(code: u32, msg: String) -> HostError {
 }
 
 impl Sftp {
-    pub fn start(mut cmd: Command) -> HResult<Sftp> {
-        cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
-        let mut child = cmd.spawn().map_err(|e| HostError::new("ENOEXEC", format!("sftp subsystem: {e}")))?;
-        let w = child.stdin.take().unwrap();
-        let r = child.stdout.take().unwrap();
-        let mut c = Conn { child, w, r, next_id: 1, dead: false };
+    /// Speak SFTP over a started `sftp-server` (an SSH subsystem channel or a local program).
+    pub fn start(mut p: Spawned) -> HResult<Sftp> {
+        let w = p.stdin.take().ok_or_else(|| HostError::new("EPROTO", "sftp: no input pipe"))?;
+        let r = p.stdout.take().ok_or_else(|| HostError::new("EPROTO", "sftp: no output pipe"))?;
+        // Nobody reads stderr: drain it so a chatty server cannot block on a full pipe.
+        if let Some(mut e) = p.stderr.take() {
+            std::thread::spawn(move || { let _ = std::io::copy(&mut e, &mut std::io::sink()); });
+        }
+        let mut c = Conn { child: p.handle, w, r, next_id: 1, dead: false };
         let mut init = Buf::new(FXP_INIT);
         init.u32(3);
         Self::send(&mut c, &init.0)?;
@@ -344,8 +347,6 @@ impl Sftp {
 
 impl Drop for Sftp {
     fn drop(&mut self) {
-        let mut c = self.conn.lock();
-        let _ = c.child.kill();
-        let _ = c.child.wait();
+        self.conn.lock().child.kill();
     }
 }

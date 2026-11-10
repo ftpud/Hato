@@ -9,6 +9,8 @@ mod pty_output;
 pub mod sftp;
 pub mod relay;
 pub mod ssh;
+pub mod sshc;
+pub mod stdio;
 pub mod wsl;
 pub mod streams;
 

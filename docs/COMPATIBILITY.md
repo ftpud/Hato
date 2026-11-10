@@ -8,9 +8,9 @@
 | gpui-component | `=0.8.1`, feature `tree-sitter-languages` | Native `Editor` (read-only, Tree-sitter highlighting), `Input`/`Textarea`, `Button`, dropdown menus, `Checkbox` |
 | QuickJS | `rquickjs =0.14.0` (`std`) | One `Runtime` + `Context` per module generation, own OS thread, explicit job pump |
 | SQLite | `rusqlite =0.41.1` (`bundled`, `limits`) | One DB file per namespace; `ATTACH` disabled |
-| PTY | `portable-pty =0.9.0` | Local PTYs; remote PTYs are `ssh -tt` running inside a local PTY |
+| PTY | `portable-pty =0.9.0` | Local PTYs; remote PTYs are PTY channels of the SSH connection |
 | Terminal emulator | `alacritty_terminal =0.26.0` (vte 0.15) | Grid + parser in the kernel, custom GPUI paint element |
-| SSH | **system OpenSSH client** (ControlMaster multiplexing) | See below |
+| SSH | built-in client: `russh 0.65.1` (`ring` crypto), on a small tokio runtime | See below |
 | SFTP | own SFTP v3 client (kernel/src/host/sftp.rs) over the `sftp` subsystem | realpath, stat, readdir, read, atomic write (posix-rename) |
 | TS build | `esbuild 0.24.2`, `typescript 5.7.3` (typecheck only) | Dev-time only; artifacts are plain ESM run by QuickJS |
 | Node.js | 20.17 (dev machine) | Build tooling, the tiny MCP stdio proxy, and Node-based ACP adapters; never embedded |
@@ -27,24 +27,35 @@
   Remote Linux SSH hosts are expected to work (POSIX-only remote commands, SFTP), but were not available.
 * **Deferred:** native projects on Windows, a Windows daemon, and remote Windows over SSH.
 
-## Why OpenSSH instead of libssh2
+## SSH: built-in client
 
 The specification allows "a pinned compatible `ssh2`/libssh2 implementation **or equivalent**". The kernel
-uses the system OpenSSH client with a per-profile ControlMaster:
+uses `russh` (`kernel/src/host/sshc.rs`): one authenticated connection per machine, and every command, terminal,
+SFTP session and reverse forward is a channel on it, opened in-process. Earlier versions spawned the system
+OpenSSH client per channel over a ControlMaster; Windows' OpenSSH has no ControlMaster, so that went through
+`wsl.exe`, costing hundreds of milliseconds per operation on slow machines.
 
-* honours `~/.ssh/config`, ssh-agent, key files and **known_hosts verification** (unknown keys go through a
-  native trust approval and `StrictHostKeyChecking=accept-new`; changed keys are always rejected);
-* concurrent multiplexed channels (exec, PTY, SFTP subsystem, `-O forward -R 127.0.0.1:0:…` reverse
-  forwards) without libssh2's global session lock issues in blocking mode;
-* only a key *path* may be stored, never key material or a password. The one credential that passes through
+* **Host keys:** `~/.ssh/known_hosts` (plus `known_hosts2` and the system file, read-only), including hashed
+  names, wildcards and negations. An unknown key needs a native approval that shows its SHA256 fingerprint; the
+  approved key is appended to `~/.ssh/known_hosts`. A changed key is always rejected. `HATO_SSH_KNOWN_HOSTS`
+  replaces the files (tests).
+* **Keys:** the SSH agent (`SSH_AUTH_SOCK`; on Windows the OpenSSH agent service, then Pageant), then
+  `~/.ssh/id_ed25519`, `id_ecdsa`, `id_rsa`. A profile's key file is offered alone. Passphrase-protected key files
+  work through the agent only. Host certificates and user certificates are not supported.
+* **Not read:** `~/.ssh/config`. Host aliases, `ProxyJump`, `ProxyCommand` and per-host options do not apply; enter
+  the real host name, user and port in the profile.
+* **Sessions:** OpenSSH servers allow 10 sessions per connection (`MaxSessions`). When they are all in use, a key
+  login opens up to three more connections; a password login waits up to 10 s for one to end.
+* **Flow control:** channel output is drained into memory as it arrives, so one slow reader cannot stall the
+  connection's other channels.
+* Only a key *path* may be stored, never key material or a password. The one credential that passes through
   Hato is a password you choose to use for a profile: see below.
 
 Password logins stay inside the kernel. A native prompt collects the password, so modules, the database and the audit log
-never see it, and it is kept only until the connection is up. It reaches OpenSSH through the stdin of a small `SSH_ASKPASS`
-script, never a command line, environment variable or file. A credential-free probe runs first, so a password is only sent
-after the host key has matched `known_hosts`. The master authenticates once and every other channel multiplexes over it.
-Only a user gesture can prompt: adding the project or selecting it. Other connection attempts fail with `ENEEDAUTH`.
-Requires OpenSSH on the client side; memory holding the text in the UI toolkit's input is not guaranteed to be wiped.
+never see it, and it is kept only until the connection is up. The host key is verified before it is sent, with
+`password` or, when the server offers only that, `keyboard-interactive`. Only a user gesture can prompt: adding the
+project or selecting it. Other connection attempts fail with `ENEEDAUTH`. Memory holding the text in the UI toolkit's
+input is not guaranteed to be wiped.
 
 All remote command lines are built by one audited POSIX quoting adapter (`kernel/src/quoting.rs`).
 

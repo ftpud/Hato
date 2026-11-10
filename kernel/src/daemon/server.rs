@@ -365,7 +365,7 @@ impl Daemon {
             None => {
                 let cwd = args["cwd"].as_str().map(str::to_owned).or_else(|| dirs::home_dir().map(|h| h.to_string_lossy().into_owned())).unwrap_or_else(|| "/".into());
                 let shell = args["shell"].as_str().map(str::to_owned).or_else(|| std::env::var("SHELL").ok()).unwrap_or_else(|| "/bin/sh".into());
-                let spec = PtySpec { program: shell, args: vec!["-l".into()], cwd: Some(cwd.clone()), env: vec![], cols, rows, machine_id: "daemon".into(), display_cwd: cwd.clone(), answer_queries: true };
+                let spec = PtySpec { remote: None, program: shell, args: vec!["-l".into()], cwd: Some(cwd.clone()), env: vec![], cols, rows, machine_id: "daemon".into(), display_cwd: cwd.clone(), answer_queries: true };
                 match pty::open(spec) {
                     Ok(sess) => {
                         let h = Arc::new(PtyHolder { sess, attach: AtomicU64::new(0), attached: AtomicBool::new(false), cwd, created_ms: now_ms() });

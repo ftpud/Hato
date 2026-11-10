@@ -1,7 +1,7 @@
 //! `wsl.exe` adapter: the Windows desktop reaches Linux workspaces through it.
 //!
-//! Windows OpenSSH has no ControlMaster, so on Windows the `SshMaster` either runs its channels
-//! directly in a distribution (`transport: "wsl"`) or runs the distribution's own OpenSSH client.
+//! With `transport: "wsl"` the `SshMaster` runs its channels directly in a distribution. (SSH hosts
+//! use the built-in client and do not involve WSL.)
 //! `--exec` passes argv through unmodified: no shell of `wsl.exe` re-parses the arguments.
 use crate::util::{HResult, HostError};
 use std::process::Command;

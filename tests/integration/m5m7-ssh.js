@@ -75,8 +75,7 @@ async function run(ctx) {
   const conv = await call("ai-sessions", "create", { workspaceId: wsR, profileId: "test-agent" });
   const st = await call("ai-sessions", "connect", { conversationId: conv.id }, { timeoutMs: 300000 });
   check("remote ACP session established on SSH machine", st.status === "ready" && st.machineId === sel.machineId && st.cwd === R, { status: st.status, machineId: st.machineId, cwd: st.cwd, error: st.error });
-  const localSide = await ancestry(st.pid);
-  check("local side of agent transport is the ssh client (no local agent)", /ssh$/.test(localSide[0] || ""), localSide);
+  check("agent transport is an in-process SSH channel (no local process)", !st.pid, st.pid);
   const pg = await T("test.exec", { argv: ["pgrep", "-f", exe], cwd: "/" });
   const chains = [];
   for (const pid of pg.stdout.trim().split(/\s+/).filter(Boolean)) {
@@ -114,8 +113,10 @@ async function run(ctx) {
   // ---- SSH offline: never a silent local fallback; reconnect afterwards
   const pidfile = await T("test.env", { name: "HATO_T_SSHD_PIDFILE" });
   const sshdPid = (await T("test.readFile", { path: pidfile })).trim();
+  // The connections live in this process: end them on the server side (the test sshd's
+  // per-connection children), then stop its listener.
+  await T("test.exec", { argv: ["pkill", "-TERM", "-P", sshdPid], cwd: "/" });
   await T("test.exec", { argv: ["kill", sshdPid], cwd: "/" });
-  await T("test.exec", { argv: ["pkill", "-f", "hato-ssh-"], cwd: "/" }); // drop ControlMaster connections
   await sleep(800);
   let offErr = null;
   try { await call("files", "list", { workspaceId: wsR, relativeDir: "." }); } catch (e) { offErr = e.message; }

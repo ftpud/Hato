@@ -3,13 +3,15 @@
 //! dead SSH master is an error — there is never a local fallback.
 use crate::grants::Target;
 use crate::host::ssh::SshMaster;
+use crate::host::stdio::{ProcHandle, Spawned};
 use crate::host::streams::ByteStream;
 use crate::quoting;
 use crate::util::{HResult, HostError};
 use parking_lot::{Condvar, Mutex};
 use serde_json::{json, Value};
 use std::io::{Read, Write};
-use std::process::{Child, ChildStdin, Stdio};
+#[cfg(not(unix))]
+use std::process::Stdio;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -27,8 +29,8 @@ pub struct ProcessRes {
     pub pid: u32,
     pub machine_id: String,
     pub description: String,
-    pub child: Mutex<Option<Child>>,
-    pub stdin: Mutex<Option<ChildStdin>>,
+    pub child: Mutex<Option<ProcHandle>>,
+    pub stdin: Mutex<Option<Box<dyn Write + Send>>>,
     pub stdout: Arc<ByteStream>,
     pub stderr: Arc<ByteStream>,
     pub exit: Mutex<Option<ExitInfo>>,
@@ -55,14 +57,22 @@ pub struct SpawnSpec {
 }
 
 pub fn spawn(spec: SpawnSpec) -> HResult<Arc<ProcessRes>> {
-    let mut cmd = match &spec.target {
+    let local = |mut c: std::process::Command| {
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            c.process_group(0);
+        }
+        Spawned::spawn(c, &spec.executable)
+    };
+    let mut p = match &spec.target {
         Target::Local if spec.persist.is_some() => {
             let p = spec.persist.clone().unwrap();
             let sh = quoting::remote_command(&spec.cwd, &spec.executable, &spec.args, &spec.env, &spec.env_remove, spec.login_shell)
                 .map_err(HostError::invalid)?;
             let mut c = crate::util::command(&p.bin);
             c.args(["daemon", "proc-attach", "--dir", &p.dir, "--key", &p.key, "--cwd", &spec.cwd, "--sh", &sh]);
-            c
+            local(c)?
         }
         Target::Local => {
             let mut c = crate::util::command(&spec.executable);
@@ -73,7 +83,7 @@ pub fn spawn(spec: SpawnSpec) -> HResult<Arc<ProcessRes>> {
             for k in &spec.env_remove {
                 c.env_remove(k);
             }
-            c
+            local(c)?
         }
         Target::Ssh { .. } => {
             let ssh = spec.ssh.as_ref().ok_or_else(|| HostError::new("ENOTCONN", "SSH connection unavailable"))?;
@@ -83,28 +93,20 @@ pub fn spawn(spec: SpawnSpec) -> HResult<Arc<ProcessRes>> {
             if let Some(p) = &spec.persist {
                 remote = format!("{} daemon proc-attach --dir {} --key {} --cwd {} --sh {}", quoting::sh_quote(&p.bin), quoting::sh_quote(&p.dir), quoting::sh_quote(&p.key), quoting::sh_quote(&spec.cwd), quoting::sh_quote(&remote));
             }
-            ssh.remote_command(&remote)
+            ssh.exec(&remote)?
         }
     };
-    cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        cmd.process_group(0);
-    }
-    let mut child = cmd.spawn().map_err(|e| HostError::new("ENOEXEC", format!("failed to start {}: {e}", spec.executable)))?;
-    let pid = child.id();
+    let pid = p.handle.id();
     let stdout = ByteStream::new(format!("{}:stdout", spec.executable), false);
     let stderr = ByteStream::new(format!("{}:stderr", spec.executable), true);
-    let mut out = child.stdout.take().unwrap();
-    let mut err = child.stderr.take().unwrap();
-    let stdin = child.stdin.take();
+    let mut out = p.stdout.take().unwrap();
+    let mut err = p.stderr.take().unwrap();
     let res = Arc::new(ProcessRes {
         pid,
         machine_id: spec.target.machine_id(),
         description: format!("{} {}", spec.executable, spec.args.join(" ")),
-        child: Mutex::new(Some(child)),
-        stdin: Mutex::new(stdin),
+        child: Mutex::new(Some(p.handle)),
+        stdin: Mutex::new(p.stdin.take()),
         stdout: stdout.clone(),
         stderr: stderr.clone(),
         exit: Mutex::new(None),
@@ -122,15 +124,8 @@ pub fn spawn(spec: SpawnSpec) -> HResult<Arc<ProcessRes>> {
             }
         };
         match st {
-            Ok(Some(status)) => {
-                #[cfg(unix)]
-                let signal = {
-                    use std::os::unix::process::ExitStatusExt;
-                    status.signal()
-                };
-                #[cfg(not(unix))]
-                let signal = None;
-                *r2.exit.lock() = Some(ExitInfo { code: status.code(), signal });
+            Ok(Some(exit)) => {
+                *r2.exit.lock() = Some(exit);
                 r2.exit_cv.notify_all();
                 return;
             }
@@ -169,6 +164,18 @@ impl ProcessRes {
     }
     pub fn close_stdin(&self) { self.stdin.lock().take(); }
     pub fn terminate(&self, signal: Option<&str>) -> HResult<()> {
+        // A program on an SSH channel: signal it, then close the channel (as ending the old
+        // per-process `ssh` client did), which also detaches a daemon-held process.
+        let channel = match self.child.lock().as_ref() {
+            Some(ProcHandle::Channel(c)) => Some(c.clone()),
+            _ => None,
+        };
+        if let Some(c) = channel {
+            if self.exit.lock().is_none() {
+                c.terminate(signal.unwrap_or("TERM"));
+            }
+            return Ok(());
+        }
         #[cfg(unix)]
         {
             let sig = match signal.unwrap_or("TERM") {

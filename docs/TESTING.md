@@ -21,6 +21,11 @@ tests/integration/run-integration.sh tests/integration/m6m8-acp-local.js /tmp/ha
 
 ## SSH suite with a throwaway user-level sshd
 
+`cargo test --no-default-features --test ssh_builtin` checks the built-in SSH client on its own: it starts a
+user-level `/usr/sbin/sshd` on a free loopback port with everything in a temp directory (skipped without
+`sshd`), then covers host key trust, key login, commands, SFTP, terminals, signals, session limits and
+reverse forwards. The suite below runs the whole app against such a server.
+
 ```sh
 D=/tmp/hato-sshd; mkdir -p $D; cd $D
 ssh-keygen -q -t ed25519 -N "" -f host_key; ssh-keygen -q -t ed25519 -N "" -f client_key

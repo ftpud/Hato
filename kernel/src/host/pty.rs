@@ -1,6 +1,8 @@
 //! PTY sessions with a native terminal emulator (alacritty_terminal) owned by the kernel.
 //! PTY bytes are parsed and rendered natively; modules can explicitly read bounded output by cursor.
 //! Sessions are independent of module generations and survive TS hot-swaps.
+use crate::host::ssh::SshMaster;
+use crate::host::stdio::ProcHandle;
 use crate::util::{HResult, HostError};
 use alacritty_terminal::event::{Event, EventListener};
 use alacritty_terminal::grid::Dimensions;
@@ -53,8 +55,7 @@ pub struct PtySession {
     pub term: Mutex<Term<Listener>>,
     processor: Mutex<Processor>,
     writer: SharedWriter,
-    master: Mutex<Box<dyn MasterPty + Send>>,
-    child: Mutex<Box<dyn Child + Send + Sync>>,
+    backend: Mutex<Backend>,
     pub exit: Mutex<Option<String>>,
     pub size: Mutex<TermDims>,
     pub title: Arc<Mutex<String>>,
@@ -67,7 +68,23 @@ pub struct PtySession {
     pub bytes_in: std::sync::atomic::AtomicU64,
 }
 
+/// Where the terminal's program runs.
+enum Backend {
+    /// A local pseudo-terminal (openpty / ConPTY) and its child.
+    Local { master: Box<dyn MasterPty + Send>, child: Box<dyn Child + Send + Sync> },
+    /// A PTY channel on a built-in SSH connection.
+    Remote(ProcHandle),
+}
+
+/// A terminal on an SSH machine: `command` runs on a remote PTY of `master`'s connection.
+pub struct RemotePty {
+    pub master: Arc<SshMaster>,
+    pub command: String,
+}
+
 pub struct PtySpec {
+    /// When set, `program`/`args`/`cwd`/`env` are unused.
+    pub remote: Option<RemotePty>,
     pub program: String,
     pub args: Vec<String>,
     pub cwd: Option<String>,
@@ -83,26 +100,37 @@ pub struct PtySpec {
 
 pub fn open(spec: PtySpec) -> HResult<Arc<PtySession>> {
     let spec_answers = spec.answer_queries;
-    let sys = native_pty_system();
     let cols = spec.cols.clamp(10, 1000);
     let rows = spec.rows.clamp(3, 500);
-    let pair = sys
-        .openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
-        .map_err(|e| HostError::new("EPTY", format!("openpty: {e}")))?;
-    let mut cmd = CommandBuilder::new(&spec.program);
-    cmd.args(&spec.args);
-    if let Some(cwd) = &spec.cwd {
-        cmd.cwd(cwd);
-    }
-    cmd.env("TERM", "xterm-256color");
-    cmd.env("COLORTERM", "truecolor");
-    for (k, v) in &spec.env {
-        cmd.env(k, v);
-    }
-    let child = pair.slave.spawn_command(cmd).map_err(|e| HostError::new("ENOEXEC", format!("spawn {}: {e}", spec.program)))?;
-    drop(pair.slave);
-    let mut reader = pair.master.try_clone_reader().map_err(|e| HostError::new("EPTY", e.to_string()))?;
-    let writer: SharedWriter = Arc::new(Mutex::new(pair.master.take_writer().map_err(|e| HostError::new("EPTY", e.to_string()))?));
+    let (backend, mut reader, writer, description, local) = match &spec.remote {
+        Some(r) => {
+            let mut p = r.master.exec_pty(&r.command, cols, rows)?;
+            let reader = p.stdout.take().unwrap();
+            let writer = p.stdin.take().unwrap();
+            (Backend::Remote(p.handle), reader, writer, format!("{} (ssh)", r.command), false)
+        }
+        None => {
+            let pair = native_pty_system()
+                .openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
+                .map_err(|e| HostError::new("EPTY", format!("openpty: {e}")))?;
+            let mut cmd = CommandBuilder::new(&spec.program);
+            cmd.args(&spec.args);
+            if let Some(cwd) = &spec.cwd {
+                cmd.cwd(cwd);
+            }
+            cmd.env("TERM", "xterm-256color");
+            cmd.env("COLORTERM", "truecolor");
+            for (k, v) in &spec.env {
+                cmd.env(k, v);
+            }
+            let child = pair.slave.spawn_command(cmd).map_err(|e| HostError::new("ENOEXEC", format!("spawn {}: {e}", spec.program)))?;
+            drop(pair.slave);
+            let reader = pair.master.try_clone_reader().map_err(|e| HostError::new("EPTY", e.to_string()))?;
+            let writer = pair.master.take_writer().map_err(|e| HostError::new("EPTY", e.to_string()))?;
+            (Backend::Local { master: pair.master, child }, reader, writer, format!("{} {}", spec.program, spec.args.join(" ")), true)
+        }
+    };
+    let writer: SharedWriter = Arc::new(Mutex::new(writer));
     let title = Arc::new(Mutex::new(String::new()));
     let listener = Listener { writer: writer.clone(), title: title.clone(), answer_queries: spec.answer_queries };
     let dims = TermDims { cols: cols as usize, rows: rows as usize };
@@ -111,14 +139,13 @@ pub fn open(spec: PtySpec) -> HResult<Arc<PtySession>> {
         term: Mutex::new(term),
         processor: Mutex::new(Processor::new()),
         writer,
-        master: Mutex::new(pair.master),
-        child: Mutex::new(child),
+        backend: Mutex::new(backend),
         exit: Mutex::new(None),
         size: Mutex::new(dims),
         title,
         machine_id: spec.machine_id,
         cwd: spec.display_cwd,
-        description: format!("{} {}", spec.program, spec.args.join(" ")),
+        description,
         dirty: AtomicBool::new(true),
         notify: Mutex::new(None),
         output: Default::default(),
@@ -127,7 +154,7 @@ pub fn open(spec: PtySpec) -> HResult<Arc<PtySession>> {
     let s2 = sess.clone();
     // ConPTY opens with a cursor position query and stays silent until it is answered. The session
     // answers it unless it is a relay, whose far end cannot: it only answers for the far program.
-    let mut conpty_query_pending = cfg!(windows) && !spec_answers;
+    let mut conpty_query_pending = cfg!(windows) && local && !spec_answers;
     std::thread::Builder::new()
         .name("pty-reader".into())
         .spawn(move || {
@@ -146,7 +173,14 @@ pub fn open(spec: PtySpec) -> HResult<Arc<PtySession>> {
                     Err(_) => break,
                 }
             }
-            let status = s2.child.lock().wait().map(|s| format!("exited with code {}", s.exit_code())).unwrap_or_else(|e| format!("exited ({e})"));
+            let status = match &mut *s2.backend.lock() {
+                Backend::Local { child, .. } => child.wait().map(|s| format!("exited with code {}", s.exit_code())).unwrap_or_else(|e| format!("exited ({e})")),
+                Backend::Remote(h) => match h.wait(Some(std::time::Duration::from_secs(5))) {
+                    Some(e) if e.code.is_some() => format!("exited with code {}", e.code.unwrap_or(0)),
+                    Some(e) if e.signal.is_some() => format!("exited (signal {})", e.signal.unwrap_or(0)),
+                    _ => "exited (connection closed)".to_string(),
+                },
+            };
             *s2.exit.lock() = Some(status.clone());
             s2.feed(format!("\r\n\x1b[1;31m[process {status}]\x1b[0m\r\n").as_bytes());
         })
@@ -195,16 +229,22 @@ impl PtySession {
             *s = TermDims { cols: cols as usize, rows: rows as usize };
         }
         self.term.lock().resize(TermDims { cols: cols as usize, rows: rows as usize });
-        self.master
-            .lock()
-            .resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
-            .map_err(|e| HostError::new("EPTY", e.to_string()))?;
+        match &*self.backend.lock() {
+            Backend::Local { master, .. } => master
+                .resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
+                .map_err(|e| HostError::new("EPTY", e.to_string()))?,
+            Backend::Remote(ProcHandle::Channel(c)) => c.resize(cols, rows),
+            Backend::Remote(_) => {}
+        }
         self.dirty.store(true, Ordering::SeqCst);
         Ok(())
     }
 
     pub fn kill(&self) {
-        let _ = self.child.lock().kill();
+        match &mut *self.backend.lock() {
+            Backend::Local { child, .. } => { let _ = child.kill(); }
+            Backend::Remote(h) => h.kill(),
+        }
     }
 
     pub fn is_exited(&self) -> bool { self.exit.lock().is_some() }

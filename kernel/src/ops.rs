@@ -445,9 +445,9 @@ fn dispatch(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: &Value) -> H
                     let sh = shell.map(|s| s.to_string()).or_else(|| std::env::var("SHELL").ok()).unwrap_or_else(|| if cfg!(windows) { "powershell.exe".into() } else { "/bin/sh".into() });
                     let login = if cfg!(windows) { vec![] } else { vec!["-l".to_string()] };
                     match &persist {
-                        Some(p) => PtySpec { program: p.bin.clone(), args: vec!["daemon".into(), "pty-attach".into(), "--dir".into(), p.dir.clone(), "--key".into(), p.key.clone(), "--cwd".into(), real.clone(), "--shell".into(), sh],
+                        Some(p) => PtySpec { remote: None, program: p.bin.clone(), args: vec!["daemon".into(), "pty-attach".into(), "--dir".into(), p.dir.clone(), "--key".into(), p.key.clone(), "--cwd".into(), real.clone(), "--shell".into(), sh],
                             cwd: Some(real.clone()), env: env_pairs(req)?, cols, rows, machine_id: "local".into(), display_cwd: real, answer_queries: false },
-                        None => PtySpec { program: sh, args: login, cwd: Some(real.clone()), env: env_pairs(req)?, cols, rows, machine_id: "local".into(), display_cwd: real, answer_queries: true },
+                        None => PtySpec { remote: None, program: sh, args: login, cwd: Some(real.clone()), env: env_pairs(req)?, cols, rows, machine_id: "local".into(), display_cwd: real, answer_queries: true },
                     }
                 }
                 Target::Ssh { machine_id, .. } => {
@@ -463,8 +463,14 @@ fn dispatch(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: &Value) -> H
                             shell.map(|s| format!(" --shell {}", sh_quote(s))).unwrap_or_default()),
                         None => crate::quoting::remote_shell(&real, shell),
                     };
-                    let (program, pty_args) = master.pty_command(&remote);
-                    PtySpec { program, args: pty_args, cwd: None, env: vec![], cols, rows, machine_id: machine_id.clone(), display_cwd: real, answer_queries: persist.is_none() }
+                    let answer_queries = persist.is_none();
+                    if master.is_wsl() {
+                        let (program, pty_args) = master.wsl_pty_command(&remote);
+                        PtySpec { remote: None, program, args: pty_args, cwd: None, env: vec![], cols, rows, machine_id: machine_id.clone(), display_cwd: real, answer_queries }
+                    } else {
+                        PtySpec { remote: Some(pty::RemotePty { master: master.clone(), command: remote }), program: String::new(), args: vec![], cwd: None, env: vec![],
+                            cols, rows, machine_id: machine_id.clone(), display_cwd: real, answer_queries }
+                    }
                 }
             };
             let sess = pty::open(spec)?;

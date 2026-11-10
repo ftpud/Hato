@@ -1,23 +1,21 @@
-//! SSH primitive built on the system OpenSSH client with a per-profile ControlMaster.
+//! Connections to workspace machines, identified by a kernel-derived machine id `ssh:<profileId>`.
 //!
-//! Why OpenSSH rather than libssh2: it honours the user's ~/.ssh/config, agent, keys and
-//! known_hosts verification; multiplexed channels (exec, PTY, SFTP subsystem, reverse forwards)
-//! run concurrently without the global-session locking issues of blocking libssh2. The spec allows
-//! "ssh2/libssh2 or equivalent"; this is documented in docs/COMPATIBILITY.md.
+//! SSH hosts use the built-in client (`host::sshc`): one authenticated connection per machine,
+//! with commands, terminals, SFTP and reverse forwards as channels on it. It reads the user's
+//! known_hosts, SSH agent and key files, but not `~/.ssh/config` (see docs/COMPATIBILITY.md).
+//! `transport: "wsl"` runs the same channels in a WSL distribution through `wsl.exe`, without SSH.
 //!
 //! The kernel knows nothing about projects: it only holds endpoints, verified host identity and
-//! live connections, identified by a kernel-derived machine id `ssh:<profileId>`.
-//!
-//! On Windows, whose OpenSSH has no ControlMaster, the client is the one in the default WSL
-//! distribution. `transport: "wsl"` runs the same channels in a distribution, without SSH.
-use crate::approvals::{Approvals, Decision, Secret};
+//! live connections.
+use crate::approvals::{Approvals, Decision};
 use crate::host::sftp::Sftp;
+use crate::host::sshc::{self, AuthOutcome, ChannelRequest, Conn, HostKeyVerdict, Opened};
+use crate::host::stdio::Spawned;
 use crate::host::wsl;
-use crate::util::{random_hex, HResult, HostError};
+use crate::util::{HResult, HostError};
 use parking_lot::Mutex;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -42,9 +40,6 @@ pub struct SshProfile {
 }
 
 fn default_port() -> u16 { 22 }
-
-/// How long a successful `ssh -O check` vouches for a master whose process is still running.
-const LIVENESS_CHECK_INTERVAL: Duration = Duration::from_secs(5);
 
 impl SshProfile {
     pub fn is_wsl(&self) -> bool { self.transport.as_deref() == Some("wsl") }
@@ -81,102 +76,49 @@ impl SshProfile {
 
 pub struct SshMaster {
     pub profile: SshProfile,
-    pub socket: PathBuf,
+    /// SSH transport: the authenticated connection.
+    conn: Mutex<Option<Arc<Conn>>>,
+    /// More connections to the same host, opened when the server refuses further sessions on
+    /// the existing ones (OpenSSH allows 10 per connection).
+    extra: Mutex<Vec<Arc<Conn>>>,
+    adding: Mutex<()>,
+    /// WSL transport: the keepalive channel holding the distribution running.
     child: Mutex<Option<Child>>,
-    /// Held while connecting, so concurrent callers share one master and one password prompt.
+    /// Held while connecting, so concurrent callers share one connection and one password prompt.
     connecting: Mutex<()>,
     pub sftp: Mutex<Option<Arc<Sftp>>>,
     pub connected_at: Mutex<Option<Instant>>,
-    /// Last time `ssh -O check` confirmed the master answers; see `is_alive`.
-    checked_at: Mutex<Option<Instant>>,
     pub last_error: Mutex<Option<String>>,
-    accept_new: Mutex<bool>,
-    /// `hato daemon forward` processes by the port they listen on.
+    /// SHA256 fingerprint of an unknown host key the user approved.
+    trusted_key: Mutex<Option<String>>,
+    /// WSL transport: `hato daemon forward` processes by the port they listen on.
     relays: Mutex<std::collections::HashMap<u16, Child>>,
-    /// Windows, SSH transport: remote port -> (default distribution, relay port there).
-    #[cfg(windows)]
-    wsl_hops: Mutex<std::collections::HashMap<u16, (Arc<SshMaster>, u16)>>,
-}
-
-#[cfg(unix)]
-fn socket_dir() -> String {
-    let uid = unsafe { libc::getuid() };
-    let d = PathBuf::from(format!("/tmp/hato-ssh-{uid}"));
-    let _ = std::fs::create_dir_all(&d);
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o700));
-    }
-    d.to_string_lossy().into_owned()
-}
-
-/// A path inside the distribution running the client; created by `prepare_socket_dir`.
-#[cfg(windows)]
-fn socket_dir() -> String { "/tmp/hato-ssh-windows".to_string() }
-
-/// The OpenSSH client, as a program with leading arguments.
-fn ssh_argv() -> (String, Vec<String>) {
-    if cfg!(windows) { (wsl::exe(), wsl::exec_args(None, &["ssh"])) } else { ("ssh".to_string(), vec![]) }
-}
-
-fn ssh_program() -> Command {
-    let (program, args) = ssh_argv();
-    let mut c = crate::util::command(program);
-    c.args(args);
-    c
-}
-
-/// The client, reading a password from `askpass`. ssh passes its stdin on to that program, so the
-/// password stays off command lines, out of the environment and off the disk.
-fn password_ssh_program(askpass: &str) -> Command {
-    let askpass = format!("SSH_ASKPASS={askpass}");
-    // DISPLAY makes OpenSSH before 8.4 use askpass; it has no SSH_ASKPASS_REQUIRE.
-    let argv = ["env", askpass.as_str(), "SSH_ASKPASS_REQUIRE=force", "DISPLAY=:0", "ssh"];
-    if cfg!(windows) {
-        return wsl::command(None, &argv);
-    }
-    let mut c = crate::util::command(argv[0]);
-    c.args(&argv[1..]);
-    c
-}
-
-/// An OpenSSH companion tool (`ssh-keyscan`, `ssh-keygen`) from the same place as the client.
-fn ssh_tool(tool: &str) -> Command {
-    if cfg!(windows) { wsl::command(None, &[tool]) } else { crate::util::command(tool) }
 }
 
 /// Runs `sftp-server` from the home directory (`realpath(".")` is how callers find the home).
 const WSL_SFTP: &str = r#"cd && for p in /usr/lib/openssh/sftp-server /usr/libexec/openssh/sftp-server /usr/lib/ssh/sftp-server /usr/libexec/sftp-server /usr/lib/sftp-server; do [ -x "$p" ] && exec "$p"; done; exit 127"#;
 
+const MAX_PASSWORD_ATTEMPTS: u32 = 3;
+/// Connections per machine, counting the first.
+const MAX_CONNECTIONS: usize = 4;
+/// How long a channel request waits for a session slot to free up.
+const SESSION_WAIT: Duration = Duration::from_secs(10);
+
 impl SshMaster {
     pub fn new(profile: SshProfile) -> Arc<SshMaster> {
-        let socket = PathBuf::from(format!("{}/{}.sock", socket_dir(), random_hex(6)));
         Arc::new(SshMaster {
             profile,
-            socket,
+            conn: Mutex::new(None),
+            extra: Mutex::new(Vec::new()),
+            adding: Mutex::new(()),
             child: Mutex::new(None),
             connecting: Mutex::new(()),
             sftp: Mutex::new(None),
             connected_at: Mutex::new(None),
-            checked_at: Mutex::new(None),
             last_error: Mutex::new(None),
-            accept_new: Mutex::new(false),
+            trusted_key: Mutex::new(None),
             relays: Default::default(),
-            #[cfg(windows)]
-            wsl_hops: Default::default(),
         })
-    }
-
-    fn base_opts(&self, c: &mut Command) {
-        c.arg("-o").arg("BatchMode=yes")
-            .arg("-o").arg("ConnectTimeout=10")
-            .arg("-p").arg(self.profile.port.to_string());
-        if let Some(id) = &self.profile.identity_file {
-            c.arg("-i").arg(id).arg("-o").arg("IdentitiesOnly=yes");
-        }
-        if let Some(kh) = known_hosts_override() {
-            c.arg("-o").arg(format!("UserKnownHostsFile={kh}"));
-        }
     }
 
     pub fn is_wsl(&self) -> bool { self.profile.is_wsl() }
@@ -184,98 +126,110 @@ impl SshMaster {
     /// A distribution channel for `argv`. Only meaningful with the WSL transport.
     fn wsl_command(&self, argv: &[&str]) -> Command { wsl::command(self.wsl_distro(), argv) }
 
-    /// The internal default-distribution master has no host.
     fn wsl_distro(&self) -> Option<&str> { Some(self.profile.host.as_str()).filter(|h| !h.is_empty()) }
 
-    /// A non-interactive channel running `remote` through a POSIX shell on the machine.
-    pub fn remote_command(&self, remote: &str) -> Command {
+    fn conn(&self) -> HResult<Arc<Conn>> {
+        match self.conn.lock().as_ref() {
+            Some(c) if !c.is_closed() => Ok(c.clone()),
+            _ => Err(self.not_connected()),
+        }
+    }
+
+    fn not_connected(&self) -> HostError {
+        HostError::new("ENOTCONN", format!("Connection to {} is not available (reconnect required; no local fallback)", self.profile.machine_id()))
+    }
+
+    /// Run `remote` through the user's shell on the machine, with piped stdio.
+    pub fn exec(&self, remote: &str) -> HResult<Spawned> {
         if self.is_wsl() {
-            return self.wsl_command(&["/bin/sh", "-c", remote]);
+            self.ensure_alive()?;
+            return Spawned::spawn(self.wsl_command(&["/bin/sh", "-c", remote]), "wsl.exe");
         }
-        let mut c = self.client_command(&["-T"]);
-        c.arg("--").arg(remote);
-        c
+        self.open_channel(ChannelRequest::Exec(remote.to_string()))
     }
 
-    /// A client invocation multiplexed over the master: `ssh -S sock -o ControlMaster=no ... dest`.
-    pub fn client_command(&self, extra: &[&str]) -> Command {
-        let mut c = ssh_program();
-        c.arg("-S").arg(&self.socket).arg("-o").arg("ControlMaster=no");
-        self.base_opts(&mut c);
-        for e in extra {
-            c.arg(e);
-        }
-        c.arg(self.profile.destination());
-        c
+    /// Run `remote` on a terminal of the machine (SSH transport; WSL uses a local ConPTY, see
+    /// `wsl_pty_command`).
+    pub fn exec_pty(&self, remote: &str, cols: u16, rows: u16) -> HResult<Spawned> {
+        self.open_channel(ChannelRequest::Pty { command: remote.to_string(), cols, rows })
     }
 
-    /// Program and arguments for a local PTY running `remote_cmd` interactively on the machine.
-    pub fn pty_command(&self, remote_cmd: &str) -> (String, Vec<String>) {
-        if self.is_wsl() {
-            return (wsl::exe(), wsl::exec_args(self.wsl_distro(), &["/bin/sh", "-c", remote_cmd]));
+    /// A channel on the first connection with a free session; another connection when all are
+    /// full (key logins: nothing to ask), else wait for a session to end.
+    fn open_channel(&self, req: ChannelRequest) -> HResult<Spawned> {
+        let deadline = Instant::now() + SESSION_WAIT;
+        loop {
+            let primary = self.conn()?;
+            let mut conns = vec![primary];
+            {
+                let mut extra = self.extra.lock();
+                extra.retain(|c| !c.is_closed());
+                conns.extend(extra.iter().cloned());
+            }
+            for c in &conns {
+                match c.open_channel(req.clone()) {
+                    Err(e) if e.code == "EBUSY" => continue,
+                    r => return r,
+                }
+            }
+            if !self.profile.uses_password() && conns.len() < MAX_CONNECTIONS {
+                let _adding = self.adding.lock();
+                if self.extra.lock().len() + 1 == conns.len() {
+                    // Nobody added one meanwhile.
+                    if let Ok(c) = self.extra_connection() {
+                        self.extra.lock().push(Arc::new(c));
+                    }
+                }
+                continue;
+            }
+            if Instant::now() >= deadline {
+                return Err(HostError::new("EBUSY", format!("{} refuses more sessions on all {MAX_CONNECTIONS} connections (see MaxSessions in its sshd_config)", self.profile.destination())));
+            }
+            std::thread::sleep(Duration::from_millis(100));
         }
-        let (program, mut argv) = ssh_argv();
-        argv.extend(self.pty_argv(remote_cmd));
-        (program, argv)
     }
 
-    /// Argument vector for running ssh inside a local PTY (remote interactive shell).
-    fn pty_argv(&self, remote_cmd: &str) -> Vec<String> {
-        let mut v = vec!["-tt".to_string(), "-S".into(), self.socket.display().to_string(), "-o".into(), "ControlMaster=no".into(),
-            "-o".into(), "BatchMode=yes".into(), "-p".into(), self.profile.port.to_string()];
-        if let Some(id) = &self.profile.identity_file {
-            v.extend(["-i".into(), id.clone()]);
+    /// Another key-authenticated connection; its host key is known by now.
+    fn extra_connection(&self) -> HResult<Conn> {
+        let trusted = self.trusted_key.lock().clone();
+        let Opened::Ok(mut c) = sshc::open(&self.profile.host, self.profile.port, trusted)? else {
+            return Err(HostError::new("EHOSTKEY", "host key changed while connected"));
+        };
+        match c.auth_keys(&self.profile.user, self.profile.identity_file.as_deref())? {
+            (true, _) => Ok(c),
+            _ => Err(HostError::new("EAUTH", "additional connection was not authenticated")),
         }
-        if let Some(kh) = known_hosts_override() {
-            v.extend(["-o".into(), format!("UserKnownHostsFile={kh}")]);
-        }
-        v.push(self.profile.destination());
-        v.push("--".into());
-        v.push(remote_cmd.to_string());
-        v
+    }
+
+    /// Program and arguments for a local PTY running `remote_cmd` in the WSL distribution.
+    pub fn wsl_pty_command(&self, remote_cmd: &str) -> (String, Vec<String>) {
+        (wsl::exe(), wsl::exec_args(self.wsl_distro(), &["/bin/sh", "-c", remote_cmd]))
     }
 
     pub fn is_alive(&self) -> bool {
-        {
-            let mut ch = self.child.lock();
-            match ch.as_mut() {
-                None => return false,
-                Some(c) => {
-                    if let Ok(Some(_)) = c.try_wait() {
-                        *ch = None;
-                        return false;
-                    }
-                }
-            }
-        }
         if self.is_wsl() {
-            return true; // the keepalive channel is the connection
+            let mut ch = self.child.lock();
+            // The keepalive channel is the connection.
+            let alive = ch.as_mut().is_some_and(|c| matches!(c.try_wait(), Ok(None)));
+            if !alive {
+                *ch = None;
+            }
+            return alive;
         }
-        // The master process is running. Confirming that it answers costs a process launch (a
-        // `wsl.exe` on Windows, hundreds of ms on slow machines), so a recent answer is trusted.
-        if self.checked_at.lock().is_some_and(|t| t.elapsed() < LIVENESS_CHECK_INTERVAL) {
-            return true;
-        }
-        let st = ssh_program()
-            .arg("-S").arg(&self.socket).arg("-O").arg("check")
-            .arg("-p").arg(self.profile.port.to_string())
-            .arg(self.profile.destination())
-            .stdout(Stdio::null()).stderr(Stdio::null()).status();
-        let ok = matches!(st, Ok(s) if s.success());
-        *self.checked_at.lock() = ok.then(Instant::now);
-        ok
+        self.conn().is_ok()
     }
 
     pub fn ensure_alive(&self) -> HResult<()> {
-        if self.is_alive() {
-            Ok(())
-        } else {
-            Err(HostError::new("ENOTCONN", format!("Connection to {} is not available (reconnect required; no local fallback)", self.profile.machine_id())))
-        }
+        if self.is_alive() { Ok(()) } else { Err(self.not_connected()) }
     }
 
-    /// Start (or restart) the ControlMaster. Host key trust for unknown hosts is a native approval.
-    /// A password is also asked natively, so only an `interactive` caller (a user gesture) may need one.
+    fn fail<T>(&self, code: &str, message: String) -> HResult<T> {
+        *self.last_error.lock() = Some(message.clone());
+        Err(HostError::new(code, message))
+    }
+
+    /// Connect and authenticate. Unknown host keys need a native approval of their fingerprint;
+    /// a password is asked natively, so only an `interactive` caller (a user gesture) may need one.
     pub fn connect(&self, approvals: &Approvals, module: &str, generation: u64, interactive: bool) -> HResult<()> {
         if self.profile.uses_password() && !interactive {
             if self.is_alive() {
@@ -291,137 +245,78 @@ impl SshMaster {
         if self.is_wsl() {
             return self.connect_wsl();
         }
-        #[cfg(windows)]
-        prepare_socket_dir()?;
-        let _ = std::fs::remove_file(&self.socket);
+        let (host, port) = (self.profile.host.as_str(), self.profile.port);
         let mut trust_asked = false;
-        // The first password attempt follows a probe without credentials, which verifies the host
-        // key first and reports the authentication methods: a password only goes to a trusted host.
-        let mut password: Option<Secret> = None;
-        let mut method = "";
-        let mut rejected = 0;
-        loop {
-            let strict = if *self.accept_new.lock() { "accept-new" } else { "yes" };
-            let mut c = match &password {
-                Some(_) => password_ssh_program(&install_askpass()?),
-                None => ssh_program(),
-            };
-            c.arg("-M").arg("-N").arg("-S").arg(&self.socket)
-                .arg("-o").arg("ControlPersist=no")
-                .arg("-o").arg(format!("StrictHostKeyChecking={strict}"))
-                .arg("-o").arg("ServerAliveInterval=15")
-                .arg("-o").arg("ServerAliveCountMax=3")
-                .arg("-o").arg("ExitOnForwardFailure=yes");
-            if password.is_some() {
-                c.arg("-o").arg("BatchMode=no")
-                    .arg("-o").arg(format!("PreferredAuthentications={method}"))
-                    .arg("-o").arg("PubkeyAuthentication=no")
-                    .arg("-o").arg("NumberOfPasswordPrompts=1");
-            } else if self.profile.uses_password() {
-                c.arg("-o").arg("PreferredAuthentications=none");
+        let mut conn = loop {
+            let trusted = self.trusted_key.lock().clone();
+            match sshc::open(host, port, trusted).inspect_err(|e| *self.last_error.lock() = Some(e.message.clone()))? {
+                Opened::Ok(c) => break c,
+                Opened::HostKey(HostKeyVerdict::Changed { line, path }) => {
+                    return self.fail("EHOSTKEY", format!("REMOTE HOST IDENTIFICATION HAS CHANGED for {host}:{port}: the server's key differs from the one recorded in {path} (line {line}). Changed keys are always rejected; remove that line if the change is expected."));
+                }
+                Opened::HostKey(HostKeyVerdict::Unknown { fingerprint, algorithm }) if !trust_asked => {
+                    trust_asked = true;
+                    let detail = format!(
+                        "The SSH host {host}:{port} is not in your known_hosts file ({}).\n\nServer key fingerprint:\n{algorithm} {fingerprint}\n\nApproving adds this key to known_hosts. Changed keys are always rejected.",
+                        sshc::known_hosts_path().display());
+                    match approvals.request(module, generation, "ssh.trustHostKey", &format!("Trust new SSH host {host}?"), &detail, false, Approvals::allow_deny(), Duration::from_secs(300)) {
+                        Decision::Option(o) if o == "allow" => *self.trusted_key.lock() = Some(fingerprint),
+                        _ => return self.fail("EHOSTKEY", format!("host key of {host}:{port} not trusted ({algorithm} {fingerprint})")),
+                    }
+                }
+                Opened::HostKey(v) => return self.fail("EHOSTKEY", format!("host key of {host}:{port} not accepted: {v:?}")),
             }
-            self.base_opts(&mut c);
-            c.arg(self.profile.destination());
-            c.stdin(if password.is_some() { Stdio::piped() } else { Stdio::null() }).stdout(Stdio::null()).stderr(Stdio::piped());
-            let mut child = c.spawn().map_err(|e| HostError::new("ENOEXEC", format!("cannot run ssh: {e}")))?;
-            if let (Some(secret), Some(mut stdin)) = (&password, child.stdin.take()) {
-                use std::io::Write;
-                let _ = stdin.write_all(secret.expose().as_bytes()).and_then(|_| stdin.write_all(b"\n"));
-            }
-            let t0 = Instant::now();
-            let mut failure = None;
-            loop {
-                if let Ok(Some(_st)) = child.try_wait() {
-                    let mut err = String::new();
-                    if let Some(mut e) = child.stderr.take() {
-                        use std::io::Read;
-                        let _ = e.read_to_string(&mut err);
-                    }
-                    failure = Some(err.trim().to_string());
-                    break;
-                }
-                // On Windows the socket is inside the distribution: only the check can tell.
-                if cfg!(windows) || self.socket.exists() {
-                    let ok = ssh_program().arg("-S").arg(&self.socket).arg("-O").arg("check")
-                        .arg("-p").arg(self.profile.port.to_string()).arg(self.profile.destination())
-                        .stdout(Stdio::null()).stderr(Stdio::null()).status().map(|s| s.success()).unwrap_or(false);
-                    if ok {
-                        break;
-                    }
-                }
-                if t0.elapsed() > Duration::from_secs(20) {
-                    let _ = child.kill();
-                    failure = Some("timed out establishing SSH connection".into());
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(100));
-            }
-            match failure {
-                None => {
-                    // Drain stderr in the background so the master never blocks.
-                    if let Some(mut e) = child.stderr.take() {
-                        std::thread::spawn(move || {
-                            let mut sink = Vec::new();
-                            use std::io::Read;
-                            let _ = e.read_to_end(&mut sink);
-                        });
-                    }
-                    *self.child.lock() = Some(child);
-                    *self.connected_at.lock() = Some(Instant::now());
-                    *self.checked_at.lock() = Some(Instant::now());
-                    *self.last_error.lock() = None;
-                    return Ok(());
-                }
-                Some(err) => {
-                    let host_key_problem = err.contains("Host key verification failed") || err.contains("No ED25519 host key is known") || err.contains("host key for") && err.contains("is not known");
-                    if host_key_problem && !trust_asked && !err.contains("REMOTE HOST IDENTIFICATION HAS CHANGED") {
-                        trust_asked = true;
-                        let fp = keyscan_fingerprints(&self.profile.host, self.profile.port);
-                        let detail = format!(
-                            "The SSH host {}:{} is not in your known_hosts file.\n\nServer key fingerprints (from ssh-keyscan):\n{}\n\nApproving adds the key to ~/.ssh/known_hosts (StrictHostKeyChecking=accept-new). Changed keys are always rejected.",
-                            self.profile.host, self.profile.port, if fp.is_empty() { "(unavailable)".to_string() } else { fp });
-                        match approvals.request(module, generation, "ssh.trustHostKey", &format!("Trust new SSH host {}?", self.profile.host), &detail, false, Approvals::allow_deny(), Duration::from_secs(300)) {
-                            Decision::Option(o) if o == "allow" => {
-                                *self.accept_new.lock() = true;
-                                continue;
-                            }
-                            _ => {
-                                *self.last_error.lock() = Some(err.clone());
-                                return Err(HostError::new("EHOSTKEY", format!("host key not trusted: {err}")));
-                            }
-                        }
-                    }
-                    if self.profile.uses_password() && err.contains("Permission denied") {
-                        if password.take().is_some() {
-                            rejected += 1;
-                        } else if let Some(offered) = password_method(&err) {
-                            method = offered;
-                        } else {
-                            *self.last_error.lock() = Some(err.clone());
-                            return Err(HostError::new("EAUTH", format!("{} does not accept password logins. Sign in with a key or the SSH agent instead.", self.profile.destination())));
-                        }
-                        if rejected >= MAX_PASSWORD_ATTEMPTS {
-                            *self.last_error.lock() = Some(err.clone());
-                            return Err(HostError::new("EAUTH", format!("The password for {} was rejected {rejected} times.", self.profile.destination())));
-                        }
-                        let notice = if rejected > 0 { "That password was not accepted. Try again.\n\n" } else { "" };
-                        let detail = format!("{notice}Connecting to {}:{}, whose host key matches known_hosts.\n\nThe password goes only to OpenSSH for this connection. Hato does not save it or share it with plugins, and asks again the next time it reconnects.", self.profile.host, self.profile.port);
-                        password = approvals.request_secret(module, generation, "ssh.password", &format!("Password for {}", self.profile.destination()), &detail, "Password", "Connect", Duration::from_secs(300));
-                        if password.is_none() {
-                            return Err(HostError::new("ECANCELED", format!("Password entry for {} was cancelled.", self.profile.destination())));
-                        }
-                        continue;
-                    }
-                    *self.last_error.lock() = Some(err.clone());
-                    return Err(HostError::new("ECONNREFUSED", format!("SSH connection to {} failed: {err}", self.profile.destination())));
-                }
+        };
+        let user = self.profile.user.as_str();
+        if self.profile.uses_password() {
+            self.password_login(&mut conn, approvals, module, generation)?;
+        } else {
+            let (ok, notes) = conn.auth_keys(user, self.profile.identity_file.as_deref())
+                .inspect_err(|e| *self.last_error.lock() = Some(e.message.clone()))?;
+            if !ok {
+                let hint = if notes.is_empty() { String::new() } else { format!(" ({})", notes.join("; ")) };
+                return self.fail("EAUTH", format!("{}: Permission denied (publickey). No key from the SSH agent or {} was accepted{hint}.",
+                    self.profile.destination(), self.profile.identity_file.as_deref().unwrap_or("~/.ssh/id_*")));
             }
         }
+        *self.conn.lock() = Some(Arc::new(conn));
+        *self.connected_at.lock() = Some(Instant::now());
+        *self.last_error.lock() = None;
+        Ok(())
     }
 
-    /// Connect the internal master for the default distribution (no approvals involved).
-    #[cfg(windows)]
-    pub fn connect_default_distribution(&self) -> HResult<()> { self.connect_wsl() }
+    /// The host key is verified by now, so a password only goes to a trusted host.
+    fn password_login(&self, conn: &mut Conn, approvals: &Approvals, module: &str, generation: u64) -> HResult<()> {
+        let dest = self.profile.destination();
+        let methods = match conn.auth_none(&self.profile.user)? {
+            AuthOutcome::Success => return Ok(()),
+            AuthOutcome::Failed(m) => m,
+        };
+        // One method only: a second would count against the server's limit with an empty answer.
+        let keyboard = if methods.iter().any(|m| m == "password") {
+            false
+        } else if methods.iter().any(|m| m == "keyboard-interactive") {
+            true
+        } else {
+            return self.fail("EAUTH", format!("{dest} does not accept password logins. Sign in with a key or the SSH agent instead."));
+        };
+        let mut rejected = 0;
+        while rejected < MAX_PASSWORD_ATTEMPTS {
+            let notice = if rejected > 0 { "That password was not accepted. Try again.\n\n" } else { "" };
+            let detail = format!("{notice}Connecting to {}:{}, whose host key matches known_hosts.\n\nThe password goes only to this SSH connection. Hato does not save it or share it with plugins, and asks again the next time it reconnects.", self.profile.host, self.profile.port);
+            let Some(secret) = approvals.request_secret(module, generation, "ssh.password", &format!("Password for {dest}"), &detail, "Password", "Connect", Duration::from_secs(300)) else {
+                return Err(HostError::new("ECANCELED", format!("Password entry for {dest} was cancelled.")));
+            };
+            if conn.auth_password(&self.profile.user, secret.expose(), keyboard)? {
+                return Ok(());
+            }
+            rejected += 1;
+            if conn.is_closed() {
+                break;
+            }
+        }
+        self.fail("EAUTH", format!("The password for {dest} was rejected {rejected} times."))
+    }
 
     /// Verify the distribution runs, then hold a channel open so WSL does not stop it while idle.
     fn connect_wsl(&self) -> HResult<()> {
@@ -430,8 +325,7 @@ impl SshMaster {
         let text = wsl::decode(&out.stdout);
         if !out.status.success() || !text.contains("hato-wsl-ok") {
             let err = format!("{} {}", text.trim(), wsl::decode(&out.stderr).trim());
-            *self.last_error.lock() = Some(err.clone());
-            return Err(HostError::new("ECONNREFUSED", format!("WSL distribution {} is not available: {}", self.profile.label(), err.trim())));
+            return self.fail("ECONNREFUSED", format!("WSL distribution {} is not available: {}", self.profile.label(), err.trim()));
         }
         // `cat` ends when this end of its stdin closes, so the channel never outlives the app.
         let child = self.wsl_command(&["/bin/cat"]).stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null()).spawn()
@@ -444,28 +338,22 @@ impl SshMaster {
 
     pub fn disconnect(&self) {
         *self.sftp.lock() = None;
-        *self.checked_at.lock() = None;
         for (_, mut r) in self.relays.lock().drain() {
             let _ = r.kill();
             let _ = r.wait();
         }
-        #[cfg(windows)]
-        self.wsl_hops.lock().clear();
-        if self.is_wsl() {
-            if let Some(mut c) = self.child.lock().take() {
-                let _ = c.kill();
-                let _ = c.wait();
-            }
-            return;
-        }
-        let _ = ssh_program().arg("-S").arg(&self.socket).arg("-O").arg("exit")
-            .arg("-p").arg(self.profile.port.to_string()).arg(self.profile.destination())
-            .stdout(Stdio::null()).stderr(Stdio::null()).status();
         if let Some(mut c) = self.child.lock().take() {
             let _ = c.kill();
             let _ = c.wait();
         }
-        let _ = std::fs::remove_file(&self.socket);
+        let mut all: Vec<Arc<Conn>> = self.extra.lock().drain(..).collect();
+        all.extend(self.conn.lock().take());
+        for c in all {
+            if let Ok(c) = Arc::try_unwrap(c) {
+                c.disconnect();
+            }
+            // Otherwise a caller still holds it; it closes when dropped.
+        }
     }
 
     pub fn sftp(&self) -> HResult<Arc<Sftp>> {
@@ -477,13 +365,11 @@ impl SshMaster {
             }
         }
         let s = if self.is_wsl() {
-            Sftp::start(self.wsl_command(&["/bin/sh", "-c", WSL_SFTP])).map_err(|e| {
+            Sftp::start(Spawned::spawn(self.wsl_command(&["/bin/sh", "-c", WSL_SFTP]), "wsl.exe")?).map_err(|e| {
                 HostError::new(&e.code, format!("cannot start sftp-server in {} (install the openssh-sftp-server package there): {}", self.profile.label(), e.message))
             })?
         } else {
-            let mut c = self.client_command(&["-s"]);
-            c.arg("sftp");
-            Sftp::start(c)?
+            Sftp::start(self.conn()?.open_channel(ChannelRequest::Subsystem("sftp".into()))?)?
         };
         let s = Arc::new(s);
         *g = Some(s.clone());
@@ -492,17 +378,7 @@ impl SshMaster {
 
     /// Remote loopback-only reverse forward: remote 127.0.0.1:<allocated> -> local 127.0.0.1:<local_port>.
     pub fn forward_reverse(&self, local_port: u16) -> HResult<u16> {
-        self.ensure_alive()?;
-        let spec = format!("127.0.0.1:0:127.0.0.1:{local_port}");
-        let out = ssh_program().arg("-S").arg(&self.socket).arg("-O").arg("forward").arg("-R").arg(&spec)
-            .arg("-p").arg(self.profile.port.to_string()).arg(self.profile.destination())
-            .output().map_err(HostError::io)?;
-        if !out.status.success() {
-            return Err(HostError::new("EFORWARD", format!("reverse forward failed: {}", String::from_utf8_lossy(&out.stderr).trim())));
-        }
-        let s = String::from_utf8_lossy(&out.stdout);
-        s.trim().lines().last().and_then(|l| l.trim().parse::<u16>().ok())
-            .ok_or_else(|| HostError::new("EFORWARD", format!("could not parse allocated remote port from {s:?}")))
+        self.conn()?.forward(local_port)
     }
 
     /// Listen on the distribution's 127.0.0.1 and relay to this machine's `local_port`, through
@@ -525,15 +401,7 @@ impl SshMaster {
         }
     }
 
-    /// Windows, SSH transport: the forward's local end is a relay in the default distribution.
-    #[cfg(windows)]
-    pub fn forward_through_wsl(&self, hop: Arc<SshMaster>, hop_port: u16) -> HResult<u16> {
-        let remote = self.forward_reverse(hop_port)?;
-        self.wsl_hops.lock().insert(remote, (hop, hop_port));
-        Ok(remote)
-    }
-
-    pub fn cancel_reverse(&self, remote_port: u16, local_port: u16) {
+    pub fn cancel_reverse(&self, remote_port: u16, _local_port: u16) {
         if self.is_wsl() {
             if let Some(mut r) = self.relays.lock().remove(&remote_port) {
                 let _ = r.kill();
@@ -541,18 +409,9 @@ impl SshMaster {
             }
             return;
         }
-        #[cfg(windows)]
-        let local_port = match self.wsl_hops.lock().remove(&remote_port) {
-            Some((hop, hop_port)) => {
-                hop.cancel_reverse(hop_port, local_port);
-                hop_port
-            }
-            None => local_port,
-        };
-        let spec = format!("127.0.0.1:{remote_port}:127.0.0.1:{local_port}");
-        let _ = ssh_program().arg("-S").arg(&self.socket).arg("-O").arg("cancel").arg("-R").arg(&spec)
-            .arg("-p").arg(self.profile.port.to_string()).arg(self.profile.destination())
-            .stdout(Stdio::null()).stderr(Stdio::null()).status();
+        if let Ok(c) = self.conn() {
+            c.cancel_forward(remote_port);
+        }
     }
 
     pub fn status_json(&self) -> Value {
@@ -565,84 +424,6 @@ impl SshMaster {
 
 impl Drop for SshMaster {
     fn drop(&mut self) { self.disconnect(); }
-}
-
-/// The socket directory lives in the distribution running the client.
-#[cfg(windows)]
-fn prepare_socket_dir() -> HResult<()> {
-    let out = wsl::command(None, &["/bin/sh", "-c", r#"umask 077 && mkdir -p "$1" && [ -O "$1" ]"#, "sh", &socket_dir()]).stdin(Stdio::null()).output()
-        .map_err(|e| HostError::new("ENOEXEC", format!("cannot run wsl.exe: {e}")))?;
-    if !out.status.success() {
-        let err = format!("{} {}", wsl::decode(&out.stdout).trim(), wsl::decode(&out.stderr).trim());
-        return Err(HostError::new("ENOEXEC", format!("SSH on Windows uses the OpenSSH client of the default WSL distribution, which is not available: {}", err.trim())));
-    }
-    Ok(())
-}
-
-const MAX_PASSWORD_ATTEMPTS: u32 = 3;
-
-/// The method to send a password with, from ssh's `Permission denied (publickey,password).` One
-/// method only: a second would count against the server's limit with an empty answer.
-fn password_method(error: &str) -> Option<&'static str> {
-    let (_, rest) = error.split_once("Permission denied (")?;
-    let methods = rest.split(')').next()?.split(',').map(str::trim);
-    let mut keyboard = false;
-    for method in methods {
-        match method {
-            "password" => return Some("password"),
-            "keyboard-interactive" => keyboard = true,
-            _ => {}
-        }
-    }
-    keyboard.then_some("keyboard-interactive")
-}
-
-const ASKPASS_SCRIPT: &str = "#!/bin/sh\nexec head -n 1\n";
-
-/// Install the askpass program where the client runs, and return its path. It holds no secret.
-#[cfg(unix)]
-fn install_askpass() -> HResult<String> {
-    use std::os::unix::fs::PermissionsExt;
-    let path = format!("{}/askpass", socket_dir());
-    let temporary = format!("{path}.{}", random_hex(4));
-    std::fs::write(&temporary, ASKPASS_SCRIPT)
-        .and_then(|_| std::fs::set_permissions(&temporary, std::fs::Permissions::from_mode(0o700)))
-        .and_then(|_| std::fs::rename(&temporary, &path))
-        .map_err(|e| HostError::new("EIO", format!("cannot install the SSH password helper: {e}")))?;
-    Ok(path)
-}
-
-#[cfg(windows)]
-fn install_askpass() -> HResult<String> {
-    let path = format!("{}/askpass", socket_dir());
-    let out = wsl::command(None, &["/bin/sh", "-c", r#"printf "$1" > "$2.$$" && chmod 700 "$2.$$" && mv "$2.$$" "$2""#, "sh", ASKPASS_SCRIPT, &path]).stdin(Stdio::null()).output()
-        .map_err(|e| HostError::new("ENOEXEC", format!("cannot run wsl.exe: {e}")))?;
-    if !out.status.success() {
-        return Err(HostError::new("EIO", format!("cannot install the SSH password helper: {}", wsl::decode(&out.stderr).trim())));
-    }
-    Ok(path)
-}
-
-/// Optional alternate known_hosts file (isolated test environments). Host keys are still verified.
-fn known_hosts_override() -> Option<String> {
-    std::env::var("HATO_SSH_KNOWN_HOSTS").ok().filter(|s| !s.is_empty() && !s.contains('\0'))
-}
-
-fn keyscan_fingerprints(host: &str, port: u16) -> String {
-    let scan = ssh_tool("ssh-keyscan").arg("-p").arg(port.to_string()).arg("-T").arg("5").arg(host)
-        .stderr(Stdio::null()).output();
-    let Ok(scan) = scan else { return String::new() };
-    let mut kg = match ssh_tool("ssh-keygen").arg("-lf").arg("-").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn() {
-        Ok(c) => c,
-        Err(_) => return String::new(),
-    };
-    {
-        use std::io::Write;
-        if let Some(mut i) = kg.stdin.take() {
-            let _ = i.write_all(&scan.stdout);
-        }
-    }
-    kg.wait_with_output().map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default()
 }
 
 /// Kernel table of SSH masters keyed by machine id. The first profile registered for a machine id
@@ -683,14 +464,6 @@ impl SshTable {
 #[cfg(test)]
 mod password_tests {
     use super::*;
-
-    #[test]
-    fn password_method_prefers_password_and_refuses_key_only_servers() {
-        assert_eq!(password_method("u@h: Permission denied (publickey,password,keyboard-interactive)."), Some("password"));
-        assert_eq!(password_method("u@h: Permission denied (publickey,keyboard-interactive)."), Some("keyboard-interactive"));
-        assert_eq!(password_method("u@h: Permission denied (publickey)."), None);
-        assert_eq!(password_method("Connection refused"), None);
-    }
 
     #[test]
     fn password_profiles_exclude_keys_and_wsl() {
