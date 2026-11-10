@@ -83,8 +83,14 @@ const mod: AppModule = {
       await ctx.modules.call("persistence", "settings.set", { key: "remote-runtime.prefs", value: next });
       autoStart = next.autoStart; autoPush = next.autoPush;
     });
+    // `workspace.selected` also changes with view state (open tabs, preview path). Ensuring costs
+    // several SSH round trips, so it runs once per workspace selection; a failure retries next time.
+    let ensuredFor: string | null = null;
     ctx.state.watch("workspace.selected", (ws: any) => {
-      if (autoStart && ws?.location === "ssh" && ws.id) ensure(ctx, ws.id).catch((e) => ctx.log.warn("daemon", errMsg(e)));
+      const id = autoStart && ws?.location === "ssh" && ws.id ? String(ws.id) : null;
+      if (id === ensuredFor) return;
+      ensuredFor = id;
+      if (id) ensure(ctx, id).catch((e) => { if (ensuredFor === id) ensuredFor = null; ctx.log.warn("daemon", errMsg(e)); });
     });
     ctx.events.on("persistence.settingChanged", (event: any) => {
       if (!event?.scope?.startsWith("machine:")) return;

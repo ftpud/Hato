@@ -92,7 +92,14 @@ const mod: AppModule = {
         void publishSkills(ctx);
       }, 200);
     });
-    ctx.state.watch("workspace.selected", () => { void publishSkills(ctx); void watchSelected(ctx); });
+    // View-state updates (tabs, preview) also change `workspace.selected`; skills only depend on
+    // which workspace it is.
+    let skillsFor = (ctx.state.get("workspace.selected") as any)?.id || null;
+    ctx.state.watch("workspace.selected", (ws: any) => {
+      const id = ws?.id || null;
+      if (id !== skillsFor) { skillsFor = id; void publishSkills(ctx); }
+      void watchSelected(ctx);
+    });
     await watchSelected(ctx);
     ctx.events.on("ai.skillsRequested", () => { void publishSkills(ctx); });
     await publishSkills(ctx);

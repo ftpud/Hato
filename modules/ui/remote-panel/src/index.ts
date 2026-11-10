@@ -36,7 +36,10 @@ const mod: AppModule = {
   moduleApiVersion: 1,
   async activate(ctx) {
     ws = ctx.state.get("workspace.selected") || null;
-    ctx.state.watch("workspace.selected", (v: any) => { ws = v; void refresh(ctx); });
+    ctx.state.watch("workspace.selected", (v: any) => {
+      const changed = ws?.id !== v?.id; ws = v;
+      if (changed) void refresh(ctx); else ctx.ui.invalidate();
+    });
     ctx.events.on("remote-runtime.changed", () => { void refresh(ctx); });
     timer = setInterval(() => { if ((ctx.state.get("workspace-layout.panels") as any)?.remote) void refresh(ctx); }, 5000);
     await refresh(ctx);
