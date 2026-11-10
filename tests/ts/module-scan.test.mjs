@@ -28,3 +28,23 @@ test('truncated compiler output is an error, is cached for polling, and is never
   assert.equal(built.ok, false);
   assert.equal(staged, 0);
 });
+
+test('Windows module source directories use module-relative forward slashes', async () => {
+  const mod = await load();
+  const listed = [];
+  const ctx = { host: {
+    capabilities: { request: async () => ({ grant: 'grant' }) },
+    modules: { describe: async () => ({ sourceDir: 'modules\\ui\\viewer' }) },
+    fs: {
+      list: async (_grant, path) => {
+        listed.push(path);
+        assert.equal(path, 'ui/viewer');
+        return { entries: [{ name: 'index.ts', kind: 'file' }] };
+      },
+    },
+  } };
+  const result = await mod.methods.readSource(ctx, { id: 'viewer' });
+  assert.deepEqual(listed, ['ui/viewer']);
+  assert.equal(result.root, 'modules/ui/viewer');
+  assert.deepEqual(result.files, ['modules/ui/viewer/index.ts']);
+});

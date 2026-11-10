@@ -3,6 +3,7 @@
 import type { AppModule, ModuleContext, Handle, ChatMessage, StreamSubscription } from "../../../../sdk/types";
 import { JsonRpcPeer, errMsg, rpcError } from "../../../../sdk/runtime";
 import { advertisedChoices } from "../../../../sdk/workflow-provider-options";
+import { agentExecutable } from "../../../../sdk/agent-executable";
 import { modelChoices, relativeAgentPath, type AgentSpec, type AgentSession, type AgentPermission } from "../../../../sdk/persistent-agents";
 
 interface Live {
@@ -123,10 +124,11 @@ async function start(ctx:ModuleContext,s:AgentSession) {
       const env={...(s.profile.envRefs||{})};
       const envRemove=s.profile.provider==="claude"&&s.claudeSubscription?["ANTHROPIC_API_KEY","ANTHROPIC_AUTH_TOKEN"]:[];
       envRemove.forEach(k=>delete env[k]);
-      // A login shell resolves the adapter on the daemon machine, including GUI-launched local
-      // daemons with a minimal PATH. All user arguments remain positional, never shell source.
+      const resolved=await agentExecutable(ctx,grant.grant,s.root,s.profile.executable);
+      // Apply the discovered PATH after login initialization, including for node shebangs and
+      // child tools. Keep shell startup noise out of the ACP protocol stream.
       spawned=await ctx.host.process.spawn(grant.grant,{target:{kind:"local"},executable:ctx.host.env.info().platform==="macos"?"/bin/zsh":"/bin/sh",
-        args:["-lc",envRemove.length?'exec /usr/bin/env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN "$@"':'exec "$@"',"hato-agent",s.profile.executable,...s.profile.args],cwd:s.root,env,envRemove});
+        args:["-lc",envRemove.length?'exec /usr/bin/env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN "$@"':'exec /usr/bin/env "$@"',"hato-agent",`PATH=${resolved.pathEnv}`,resolved.path,...s.profile.args],cwd:s.root,env,envRemove});
     } finally { await ctx.host.capabilities.release(grant.grant); }
     c={session:s,process:spawned.handle,peer:null as any,subscriptions:[],permissions:new Map(),queued:[],cancelSent:false,stopping:false,context,firstPrompt:!s.contextSent,turn:Date.now(),stderr:"",steering:false};
     const connection=c;
