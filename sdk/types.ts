@@ -352,7 +352,7 @@ export type UiNode =
   | (Base & { type: "status"; text: string; level?: "info" | "warn" | "error" | "success" })
   | (Base & { type: "progress"; value?: number; indeterminate?: boolean; label?: string })
   /** Markdown from a document handle (scrolls) or inline `text`; `inline` renders without its own scroll area. */
-  | (Base & { type: "markdown"; document?: Handle; text?: string; inline?: boolean; lineHeight?: number; /** rem */ paragraphGap?: number; /** Non-web link clicks fire this action with the raw href as `value`; http(s)/mailto open natively. */ linkAction?: string })
+  | (Base & { type: "markdown"; /** Presentation of fenced code blocks. */ codeBlockStyle?: UiStyle; document?: Handle; text?: string; inline?: boolean; lineHeight?: number; /** rem */ paragraphGap?: number; /** Non-web link clicks fire this action with the raw href as `value`; http(s)/mailto open natively. */ linkAction?: string })
   /** Native syntax-highlighted editor over a document handle (read-only unless `editable`).
    *  Edits stay native; after `changeDebounceMs` (default 400) of quiet, `changeAction` fires
    *  with value {document, text}. The module decides whether/how to persist the text. */

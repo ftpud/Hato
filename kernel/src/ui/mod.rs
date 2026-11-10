@@ -693,7 +693,7 @@ impl Shell {
                 let el = match &slot.input {
                     AnyInput::Line(e) => {
                         let bg = n["style"]["background"].as_str().map(|c| theme::color(cx, c, cx.theme().background)).unwrap_or_else(|| theme::color(cx, "field", cx.theme().background));
-                        Input::new(e).small().bg(bg).when_some(n["height"].as_f64(), |input, height| input.h(px(height.clamp(20.0, 80.0) as f32)))
+                        Input::new(e).small().bg(bg).when_some(n["height"].as_f64(), |input, height| Styled::h(input, px(height.clamp(20.0, 80.0) as f32)))
                             .when_some(n["prefixSvg"].as_str(), |input, svg| input.prefix(gpui_component::Icon::default().data(svg.as_bytes()).with_size(px(16.0))))
                             .disabled(b("disabled")).into_any_element()
                     }
@@ -715,6 +715,10 @@ impl Shell {
                 // to the start/end of the text (Home/End semantics elsewhere are unchanged).
                 let line2 = line.clone();
                 self.apply_base(div(), n, cx)
+                    // apply_base treats explicit heights as fixed flex items. A single-line
+                    // input's height is its cross axis in a toolbar; retain horizontal growth.
+                    .when(!multiline && b("grow"), |d| d.flex_1())
+                    .when(!multiline, |d| d.flex_shrink_0())
                     .when_some(line, |d, e| d.capture_action(move |_: &gpui_component::input::MoveUp, _, cx| {
                         e.update(cx, |st, cx| st.set_selected_range(0..0, cx));
                         cx.stop_propagation();
@@ -966,9 +970,14 @@ impl Shell {
                 };
                 let content_id = if inline.is_some() { format!("{path}/inline") } else { format!("{path}/content/{}", s("document")) };
                 let mut view = self.markdown_links(TextView::markdown(sid(module, &content_id), text), module, key, &s("linkAction"));
+                let mut text_style = TextViewStyle::default();
                 if let Some(gap) = n["paragraphGap"].as_f64() {
-                    view = view.style(TextViewStyle::default().paragraph_gap(rems(gap.clamp(0.0, 4.0) as f32)));
+                    text_style = text_style.paragraph_gap(rems(gap.clamp(0.0, 4.0) as f32));
                 }
+                if n["codeBlockStyle"].is_object() {
+                    text_style = text_style.code_block(style::apply(StyleRefinement::default(), &n["codeBlockStyle"], cx));
+                }
+                view = view.style(text_style);
                 if b("inline") {
                     let lh = n["lineHeight"].as_f64().unwrap_or(18.0).clamp(10.0, 64.0) as f32;
                     return self.apply_base(div(), n, cx).w_full().min_w_0().overflow_hidden()

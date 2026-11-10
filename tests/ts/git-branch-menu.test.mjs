@@ -62,3 +62,24 @@ test('late results from a previous workspace cannot change the new workspace bra
   finish(catalog('one', 'feature/welcome')); await pending;
   assert.match(f.mod.render().tooltip, /Current branch: other/); assert.equal(f.mod.canSwap().ok, true);
 });
+
+test('deletion requires confirmation, cancel is inert, and a failed delete can be retried', async () => {
+  const f = await fixture((method, args) => {
+    if (method === 'deleteBranch') throw Error('Branch is not fully merged');
+    return catalog(args.workspaceId);
+  });
+  await f.event('toggle', true);
+  await f.event('branchActions', 'refs/heads/feature/welcome');
+  await f.event('editBranch', 'delete');
+  assert.equal(f.calls.filter(([m]) => m === 'deleteBranch').length, 0);
+  assert.equal(f.nodes().some(n => n.key === 'create-from'), false);
+  await f.event('cancelBranchEdit');
+  assert.equal(f.nodes().some(n => n.key === 'edit'), false);
+  assert.equal(f.calls.filter(([m]) => m === 'deleteBranch').length, 0);
+  await f.event('editBranch', 'delete');
+  await f.event('applyBranchEdit');
+  assert.equal(f.calls.find(([m]) => m === 'deleteBranch')[1].ref, 'refs/heads/feature/welcome');
+  assert.equal(f.mod.render().open, true);
+  assert.match(f.nodes().find(n => n.key === 'error').text, /not fully merged/);
+  assert.ok(f.nodes().find(n => n.action === 'applyBranchEdit'));
+});
