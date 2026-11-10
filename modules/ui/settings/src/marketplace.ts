@@ -1,6 +1,6 @@
 import type { ModuleContext, PluginInfo, UiNode } from '../../../../sdk/types';
 import bundled from '../../../../plugins.catalogue.json';
-export const REPOSITORY = 'ftpud/Hota-plugins';
+export const REPOSITORY = 'ftpud/Hato-plugins';
 export interface Package { id:string; name:string; type:string; core:boolean; author:string; description:string; version:string; coreVersion:string; dependencies:Record<string,string>; modules:string[]; artifacts?: {id:string; manifest:string; bundle:string}[] }
 export function satisfies(version:string, range:string):boolean {
   const parse=(s:string)=> /^\d+\.\d+\.\d+$/.test(s) ? s.split('.').map(Number) : null;

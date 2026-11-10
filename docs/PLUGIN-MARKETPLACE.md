@@ -1,6 +1,6 @@
 # Plugin packages and marketplace
 
-The public repository is https://github.com/ftpud/Hota-plugins. `catalogue.json`
+The public repository is https://github.com/ftpud/Hato-plugins. `catalogue.json`
 is its index. App code and editable sources remain in Hato; the marketplace contains
 prebuilt JS and manifests, exported with `node tools/export-plugins.mjs DESTINATION`
 after `npm run modules:build`. Review changes before committing and pushing that repository.
