@@ -336,7 +336,7 @@ export type UiNode =
       menuWidth?: number; maxHeight?: number; children: UiNode[] })
   | (Base & { type: "label"; text: string; size?: "xs" | "sm" | "md" | "lg"; weight?: "normal" | "medium" | "semibold" | "bold"; /** "default" or any UiColor. */ color?: UiColor; mono?: boolean; wrap?: boolean; /** Let the user select and copy the text. */ selectable?: boolean })
   | (Base & { type: "button"; text: string; /** Inline SVG drawing, bundled and hot reloaded with the module (see sdk/ui-icons.ts). */ iconSvg?: string; iconSize?: number; action: string; variant?: "primary" | "ghost" | "danger" | "default"; disabled?: boolean; value?: Json; small?: boolean;
-      /** Copied to the clipboard natively on click (no round trip); `action` may be "". */ copyText?: string })
+      /** Copied to the clipboard natively on click (no round trip); `action` may be "". */ copyText?: string; /** Secondary mouse gestures use the same value as action. */ middleClickAction?: string; contextAction?: string })
   | (Base & { type: "textInput"; placeholder?: string; value?: string; submitAction?: string; changeAction?: string; /** Inline SVG shown before single-line input text. */ prefixSvg?: string; pasteImageAction?: string; /** Limits for pasted pictures. */ maxFiles?: number; maxBytes?: number; secret?: boolean; multiline?: boolean; /** Fill the available height instead of using a fixed row count. */ fillHeight?: boolean; rows?: number; rowHeight?: number; disabled?: boolean })
   | (Base & { type: "select"; options: { value: string; label: string; disabled?: boolean }[]; value: string | null; action: string; disabled?: boolean; placeholder?: string; label?: string; disabledReason?: string; /** Style of the dropdown button itself (`style` styles its wrapper). */ buttonStyle?: UiStyle })
   | (Base & { type: "choice"; text: string; description?: string; selected?: boolean; action: string; value: string; /** Glyph shown when selected (default ✓). */ mark?: string })
@@ -346,7 +346,7 @@ export type UiNode =
   | (Base & { type: "popover"; children: UiNode[]; closeAction: string; top?: number; bottom?: number; left?: number; right?: number; /** Height as a fraction of the parent (0.1–1). */ heightFraction?: number; maxHeight?: number })
   | (Base & { type: "toggle"; label: string; checked: boolean; action: string; disabled?: boolean })
   | (Base & { type: "tree"; rows: TreeRow[]; selectAction: string; expandAction: string; /** Fired with the row key on double click (after the first click's selectAction). */ activateAction?: string;
-      /** Fixed row height (px); omit for content height. */ rowHeight?: number; /** Indent per depth level (px). */ indent?: number; rowGap?: number; iconSize?: number })
+      /** Fixed row height (px); omit for content height. */ rowHeight?: number; /** Indent per depth level (px). */ indent?: number; rowGap?: number; iconSize?: number; expandedIconSvg?: string; collapsedIconSvg?: string })
   /** Native diff view of a unified patch (e.g. `git diff` output) held in a document handle. */
   | (Base & { type: "diff"; document: Handle | null; mode?: "split" | "unified"; header?: boolean; placeholder?: string; emptyText?: string })
   | (Base & { type: "status"; text: string; level?: "info" | "warn" | "error" | "success" })

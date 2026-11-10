@@ -25,7 +25,7 @@
     "module-dev":   { "kind": "service", "capabilities": ["modules.read", "modules.admin", "modules.source.read", "modules.source.write", "process.build", "fs.scope"], "calls": [] },
     "workspace-layout": { "kind": "ui", "capabilities": [], "calls": ["workspace", "module-dev", "projects", "ai-sessions", "persistence", "settings"] },
     "projects-panel":   { "kind": "ui", "capabilities": ["ui.dialog"], "calls": ["projects", "workspace", "git-tasks"] },
-    "explorer":         { "kind": "ui", "capabilities": [], "calls": ["files", "workspace"] },
+    "explorer":         { "kind": "ui", "capabilities": [], "calls": ["files", "workspace", "git"] },
     "left-sidebar":     { "kind": "ui", "capabilities": [], "calls": [] },
     "sidebar":          { "kind": "ui", "capabilities": [], "calls": [] },
     "settings":         { "kind": "ui", "capabilities": ["modules.read", "plugins.manage", "ui.dialog", "net.fetch", "fs.scope"], "calls": ["persistence"] },

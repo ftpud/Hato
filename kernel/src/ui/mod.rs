@@ -514,14 +514,29 @@ impl Shell {
                     btn = btn.tooltip(t.to_string());
                 }
                 let copy = n["copyText"].as_str().map(str::to_owned);
-                btn.on_click(move |_, _, cx| {
+                let mut wrapper = div().id(sid(module, &format!("{path}/gestures")));
+                if !b("disabled") {
+                    for (field, mouse) in [("middleClickAction", MouseButton::Middle), ("contextAction", MouseButton::Right)] {
+                        if let Some(secondary) = n[field].as_str().filter(|a| !a.is_empty()) {
+                            let (k, m, inputs, key, value, action) = (k.clone(), m.clone(), inputs.clone(), key2.clone(), value.clone(), secondary.to_string());
+                            wrapper = wrapper.on_mouse_down(mouse, move |_, window, cx| {
+                                window.prevent_default(); cx.stop_propagation();
+                                Self::fire(&k, &m, &inputs, &action, &key, None, value.clone(), cx);
+                            });
+                        }
+                    }
+                }
+                if b("grow") { wrapper = wrapper.flex_1().min_w_0(); }
+                let button = btn.on_click(move |_, _, cx| {
                     if let Some(text) = &copy {
                         cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
                     }
                     if !action.is_empty() {
                         Self::fire(&k, &m, &inputs, &action, &key2, None, value.clone(), cx);
                     }
-                }).into_any_element()
+                }).into_any_element();
+                if !s("middleClickAction").is_empty() || !s("contextAction").is_empty() { wrapper.child(button).into_any_element() }
+                else { button }
             }
             "dropdown" => {
                 let k = self.kernel.clone();
@@ -851,7 +866,11 @@ impl Shell {
                         let key2 = key.to_string();
                         let rk2 = rk.clone();
                         div().id(sid(module, &format!("{path}/chev/{rk}"))).w(px(16.0)).flex_none().text_xs().text_color(theme_muted).cursor_pointer()
-                            .child(if expandable { if expanded { "▾" } else { "▸" } } else { " " })
+                            .child(if expandable {
+                                if let Some(svg) = n[if expanded { "expandedIconSvg" } else { "collapsedIconSvg" }].as_str() {
+                                    gpui_component::Icon::default().data(svg.as_bytes()).with_size(px(14.0)).into_any_element()
+                                } else { div().child(if expanded { "▾" } else { "▸" }).into_any_element() }
+                            } else { div().into_any_element() })
                             .when(expandable, |d| d.on_click(move |_, _, cx| { cx.stop_propagation(); Self::fire(&k, &m, &inputs, &a, &key2, Some(rk2.clone()), Value::Null, cx); }))
                     };
                     let k = self.kernel.clone();
@@ -863,6 +882,7 @@ impl Shell {
                     let act = act_action.clone();
                     let mut row = h_flex().id(sid(module, &format!("{path}/row/{rk}"))).w_full().min_w_0().overflow_hidden().pl(px(4.0 + depth_ * indent)).pr_1().py(px(3.0)).gap_1().rounded(px(4.0)).cursor_pointer()
                         .hover(|s| s.bg(cx.theme().list_hover))
+                        .on_mouse_down(MouseButton::Left, |_, window, cx| { window.prevent_default(); cx.stop_propagation(); })
                         .on_click(move |ev, _, cx| {
                             // A double click fires the first click as a selection, then the activation.
                             let action = if ev.click_count() >= 2 && !act.is_empty() { &act } else { &a };
