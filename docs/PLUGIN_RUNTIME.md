@@ -36,11 +36,12 @@ missing/damaged files are reconstructed from verified download cache, fetching o
 valid cache exists. User-installed updates in `<data>/plugins` override the downloaded baseline.
 Existing registry preferences and module IDs stay stable. Native artifact history supplies
 healthy previous generations for rollback. Application data is never reset during upgrades.
-The initial lock keeps the full existing module set so current cross-service dependencies remain
-available; separating optional installation profiles is a later dependency change.
+The initial lock contains only system packages and their package dependency closure. Claude,
+Codex, Workflows, Background Agents, and Remote workspaces are optional marketplace plugins.
+Existing downloaded baselines are retained on upgrade, preserving installed features and settings.
 
-Settings → Plugins exposes Marketplace / Installed / System. Package `core` controls System
-classification even after a system plugin is updated through an installed override. Actual
+Settings → Plugins exposes Marketplace / Installed / System, with one row and lifecycle controls
+per package. Expand a row to inspect its modules. Package `core` controls System classification even after a system plugin is updated through an installed override. Actual
 manifest versions determine update availability. Permission decisions remain native.
 
 ## Publish
@@ -70,6 +71,7 @@ cargo test --no-default-features --lib
 cargo test --no-default-features --test arch_gate --test plugin_runtime
 cargo build --no-default-features --bin hato
 tests/integration/run-integration.sh tests/integration/plugin-updates.js /tmp/hato-plugin-updates-check
+node tests/integration/run-provider-packages.mjs
 ```
 
 Use fresh isolated data for integration checks. Release smoke now starts from downloaded plugin

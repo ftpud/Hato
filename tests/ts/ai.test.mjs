@@ -1,3 +1,4 @@
+import {builtinPlugins} from "./plugin-fixture.mjs";
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as esbuild from 'esbuild';
@@ -459,7 +460,7 @@ test('ACP reports a crashed turn once and suppresses errors for intentional stop
     const events = [];
     const ctx = { modules: { async call() { return [{ id: 'codex' }, { id: 'claude' }]; } },
       log: { info() {}, warn() {} }, state: { get() {}, set() {}, watch() {} },
-      events: { emit: (topic, value) => events.push({ topic, value }) }, host: {
+      events: { emit: (topic, value) => events.push({ topic, value }) }, host: { plugins: {list: async () => ({plugins:builtinPlugins()})},
         streams: { async listen(_, options, callback, onEnd) { if (options.channel === 'stdout') ended = onEnd; } },
         process: { async write() {}, async closeStdin() { ended(); }, async terminate() {}, async wait() { return { code: 1 }; } }
       } };

@@ -9,7 +9,7 @@ const INTERVALS = [{ value: "0", label: "Manual only" }, { value: "5", label: "E
   { value: "30", label: "Every 30 minutes" }, { value: "60", label: "Every hour" }];
 const BAR_WIDTH = 28;
 
-export function usageMeter(id: string, provider: LimitProvider, title: string): AppModule {
+export function usageMeter(id: string, provider: LimitProvider, title: string, options: { command: string; liveHint?: string } = { command: "/usage" }): AppModule {
   let snap: LimitsSnapshot | null = null;
   let ws: any = null;
   let minutes = "15";
@@ -63,7 +63,7 @@ export function usageMeter(id: string, provider: LimitProvider, title: string): 
       show = savedShow === "used" ? "used" : "left";
       exportSettings(ctx, () => [{ key: id, title: `${title} usage meter`, group: "Agents", fields: [
         { key: "refreshMinutes", label: "Refresh", type: "select", value: minutes, options: INTERVALS,
-          description: `Checks run the adapter's local ${provider === "claude" ? "/usage" : "/status"} command in a short hidden ACP session; no model request is made. Live Claude chats also update the meter.` },
+          description: `Checks run the adapter's local ${options.command} command in a short hidden ACP session; no model request is made.${options.liveHint ? ' ' + options.liveHint : ''}` },
         { key: "show", label: "Show", type: "select", value: show, options: [{ value: "left", label: "Remaining" }, { value: "used", label: "Used" }] },
       ] }], async (_s, key, value) => {
         await ctx.modules.call("persistence", "settings.set", { key: `${id}.${key}`, value });

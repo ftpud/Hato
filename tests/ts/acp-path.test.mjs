@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import * as esbuild from 'esbuild';
+import {builtinPlugins} from './plugin-fixture.mjs';
 
 const exec = promisify(execFile);
 
@@ -27,6 +28,7 @@ test('SSH ACP detects interactive-only tools and carries their PATH into npm ins
     const ctx = {
       modules: { call: async () => desc }, events: { emit() {} },
       host: {
+        plugins: {list: async () => ({plugins:builtinPlugins()})},
         ssh: { connect: async () => ({ connection: 'ssh', machineId: desc.machineId }) },
         capabilities: { request: async () => ({ grant: 'grant' }) },
         process: { run: async (_grant, spec) => {

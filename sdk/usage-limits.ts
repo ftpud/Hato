@@ -7,7 +7,7 @@
 // * codex-acp: the local `/status` command's Markdown (`**5h limit:** 73% left (resets 14:00)`).
 // Neither command calls the model.
 
-export type LimitProvider = "claude" | "codex";
+export type LimitProvider = string;
 export interface LimitWindow {
   id: string;
   label: string;
