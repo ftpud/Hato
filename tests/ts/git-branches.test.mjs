@@ -106,3 +106,26 @@ test('SSH branch mutations stay on the selected workspace machine', async () => 
   await mod.methods.checkout(ctx, { workspaceId: 'ssh', ref: 'refs/heads/feature' });
   assert.ok(calls.some(spec => spec.args.includes('switch')));
 });
+
+test('branch actions rename, publish and track explicit refs, and only delete merged local branches', async t => {
+  const mod = await load('Hato-plugins/modules/services/git/src/index.ts'), f = fixture(t);
+  f.git('branch', 'feature');
+  let list = await mod.methods.renameBranch(f.ctx, { workspaceId: f.root, ref: 'refs/heads/feature', name: 'renamed' });
+  assert.ok(list.local.some(branch => branch.name === 'renamed'));
+  await assert.rejects(mod.methods.deleteBranch(f.ctx, { workspaceId: f.root, ref: 'refs/heads/main' }), /Switch to another branch/);
+  list = await mod.methods.deleteBranch(f.ctx, { workspaceId: f.root, ref: 'refs/heads/renamed' });
+  assert.ok(!list.local.some(branch => branch.name === 'renamed'));
+  f.git('switch', '-qc', 'unmerged');
+  fs.writeFileSync(path.join(f.dir, 'new-file'), 'keep this commit\n'); f.git('add', '.'); f.git('commit', '-qm', 'Unmerged work'); f.git('switch', '-q', 'main');
+  await assert.rejects(mod.methods.deleteBranch(f.ctx, { workspaceId: f.root, ref: 'refs/heads/unmerged' }), /not fully merged/);
+  assert.ok(f.git('rev-parse', 'refs/heads/unmerged'));
+  const remote = path.join(f.root, 'origin.git'); f.git('init', '--bare', '-q', remote); f.git('remote', 'add', 'origin', remote);
+  list = await mod.methods.publishBranch(f.ctx, { workspaceId: f.root, ref: 'refs/heads/main', remote: 'origin' });
+  assert.equal(list.local.find(branch => branch.name === 'main').upstream, 'refs/remotes/origin/main');
+  f.git('branch', 'tracking');
+  list = await mod.methods.setUpstream(f.ctx, { workspaceId: f.root, ref: 'refs/heads/tracking', upstream: 'refs/remotes/origin/main' });
+  assert.equal(list.local.find(branch => branch.name === 'tracking').upstream, 'refs/remotes/origin/main');
+  await assert.rejects(mod.methods.publishBranch(f.ctx, { workspaceId: f.root, ref: 'refs/heads/main', remote: '--force' }), /available remote/);
+  await assert.rejects(mod.methods.setUpstream(f.ctx, { workspaceId: f.root, ref: 'refs/heads/main', upstream: '--force' }), /remote-tracking branch/);
+  assert.ok(f.requests.every(request => !request.args.includes('--force') && !request.args.includes('-D')));
+});

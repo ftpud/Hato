@@ -94,6 +94,7 @@ test('steering cancels once, retains follow-ups, and submits them after the acti
 });
 
 test('pictures can be attached, removed, sent without text and retained on send failure', async () => {
+  const walk = node => [node, ...(node.children || []).flatMap(walk)];
   const mod = await load('Hato-plugins/modules/ui/ai/src/index.ts');
   const picture = { name: 'test.png', mimeType: 'image/png', data: 'iVBORw0KGgo=' };
   const view = { activeId: 'img-c', conversations: [], profiles: [], workspace: {}, active: { conversation: { id: 'img-c' }, messages: [], live: { status: 'ready' } } };
@@ -105,8 +106,11 @@ test('pictures can be attached, removed, sent without text and retained on send 
   await mod.activate(ctx);
   await mod.onEvent(ctx, { action: 'attachImages', value: [picture], inputs: {} });
   assert.deepEqual(mod.snapshot().attachments, [picture]);
+  assert.equal(walk(mod.render()).find(node => node.key === 'chat-composer-split').fixed[1], 240);
+  assert.ok(walk(mod.render()).find(node => node.key === 'prompt').style.minHeight >= 72);
   await mod.onEvent(ctx, { action: 'removeImage', value: 0, inputs: {} });
   assert.deepEqual(mod.snapshot().attachments, []);
+  assert.equal(walk(mod.render()).find(node => node.key === 'chat-composer-split').fixed, undefined);
   await mod.onEvent(ctx, { action: 'attachImages', value: [picture], inputs: {} });
   await mod.onEvent(ctx, { action: 'send', inputs: { prompt: '' } });
   assert.deepEqual(mod.snapshot().attachments, [picture]);

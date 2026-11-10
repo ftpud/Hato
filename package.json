@@ -12,7 +12,9 @@
     "test": "npm run typecheck && node --test tests/ts/*.test.mjs",
     "dev": "node tools/dev.mjs",
     "plugins:lock": "node tools/lock-plugins.mjs",
-    "plugins:setup": "node tools/setup-plugins.mjs"
+    "plugins:setup": "node tools/setup-plugins.mjs",
+    "ui:screenshot": "python3 tools/hato-screenshot.py",
+    "test:tools": "python3 -m unittest discover -s tests/tools -p 'test_*.py'"
   },
   "devDependencies": {
     "esbuild": "0.24.2",

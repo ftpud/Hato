@@ -19,7 +19,7 @@ use futures::StreamExt;
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::checkbox::Checkbox;
 use gpui_component::input::{Editor, EditorState, Input, InputEvent, InputState, Textarea, TextareaState};
-use gpui_component::menu::{DropdownMenu, PopupMenuItem};
+use gpui_component::menu::{ContextMenuExt, DropdownMenu, PopupMenuItem};
 use gpui_component::diff::{Diff, DiffFile, DiffMode, DiffState};
 use gpui_component::spinner::Spinner;
 use gpui_component::text::{TextView, TextViewStyle};
@@ -517,6 +517,7 @@ impl Shell {
                 let mut wrapper = div().id(sid(module, &format!("{path}/gestures")));
                 if !b("disabled") {
                     for (field, mouse) in [("middleClickAction", MouseButton::Middle), ("contextAction", MouseButton::Right)] {
+                        if field == "contextAction" && n["contextMenu"].as_array().map(|items| !items.is_empty()).unwrap_or(false) { continue; }
                         if let Some(secondary) = n[field].as_str().filter(|a| !a.is_empty()) {
                             let (k, m, inputs, key, value, action) = (k.clone(), m.clone(), inputs.clone(), key2.clone(), value.clone(), secondary.to_string());
                             wrapper = wrapper.on_mouse_down(mouse, move |_, window, cx| {
@@ -527,6 +528,26 @@ impl Shell {
                     }
                 }
                 if b("grow") { wrapper = wrapper.flex_1().min_w_0(); }
+                let menu_items = n["contextMenu"].as_array().cloned().unwrap_or_default();
+                if !menu_items.is_empty() && !b("disabled") {
+                    let (k, m, inputs, key) = (k.clone(), m.clone(), inputs.clone(), key2.clone());
+                    // The menu is rendered by the native popup layer at the pointer.
+                    let button = btn.on_click({
+                        let (k, m, inputs, action, key, value, copy) = (k.clone(), m.clone(), inputs.clone(), action.clone(), key.clone(), value.clone(), copy.clone());
+                        move |_, _, cx| { if let Some(text) = &copy { cx.write_to_clipboard(ClipboardItem::new_string(text.clone())); } if !action.is_empty() { Self::fire(&k, &m, &inputs, &action, &key, None, value.clone(), cx); } }
+                    });
+                    return wrapper.child(button).context_menu(move |mut menu, _, _| {
+                        for item in &menu_items {
+                            let (k, m, inputs, key) = (k.clone(), m.clone(), inputs.clone(), key.clone());
+                            let action = item["action"].as_str().unwrap_or("").to_string();
+                            let value = item.get("value").cloned().unwrap_or(Value::Null);
+                            menu = menu.item(PopupMenuItem::new(item["text"].as_str().unwrap_or("").to_string()).disabled(item["disabled"].as_bool().unwrap_or(false)).on_click(move |_, _, cx| {
+                                Self::fire(&k, &m, &inputs, &action, &key, None, value.clone(), cx);
+                            }));
+                        }
+                        menu
+                    }).into_any_element();
+                }
                 let button = btn.on_click(move |_, _, cx| {
                     if let Some(text) = &copy {
                         cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
@@ -672,7 +693,7 @@ impl Shell {
                 let el = match &slot.input {
                     AnyInput::Line(e) => {
                         let bg = n["style"]["background"].as_str().map(|c| theme::color(cx, c, cx.theme().background)).unwrap_or_else(|| theme::color(cx, "field", cx.theme().background));
-                        Input::new(e).small().bg(bg)
+                        Input::new(e).small().bg(bg).when_some(n["height"].as_f64(), |input, height| input.h(px(height.clamp(20.0, 80.0) as f32)))
                             .when_some(n["prefixSvg"].as_str(), |input, svg| input.prefix(gpui_component::Icon::default().data(svg.as_bytes()).with_size(px(16.0))))
                             .disabled(b("disabled")).into_any_element()
                     }
@@ -1026,7 +1047,7 @@ impl Shell {
                             entry.1 = Instant::now();
                             let st = entry.0.clone();
                             if st.read(cx).mode() != mode { st.update(cx, |d, cx| d.set_mode(mode, cx)); }
-                            Diff::new(&st).line_number(true).syntax_highlight(true).header_visible(n["header"].as_bool().unwrap_or(true)).size_full().into_any_element()
+                            Diff::new(&st).soft_wrap(b("softWrap")).line_number(true).syntax_highlight(true).header_visible(n["header"].as_bool().unwrap_or(true)).size_full().into_any_element()
                         }
                         Err(e) => div().p_3().text_sm().text_color(cx.theme().danger).child(format!("Cannot parse diff: {}", e.message())).into_any_element(),
                     },

@@ -9,5 +9,5 @@ export function terminalTabStyle(active: boolean): UiStyle {
 }
 export function tabButtonStyle(active: boolean, terminal = false): UiStyle {
   const { background, color } = terminal ? terminalTabStyle(active) : fileTabStyle(active);
-  return { background, color, fontWeight: 400, radius: 4 };
+  return { background, color, fontWeight: 400, radius: 4, paddingX: 9, paddingY: 5, minHeight: 30 };
 }

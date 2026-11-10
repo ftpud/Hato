@@ -19,6 +19,7 @@ hato-plugins/
     ├── lifecycle-and-permissions.md Manifests, discovery, swaps, handles and approvals
     ├── ui-composition.md            Contributions → layout → UiNode → native renderer
     ├── service-flows.md             Workspace, persistence, Files/Git, terminal and AI wiring
+    ├── visual-review.md                Screenshot helper and native UI design checks
     └── native-and-remote.md         Host broker, streams, watchers, SSH and daemon boundaries
 ```
 
@@ -29,6 +30,7 @@ Read only the branches needed for the current task:
 - Plugin enablement, missing dependencies, hot-swap failure, or permission errors:
   [lifecycle and permissions](references/lifecycle-and-permissions.md).
 - Panels, sidebars, settings UI, rendering or styling: [UI composition](references/ui-composition.md).
+- Inspecting the actual design of a panel, popup or element: [visual review](references/visual-review.md).
 - Application data, refresh events, workspace routing or agent behavior:
   [service flows](references/service-flows.md).
 - A missing native primitive, resource stream, remote install, or disconnect behavior:

@@ -8,3 +8,5 @@
 /.release-signing.local.json
 /dist
 /Hato-plugins/
+__pycache__/
+*.pyc
