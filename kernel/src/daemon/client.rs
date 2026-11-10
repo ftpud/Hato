@@ -58,6 +58,38 @@ pub fn ctl(home: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// `ctl-stream`: prints `{"ready":true}`, then takes one `{"id":…,"req":{…}}` per stdin line; each
+/// reply is a line `{"id":…,"ok":…}` on stdout, in completion order. Requests run concurrently. The
+/// desktop keeps one of these open per machine instead of starting an SSH channel per request.
+pub fn ctl_stream(home: &Path) -> anyhow::Result<()> {
+    let out = Arc::new(std::sync::Mutex::new(io::stdout()));
+    {
+        let mut o = out.lock().unwrap_or_else(|p| p.into_inner());
+        writeln!(o, "{}", json!({"ready": true}))?;
+        o.flush()?;
+    }
+    for line in io::stdin().lock().lines() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let (out, home) = (out.clone(), home.to_path_buf());
+        std::thread::spawn(move || {
+            let (id, mut reply) = match serde_json::from_str::<Value>(&line) {
+                Ok(v) => (v["id"].clone(), match request(&home, &v["req"]) {
+                    Ok(value) => json!({"ok": true, "value": value}),
+                    Err(e) => json!({"ok": false, "error": {"code": "EDAEMON", "message": format!("{e:#}")}}),
+                }),
+                Err(e) => (Value::Null, json!({"ok": false, "error": {"code": "EDAEMON", "message": format!("bad request: {e}")}})),
+            };
+            reply["id"] = id;
+            let mut o = out.lock().unwrap_or_else(|p| p.into_inner());
+            let _ = writeln!(o, "{reply}").and_then(|_| o.flush());
+        });
+    }
+    Ok(())
+}
+
 /// Start the daemon if needed (detached from this session) and print its status.
 pub fn ensure(home: &Path, force: bool) -> anyhow::Result<()> {
     if let Ok(info) = request(home, &json!({"op": "hello"})) {

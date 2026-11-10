@@ -43,6 +43,9 @@ pub struct SshProfile {
 
 fn default_port() -> u16 { 22 }
 
+/// How long a successful `ssh -O check` vouches for a master whose process is still running.
+const LIVENESS_CHECK_INTERVAL: Duration = Duration::from_secs(5);
+
 impl SshProfile {
     pub fn is_wsl(&self) -> bool { self.transport.as_deref() == Some("wsl") }
     pub fn uses_password(&self) -> bool { self.auth.as_deref() == Some("password") }
@@ -84,6 +87,8 @@ pub struct SshMaster {
     connecting: Mutex<()>,
     pub sftp: Mutex<Option<Arc<Sftp>>>,
     pub connected_at: Mutex<Option<Instant>>,
+    /// Last time `ssh -O check` confirmed the master answers; see `is_alive`.
+    checked_at: Mutex<Option<Instant>>,
     pub last_error: Mutex<Option<String>>,
     accept_new: Mutex<bool>,
     /// `hato daemon forward` processes by the port they listen on.
@@ -153,6 +158,7 @@ impl SshMaster {
             connecting: Mutex::new(()),
             sftp: Mutex::new(None),
             connected_at: Mutex::new(None),
+            checked_at: Mutex::new(None),
             last_error: Mutex::new(None),
             accept_new: Mutex::new(false),
             relays: Default::default(),
@@ -245,12 +251,19 @@ impl SshMaster {
         if self.is_wsl() {
             return true; // the keepalive channel is the connection
         }
+        // The master process is running. Confirming that it answers costs a process launch (a
+        // `wsl.exe` on Windows, hundreds of ms on slow machines), so a recent answer is trusted.
+        if self.checked_at.lock().is_some_and(|t| t.elapsed() < LIVENESS_CHECK_INTERVAL) {
+            return true;
+        }
         let st = ssh_program()
             .arg("-S").arg(&self.socket).arg("-O").arg("check")
             .arg("-p").arg(self.profile.port.to_string())
             .arg(self.profile.destination())
             .stdout(Stdio::null()).stderr(Stdio::null()).status();
-        matches!(st, Ok(s) if s.success())
+        let ok = matches!(st, Ok(s) if s.success());
+        *self.checked_at.lock() = ok.then(Instant::now);
+        ok
     }
 
     pub fn ensure_alive(&self) -> HResult<()> {
@@ -355,6 +368,7 @@ impl SshMaster {
                     }
                     *self.child.lock() = Some(child);
                     *self.connected_at.lock() = Some(Instant::now());
+                    *self.checked_at.lock() = Some(Instant::now());
                     *self.last_error.lock() = None;
                     return Ok(());
                 }
@@ -430,6 +444,7 @@ impl SshMaster {
 
     pub fn disconnect(&self) {
         *self.sftp.lock() = None;
+        *self.checked_at.lock() = None;
         for (_, mut r) in self.relays.lock().drain() {
             let _ = r.kill();
             let _ = r.wait();

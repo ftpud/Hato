@@ -1386,7 +1386,9 @@ pub fn run(cfg: Config) {
         }
     };
     let t0 = Instant::now();
-    let app = gpui_kit::application();
+    // Built-in component icons (the Windows/Linux title bar's minimize/maximize/close glyphs,
+    // checkmarks, chevrons…) load from this bundle; without it they render empty.
+    let app = gpui_kit::application().with_assets(gpui_kit::assets::Assets);
     let k2 = kernel.clone();
     app.run(move |cx| {
         gpui_kit::init(cx);

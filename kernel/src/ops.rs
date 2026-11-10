@@ -829,7 +829,7 @@ fn dispatch(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: &Value) -> H
                 "plugins.push" => dargs = push_payload(k, dargs["id"].as_str().unwrap_or(""))?,
                 _ => {}
             }
-            let r = daemon_link::request(&info, master.as_ref(), &json!({"op": op, "args": dargs}))?;
+            let r = daemon_link::request(&k.daemons, &info, master.as_ref(), &json!({"op": op, "args": dargs}))?;
             if (op == "resources.list" || op == "hello" || op == "status") && !admin {
                 return Ok(own_resources(r, owner));
             }

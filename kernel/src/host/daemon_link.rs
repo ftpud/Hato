@@ -10,7 +10,8 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::PathBuf;
-use std::process::Stdio;
+use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -27,12 +28,103 @@ pub struct DaemonInfo {
 #[derive(Default)]
 pub struct DaemonTable {
     by_machine: Mutex<HashMap<String, DaemonInfo>>,
+    /// Open `daemon ctl --stream` channels by machine id.
+    links: Mutex<HashMap<String, Arc<CtlLink>>>,
+    /// `machine\0binary` pairs whose daemon binary predates `ctl-stream`.
+    no_stream: Mutex<std::collections::HashSet<String>>,
 }
 
 impl DaemonTable {
     pub fn get(&self, machine_id: &str) -> Option<DaemonInfo> { self.by_machine.lock().get(machine_id).cloned() }
-    fn put(&self, i: DaemonInfo) { self.by_machine.lock().insert(i.machine_id.clone(), i); }
-    pub fn forget(&self, machine_id: &str) { self.by_machine.lock().remove(machine_id); }
+    fn put(&self, i: DaemonInfo) {
+        // The binary or home may have changed: the next request opens a fresh channel.
+        self.links.lock().remove(&i.machine_id);
+        self.by_machine.lock().insert(i.machine_id.clone(), i);
+    }
+    pub fn forget(&self, machine_id: &str) {
+        self.links.lock().remove(machine_id);
+        self.by_machine.lock().remove(machine_id);
+    }
+}
+
+/// A long-lived `hato daemon ctl --stream` channel. Starting a channel per request costs a process
+/// launch locally (a `wsl.exe` on Windows, often hundreds of ms) plus one on the machine.
+struct CtlLink {
+    child: Mutex<Child>,
+    stdin: Mutex<ChildStdin>,
+    pending: Arc<Mutex<HashMap<u64, crossbeam_channel::Sender<Value>>>>,
+    next_id: AtomicU64,
+    dead: Arc<AtomicBool>,
+}
+
+impl CtlLink {
+    /// Start the channel and wait for its `ready` line. A daemon binary without `ctl-stream` exits
+    /// with a usage error instead, which fails here (`EUNSUPPORTED`).
+    fn start(mut cmd: Command) -> HResult<CtlLink> {
+        cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
+        let mut child = cmd.spawn().map_err(|e| HostError::new("ENOEXEC", format!("daemon ctl: {e}")))?;
+        let (stdin, stdout) = (child.stdin.take().unwrap(), child.stdout.take().unwrap());
+        let pending: Arc<Mutex<HashMap<u64, crossbeam_channel::Sender<Value>>>> = Default::default();
+        let dead = Arc::new(AtomicBool::new(false));
+        let (p, d) = (pending.clone(), dead.clone());
+        let (ready_tx, ready_rx) = crossbeam_channel::bounded::<()>(1);
+        let reader = std::thread::Builder::new().name("daemon-ctl".into()).spawn(move || {
+            use std::io::BufRead;
+            for line in std::io::BufReader::new(stdout).lines() {
+                let Ok(line) = line else { break };
+                let Ok(v) = serde_json::from_str::<Value>(line.trim()) else { continue };
+                if v["ready"] == true {
+                    let _ = ready_tx.try_send(());
+                } else if let Some(tx) = v["id"].as_u64().and_then(|id| p.lock().remove(&id)) {
+                    let _ = tx.send(v);
+                }
+            }
+            d.store(true, Ordering::SeqCst);
+            p.lock().clear(); // waiting callers see the channel close
+        });
+        let link = CtlLink { child: Mutex::new(child), stdin: Mutex::new(stdin), pending, next_id: AtomicU64::new(1), dead };
+        reader.map_err(HostError::io)?;
+        // Generous: on Windows this includes starting `wsl.exe` and an SSH session.
+        match ready_rx.recv_timeout(Duration::from_secs(30)) {
+            Ok(()) => Ok(link),
+            Err(_) => Err(HostError::new("EUNSUPPORTED", "the daemon binary has no ctl-stream (rebuild it)")), // `link` drops: killed
+        }
+    }
+
+    fn is_alive(&self) -> bool { !self.dead.load(Ordering::SeqCst) && matches!(self.child.lock().try_wait(), Ok(None)) }
+
+    /// `Ok(None)`: the request was never sent, so it is safe to retry another way.
+    fn call(&self, req: &Value, timeout: Duration) -> HResult<Option<Value>> {
+        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        self.pending.lock().insert(id, tx);
+        let line = format!("{}\n", json!({"id": id, "req": req}));
+        let sent = {
+            let mut w = self.stdin.lock();
+            w.write_all(line.as_bytes()).and_then(|_| w.flush())
+        };
+        if sent.is_err() {
+            self.pending.lock().remove(&id);
+            self.dead.store(true, Ordering::SeqCst);
+            return Ok(None);
+        }
+        match rx.recv_timeout(timeout) {
+            Ok(v) => Ok(Some(v)),
+            Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
+                self.pending.lock().remove(&id);
+                Err(HostError::new("ETIMEDOUT", "daemon request timed out"))
+            }
+            Err(crossbeam_channel::RecvTimeoutError::Disconnected) => Err(HostError::new("EDAEMON", "the daemon control channel closed during the request")),
+        }
+    }
+}
+
+impl Drop for CtlLink {
+    fn drop(&mut self) {
+        let mut c = self.child.lock();
+        let _ = c.kill();
+        let _ = c.wait();
+    }
 }
 
 /// `uname -sm` → (std::env::consts::OS, ARCH) naming.
@@ -165,8 +257,59 @@ pub fn ensure_local(table: &DaemonTable) -> HResult<DaemonInfo> {
     Ok(info)
 }
 
-/// One control request (`hato daemon ctl`). Returns the daemon's `value` or its error.
-pub fn request(info: &DaemonInfo, master: Option<&Arc<SshMaster>>, req: &Value) -> HResult<Value> {
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(600);
+
+fn ctl_link(table: &DaemonTable, info: &DaemonInfo, master: Option<&Arc<SshMaster>>) -> HResult<Arc<CtlLink>> {
+    let mut links = table.links.lock();
+    if let Some(l) = links.get(&info.machine_id).filter(|l| l.is_alive()) {
+        return Ok(l.clone());
+    }
+    let binary = format!("{}\0{}", info.machine_id, info.bin);
+    if table.no_stream.lock().contains(&binary) {
+        return Err(HostError::new("EUNSUPPORTED", "the daemon binary has no ctl-stream"));
+    }
+    let cmd = match master {
+        Some(m) => m.remote_command(&format!("{} daemon ctl-stream --dir {}", sh_quote(&info.bin), sh_quote(&info.dir))),
+        None => {
+            let mut c = crate::util::command(&info.bin);
+            c.args(["daemon", "ctl-stream", "--dir", &info.dir]);
+            c
+        }
+    };
+    let l = Arc::new(CtlLink::start(cmd).inspect_err(|e| {
+        if e.code == "EUNSUPPORTED" {
+            table.no_stream.lock().insert(binary);
+        }
+    })?);
+    links.insert(info.machine_id.clone(), l.clone());
+    Ok(l)
+}
+
+/// One control request to the daemon. Returns the daemon's `value` or its error.
+pub fn request(table: &DaemonTable, info: &DaemonInfo, master: Option<&Arc<SshMaster>>, req: &Value) -> HResult<Value> {
+    match ctl_link(table, info, master).and_then(|l| l.call(req, REQUEST_TIMEOUT)) {
+        Ok(Some(v)) => reply_value(&v),
+        // Sent, but failed or timed out: it may have run, so it is not repeated.
+        Err(e) if e.code == "ETIMEDOUT" || e.code == "EDAEMON" => Err(e),
+        // No channel (older daemon binary, or it could not start), or it was gone before sending:
+        // one standalone round trip.
+        _ => {
+            table.links.lock().remove(&info.machine_id);
+            request_once(info, master, req)
+        }
+    }
+}
+
+fn reply_value(v: &Value) -> HResult<Value> {
+    if v["ok"] == true {
+        Ok(v["value"].clone())
+    } else {
+        Err(HostError::new("EDAEMON", v["error"]["message"].as_str().unwrap_or("daemon request failed").to_string()))
+    }
+}
+
+/// One control request over its own `hato daemon ctl` channel.
+fn request_once(info: &DaemonInfo, master: Option<&Arc<SshMaster>>, req: &Value) -> HResult<Value> {
     let input = req.to_string().into_bytes();
     let (code, out, err) = match master {
         Some(m) => run_ssh(m, &format!("{} daemon ctl --dir {}", sh_quote(&info.bin), sh_quote(&info.dir)), Some(&input), Duration::from_secs(600))?,
@@ -218,5 +361,42 @@ mod tests {
         assert_eq!(scoped_key("terminals", "ws:1/main").unwrap(), "terminals/ws:1/main");
         assert!(scoped_key("terminals", "a b").is_err());
         assert!(allowed_op("plugins.push") && !allowed_op("shutdown") && !allowed_op("pty.attach"));
+    }
+
+    /// A stand-in daemon binary: `ctl-stream` answers "stream" (unless `old`), `ctl` answers "once".
+    #[cfg(unix)]
+    fn fake_daemon(dir: &std::path::Path, old: bool) -> String {
+        use std::os::unix::fs::PermissionsExt;
+        let stream = r#"echo '{"ready":true}'; while read l; do id=$(echo "$l" | sed 's/.*"id":\([0-9]*\).*/\1/'); echo "{\"id\":$id,\"ok\":true,\"value\":\"stream\"}"; done"#;
+        let script = format!("#!/bin/sh\ncase \"$2\" in\n  ctl) cat >/dev/null; echo '{{\"ok\":true,\"value\":\"once\"}}' ;;\n  ctl-stream) {} ;;\n  *) echo usage >&2; exit 2 ;;\nesac\n",
+            if old { "echo usage >&2; exit 2" } else { stream });
+        let p = dir.join(if old { "old" } else { "new" });
+        std::fs::write(&p, script).unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        p.to_string_lossy().into_owned()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn requests_share_one_ctl_channel_and_fall_back_for_old_binaries() {
+        let dir = std::env::temp_dir().join(format!("hato-ctl-{}", crate::util::random_hex(4)));
+        std::fs::create_dir_all(&dir).unwrap();
+        let table = DaemonTable::default();
+        let info = |bin: String, m: &str| DaemonInfo { bin, dir: "/nonexistent".into(), machine_id: m.into(), status: Value::Null };
+
+        let new = info(fake_daemon(&dir, false), "local");
+        assert_eq!(request(&table, &new, None, &json!({"op": "hello"})).unwrap(), "stream");
+        let pid = table.links.lock()["local"].child.lock().id();
+        assert_eq!(request(&table, &new, None, &json!({"op": "hello"})).unwrap(), "stream");
+        assert_eq!(table.links.lock()["local"].child.lock().id(), pid, "the channel is reused");
+
+        let old = info(fake_daemon(&dir, true), "other");
+        assert_eq!(request(&table, &old, None, &json!({"op": "hello"})).unwrap(), "once");
+        assert_eq!(request(&table, &old, None, &json!({"op": "hello"})).unwrap(), "once");
+        assert_eq!(table.no_stream.lock().len(), 1, "an old binary is only probed once");
+
+        table.forget("local");
+        assert!(table.links.lock().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -132,6 +132,8 @@ pub fn main(args: &[String]) -> i32 {
         #[cfg(unix)]
         "ctl" => client::ctl(&home),
         #[cfg(unix)]
+        "ctl-stream" => client::ctl_stream(&home),
+        #[cfg(unix)]
         "stop" => client::request(&home, &serde_json::json!({"op": "shutdown"})).map(|v| println!("{v}")),
         #[cfg(unix)]
         "status" => client::request(&home, &serde_json::json!({"op": "hello"})).map(|v| println!("{v}")),
@@ -143,10 +145,10 @@ pub fn main(args: &[String]) -> i32 {
         #[cfg(unix)]
         "bridge" => client::bridge(&home, &a),
         #[cfg(not(unix))]
-        "serve" | "ensure" | "ctl" | "stop" | "status" | "pty-attach" | "proc-attach" | "bridge" => Err(anyhow::anyhow!("not available on {}: run the daemon on the workspace's Linux machine or WSL distribution", std::env::consts::OS)),
+        "serve" | "ensure" | "ctl" | "ctl-stream" | "stop" | "status" | "pty-attach" | "proc-attach" | "bridge" => Err(anyhow::anyhow!("not available on {}: run the daemon on the workspace's Linux machine or WSL distribution", std::env::consts::OS)),
         "forward" => crate::host::relay::serve_stdio(),
         _ => {
-            eprintln!("usage: hato daemon <serve|ensure|ctl|stop|status|pty-attach|proc-attach|bridge|watch|forward> [--dir DIR] …");
+            eprintln!("usage: hato daemon <serve|ensure|ctl|ctl-stream|stop|status|pty-attach|proc-attach|bridge|watch|forward> [--dir DIR] …");
             return 2;
         }
     };
