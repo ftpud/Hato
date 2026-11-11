@@ -3258,13 +3258,24 @@ impl<M: InputModeKind> Element for TextElement<M> {
             editor_style.background
         };
 
-        // Search owns focus while Find is open; its active result still needs a
-        // full-row cue independent of the caret (including soft-wrapped rows).
-        let search_rows = {
+        // Find owns focus while searching. Tint every matching row, including
+        // its soft wraps, with a stronger tint for the active occurrence.
+        let (search_rows, active_search_rows) = {
             let state = self.state.read(cx);
-            state.is_code_editor().then(|| state.search_session.active_match_rows(&state.text)).flatten()
+            if state.is_code_editor() {
+                let visible = &prepaint.last_layout.visible_buffer_lines;
+                let from = visible.first().copied().unwrap_or(0);
+                let to = visible.last().map(|row| row + 1).unwrap_or(from);
+                (state.search_session.matching_rows(&state.text, from..to), state.search_session.active_match_rows(&state.text))
+            } else { (vec![], None) }
         };
-        let search_line_color = editor_style.selection.opacity(if disabled { 0.10 } else { 0.20 });
+        let search_line_color = |row: usize| {
+            search_rows.iter().any(|rows| rows.contains(&row)).then(|| {
+                let active = active_search_rows.as_ref().is_some_and(|rows| rows.contains(&row));
+                let opacity = if active { 0.42 } else { 0.28 };
+                editor_style.selection.opacity(if disabled { opacity * 0.5 } else { opacity })
+            })
+        };
 
         // Paint active line
         let mut offset_y = px(0.);
@@ -3288,7 +3299,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
                         ));
                     }
                 }
-                if search_rows.as_ref().is_some_and(|rows| rows.contains(&buffer_line)) {
+                if let Some(search_line_color) = search_line_color(buffer_line) {
                     window.paint_quad(fill(Bounds::new(p, size(bounds.size.width, height)), search_line_color));
                 }
                 offset_y += height;
@@ -3509,7 +3520,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
                     }
                 }
 
-                if search_rows.as_ref().is_some_and(|rows| rows.contains(&buffer_line)) {
+                if let Some(search_line_color) = search_line_color(buffer_line) {
                     window.paint_quad(fill(
                         Bounds::new(point(gutter_bounds.origin.x, p.y), size(gutter_bounds.size.width, height)),
                         search_line_color,

@@ -20,6 +20,8 @@ use crate::{
     v_flex,
 };
 
+use gpui_base::input::{SearchNext, SearchPrevious};
+
 const CONTEXT: &'static str = "SearchPanel";
 
 actions!(input, [Tab]);
@@ -331,6 +333,8 @@ impl<M: crate::input::overlay::OverlayMode> Render for SearchPanel<M> {
             .track_focus(&self.focus_handle(cx))
             .key_context(CONTEXT)
             .on_action(cx.listener(Self::on_action_enter))
+            .on_action(cx.listener(|this, _: &SearchNext, window, cx| this.next(window, cx)))
+            .on_action(cx.listener(|this, _: &SearchPrevious, window, cx| this.prev(window, cx)))
             .on_action(cx.listener(Self::on_action_escape))
             .on_action(cx.listener(Self::on_action_tab))
             .on_action(cx.listener(Self::on_action_tab_prev))

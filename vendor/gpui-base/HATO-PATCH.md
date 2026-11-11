@@ -17,3 +17,10 @@ Remove this local Cargo patch when upstream supports click-time requests.
 `src/input/editor/search.rs` and `src/input/base/element.rs`: highlight the logical
 rows occupied by the active Find match across the editor and gutter, independently
 of caret focus. Wrapped rows share the highlight; closing search clears it.
+
+Hover pointer hit testing uses the fixed input viewport instead of the scrolled
+text bounds, so tooltips continue working after scrolling far down a file.
+Find supports F3/Shift+F3 navigation with either the editor or the Find panel
+focused. Every matching logical row gets a stronger background, including soft
+wraps and the gutter; the active match gets additional contrast. Match lookup is
+limited to visible rows to avoid rescanning offscreen matches on every paint.

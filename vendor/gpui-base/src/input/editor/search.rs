@@ -5,7 +5,7 @@ use ropey::Rope;
 use std::{ops::Range, rc::Rc};
 
 use super::{
-    InputBaseState, Replace, RopeExt as _, Search, movement::MoveDirection, state::ScrollPadding,
+    InputBaseState, Replace, RopeExt as _, Search, SearchNext, SearchPrevious, movement::MoveDirection, state::ScrollPadding,
 };
 
 /// Stateful, presentation-independent search engine used by text inputs.
@@ -54,6 +54,24 @@ impl Default for SearchSession {
 }
 
 impl SearchSession {
+    /// Matching logical rows in the viewport, coalesced so each row paints once.
+    pub(crate) fn matching_rows(&self, text: &Rope, visible: Range<usize>) -> Vec<std::ops::RangeInclusive<usize>> {
+        if !self.is_active() || visible.is_empty() { return vec![]; }
+        let start = text.line_start_offset(visible.start);
+        let end = if visible.end >= text.lines_len() { text.len() } else { text.line_start_offset(visible.end) };
+        let matches = self.matcher.matched_ranges();
+        let first = matches.partition_point(|range| range.end <= start);
+        let mut rows: Vec<std::ops::RangeInclusive<usize>> = Vec::new();
+        for range in matches.iter().skip(first).take_while(|range| range.start < end) {
+            let from = text.offset_to_point(range.start).row.max(visible.start);
+            let to = text.offset_to_point(range.end.saturating_sub(1).max(range.start)).row.min(visible.end - 1);
+            if let Some(last) = rows.last_mut().filter(|last| from <= last.end().saturating_add(1)) {
+                *last = *last.start()..=to.max(*last.end());
+            } else { rows.push(from..=to); }
+        }
+        rows
+    }
+
     pub(crate) fn open(&mut self, replace_mode: bool, replaceable: bool) {
         self.open = true;
         self.active = true;
@@ -331,6 +349,22 @@ impl<M: InputModeKind> InputBaseState<M> {
         self.open_search(false, cx);
     }
 
+    pub(super) fn on_action_search_next(&mut self, _: &SearchNext, _: &mut Window, cx: &mut Context<Self>) {
+        self.navigate_search(false, cx);
+    }
+
+    pub(super) fn on_action_search_previous(&mut self, _: &SearchPrevious, _: &mut Window, cx: &mut Context<Self>) {
+        self.navigate_search(true, cx);
+    }
+
+    fn navigate_search(&mut self, previous: bool, cx: &mut Context<Self>) {
+        if self.search_session.query.is_empty() { cx.propagate(); return; }
+        if !self.search_session.is_active() {
+            self.set_search_query(self.search_session.query.clone(), self.search_session.case_insensitive, cx);
+        }
+        if previous { self.previous_search_match(cx); } else { self.next_search_match(cx); }
+    }
+
     pub(super) fn on_action_replace(
         &mut self,
         _: &Replace,
@@ -566,6 +600,30 @@ mod tests {
         session.update_query("foo\nbar\n", true);
         session.matcher.update(&text);
         assert_eq!(session.active_match_rows(&text), Some(0..=1));
+    }
+
+    #[test]
+    fn matching_rows_cover_every_occurrence_without_duplicate_row_fills() {
+        let text = Rope::from("foo foo\nno match\nα foo\nfoo\nend");
+        let mut session = SearchSession::default();
+        session.activate();
+        session.update_query("foo", true);
+        session.matcher.update(&text);
+        assert_eq!(session.matching_rows(&text, 0..5), vec![0..=0, 2..=3]);
+        assert_eq!(session.matching_rows(&text, 2..3), vec![2..=2]);
+        assert_eq!(session.matching_rows(&text, 1..2), vec![]);
+        session.close();
+        assert!(session.matching_rows(&text, 0..5).is_empty());
+    }
+
+    #[test]
+    fn matching_rows_clip_multiline_matches_to_visible_rows() {
+        let text = Rope::from("foo\nbar\nbaz\nend");
+        let mut session = SearchSession::default();
+        session.activate();
+        session.update_query("foo\nbar\n", true);
+        session.matcher.update(&text);
+        assert_eq!(session.matching_rows(&text, 1..3), vec![1..=1]);
     }
 
     #[test]

@@ -65,7 +65,7 @@ struct EditorAssist {
     module: String, args: Value, resolve: String, signature_method: String, triggers: Vec<String>,
     prev: String, offered: editor::Offered,
     /// Active signature help (LSP SignatureHelp) and the caret offset it was requested at.
-    signature: Option<(Value, usize)>, seq: u64,
+    signature: Option<(Value, usize)>, signature_pending: bool, signature_cursor: usize, seq: u64,
     _subs: Vec<Subscription>,
 }
 
@@ -283,16 +283,30 @@ impl Shell {
                 }
             }
         }
-        // Parameter hints: open on a trigger character, refresh while open, close on null.
+        self.refresh_signature(h, st, cx);
+    }
+
+    fn refresh_signature(&mut self, h: &str, st: &Entity<EditorState>, cx: &mut Context<Self>) {
+        let kernel = self.kernel.clone();
+        let Some(assist) = self.editor_assist.get_mut(h) else { return };
         if assist.signature_method.is_empty() { return; }
-        let cursor = st.read(cx).cursor();
-        let triggered = change.as_ref().is_some_and(|(_, seg)| assist.triggers.iter().any(|t| seg.ends_with(t.as_str())));
-        if !triggered && assist.signature.is_none() { return; }
+        let state = st.read(cx);
+        let text = state.value().to_string();
+        let cursor = state.cursor();
+        assist.signature_cursor = cursor;
+        let trigger = editor::signature_trigger(&text, cursor, &assist.triggers);
+        if trigger.is_none() && assist.signature.is_none() && !assist.signature_pending { return; }
+        let mut args = assist.args.as_object().cloned().unwrap_or_default();
+        args.insert("document".into(), json!(h)); args.insert("text".into(), json!(text));
+        args.insert("position".into(), editor::position_json(&text, cursor));
         assist.seq += 1;
         let seq = assist.seq;
-        let mut args = call_args(assist, &text, cursor);
+        assist.signature_pending = true;
         if let Some((help, _)) = &assist.signature { args.insert("context".into(), json!({"isRetrigger": true, "triggerKind": 3, "activeSignatureHelp": help})); }
-        else { args.insert("context".into(), json!({"isRetrigger": false, "triggerKind": 2, "triggerCharacter": change.as_ref().map(|(_, s)| s.chars().last().unwrap_or('(').to_string())})); }
+        else { args.insert("context".into(), match trigger {
+            Some(trigger) => json!({"isRetrigger": false, "triggerKind": 2, "triggerCharacter": trigger}),
+            None => json!({"isRetrigger": true, "triggerKind": 3}),
+        }); }
         let task = editor::module_call(&kernel, &assist.module, &assist.signature_method, Value::Object(args), cx);
         let h = h.to_string();
         cx.spawn(async move |this, cx| {
@@ -300,6 +314,7 @@ impl Shell {
             let _ = this.update(cx, |this: &mut Shell, cx| {
                 let Some(assist) = this.editor_assist.get_mut(&h) else { return };
                 if assist.seq != seq { return; }
+                assist.signature_pending = false;
                 let anchor = assist.signature.as_ref().map(|(_, a)| *a).unwrap_or(cursor);
                 assist.signature = result.map(|help| (help, anchor.min(cursor)));
                 cx.notify();
@@ -1197,17 +1212,17 @@ impl Shell {
                                 // While hints are shown, follow the caret: re-render to reposition, close when it leaves the call.
                                 let moved = cx.observe(&st, move |this: &mut Shell, st, cx| {
                                     let Some(assist) = this.editor_assist.get_mut(&h3) else { return };
-                                    let Some((_, anchor)) = assist.signature.as_ref() else { return };
-                                    let state = st.read(cx);
-                                    let cursor = state.cursor();
-                                    let text = state.text();
-                                    use gpui_component::input::RopeExt;
-                                    if cursor < *anchor || text.offset_to_point(cursor).row != text.offset_to_point(*anchor).row { assist.signature = None; }
+                                    let cursor = st.read(cx).cursor();
+                                    if cursor == assist.signature_cursor { return; }
+                                    if assist.signature.as_ref().is_some_and(|(_, anchor)| cursor < *anchor) {
+                                        assist.signature = None; assist.signature_pending = false; assist.seq += 1;
+                                    }
+                                    this.refresh_signature(&h3, &st, cx);
                                     cx.notify();
                                 });
                                 self.editor_assist.insert(h.clone(), EditorAssist {
                                     module: String::new(), args: Value::Null, resolve: String::new(), signature_method: String::new(), triggers: vec![],
-                                    prev: st.read(cx).value().to_string(), offered: std::rc::Rc::new(std::cell::RefCell::new(None)), signature: None, seq: 0, _subs: vec![changed, moved],
+                                    prev: st.read(cx).value().to_string(), offered: std::rc::Rc::new(std::cell::RefCell::new(None)), signature: None, signature_pending: false, signature_cursor: st.read(cx).cursor(), seq: 0, _subs: vec![changed, moved],
                                 });
                             }
                             let assist = self.editor_assist.get_mut(&h).unwrap();
@@ -1284,7 +1299,7 @@ impl Shell {
                         let editor_el = editor::code_font(Editor::new(&st).readonly(!editable).h_full(), &n["font"]);
                         let hints = self.editor_assist.get(&h).and_then(|a| a.signature.as_ref()).and_then(|(help, _)| self.signature_popup(help, &st, cx));
                         let dismiss_hints = { let h = h.clone(); cx.listener(move |this: &mut Shell, ev: &KeyDownEvent, _, cx| {
-                            if ev.keystroke.key == "escape" { if let Some(a) = this.editor_assist.get_mut(&h) { if a.signature.take().is_some() { cx.notify(); } } }
+                            if ev.keystroke.key == "escape" { if let Some(a) = this.editor_assist.get_mut(&h) { a.seq += 1; a.signature_pending = false; if a.signature.take().is_some() { cx.notify(); } } }
                         }) };
                         let markers = editor::line_markers(&n["lineMarkers"], |c| Some(theme::color(cx, c, theme_muted)));
                         if markers.is_empty() { div().relative().size_full().capture_key_down(dismiss_hints).child(editor_el).children(hints).into_any_element() } else {

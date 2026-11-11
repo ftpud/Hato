@@ -123,6 +123,8 @@ actions!(
         ToggleCodeActions,
         ShowCompletions,
         Search,
+        SearchNext,
+        SearchPrevious,
         Replace,
         GoToDefinition,
     ]
@@ -306,6 +308,10 @@ pub(crate) fn init(cx: &mut App) {
         KeyBinding::new("cmd-.", ToggleCodeActions, Some(CONTEXT)),
         #[cfg(not(target_os = "macos"))]
         KeyBinding::new("ctrl-.", ToggleCodeActions, Some(CONTEXT)),
+        KeyBinding::new("f3", SearchNext, Some(CONTEXT)),
+        KeyBinding::new("shift-f3", SearchPrevious, Some(CONTEXT)),
+        KeyBinding::new("f3", SearchNext, Some("SearchPanel")),
+        KeyBinding::new("shift-f3", SearchPrevious, Some("SearchPanel")),
         #[cfg(target_os = "macos")]
         KeyBinding::new("cmd-f", Search, Some(CONTEXT)),
         #[cfg(not(target_os = "macos"))]
@@ -2798,12 +2804,9 @@ impl<M: InputModeKind> InputBaseState<M> {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // Check if mouse is within bounds
-        let within_bounds = self
-            .last_bounds
-            .as_ref()
-            .map(|bounds| bounds.contains(&event.position))
-            .unwrap_or(false);
+        // last_bounds follows the scrolled text origin. Hit testing must use
+        // the fixed viewport, or hovering stops after scrolling one screen.
+        let within_bounds = self.input_bounds.contains(&event.position);
 
         if !within_bounds {
             // Clear hover when mouse leaves the input
@@ -5089,6 +5092,8 @@ impl<M: InputModeKind> Render for InputBaseState<M> {
             })
             .on_action(window.listener_for(&entity, InputBaseState::copy))
             .on_action(window.listener_for(&entity, InputBaseState::on_action_search))
+            .on_action(window.listener_for(&entity, InputBaseState::on_action_search_next))
+            .on_action(window.listener_for(&entity, InputBaseState::on_action_search_previous))
             .on_action(window.listener_for(&entity, InputBaseState::on_action_replace))
             .on_mouse_down(
                 MouseButton::Left,
@@ -7150,6 +7155,49 @@ mod tests {
                 );
             });
         });
+    }
+
+    #[gpui::test]
+    fn hover_hit_testing_uses_viewport_after_text_scrolls_offscreen(cx: &mut TestAppContext) {
+        let view = InputView::new(cx);
+        view.window_handle.update(cx, |_, window, cx| {
+            view.input.update(cx, |state, cx| {
+                // Scrolled content is a full viewport above its visible editor.
+                state.last_bounds = Some(Bounds::new(point(px(0.), px(-400.)), gpui::size(px(300.), px(200.))));
+                state.set_input_bounds(Bounds::new(point(px(0.), px(20.)), gpui::size(px(300.), px(200.))), cx);
+                state.present_hover(0..4, lsp_types::Hover {
+                    contents: lsp_types::HoverContents::Scalar(lsp_types::MarkedString::String("docs".into())),
+                    range: None,
+                }, cx);
+                let mut event = MouseMoveEvent { position: point(px(100.), px(100.)), pressed_button: None, modifiers: Default::default() };
+                state.on_mouse_move(&event, window, cx);
+                assert!(state.hover_popover().is_some(), "visible text must keep hover after scrolling");
+                event.position = point(px(400.), px(100.));
+                state.on_mouse_move(&event, window, cx);
+                assert!(state.hover_popover().is_none(), "leaving the viewport still dismisses hover");
+            });
+        }).unwrap();
+    }
+
+    #[gpui::test]
+    fn f3_navigates_matches_and_shift_f3_reverses(cx: &mut TestAppContext) {
+        let view = InputView::new(cx);
+        let mut visual = VisualTestContext::from_window(view.window_handle.into(), cx);
+        visual.update(|window, cx| {
+            view.input.update(cx, |state, cx| {
+                state.set_value("foo first\nfoo second\nfoo third", window, cx);
+                state.set_search_query("foo", true, cx);
+                state.focus(window, cx);
+            });
+        });
+        visual.simulate_keystrokes("f3");
+        assert_eq!(view.input.read_with(&visual, |state, _| state.search_session.matcher.current_match_index()), 1);
+        visual.simulate_keystrokes("shift-f3");
+        assert_eq!(view.input.read_with(&visual, |state, _| state.search_session.matcher.current_match_index()), 0);
+        visual.simulate_keystrokes("shift-f3");
+        assert_eq!(view.input.read_with(&visual, |state, _| state.search_session.matcher.current_match_index()), 2);
+        visual.simulate_keystrokes("f3");
+        assert_eq!(view.input.read_with(&visual, |state, _| state.search_session.matcher.current_match_index()), 0);
     }
 
     #[gpui::test]

@@ -39,6 +39,13 @@ fn module_position(text: &Rope, offset: usize) -> Value {
     let column = before.rsplit('\n').next().unwrap_or("").encode_utf16().count();
     json!({"line": line, "character": column})
 }
+/// Match a module-supplied signature trigger immediately before the caret.
+/// Auto-pairing inserts both delimiters at once, with the caret between them.
+pub fn signature_trigger<'a>(text: &str, cursor: usize, triggers: &'a [String]) -> Option<&'a str> {
+    let prefix = text.get(..cursor)?;
+    triggers.iter().find(|trigger| !trigger.is_empty() && prefix.ends_with(trigger.as_str())).map(String::as_str)
+}
+
 pub fn native_position(text: &str, line: u32, character: u32) -> gpui_component::input::Position {
     let mut units = 0; let mut column = 0;
     for c in text.lines().nth(line as usize).unwrap_or("").chars() {
@@ -520,6 +527,15 @@ pub fn configure_syntax(state: &mut EditorState, language: &str, rules: Value, n
 mod tests {
     use super::LexicalHighlighter;
     use serde_json::json;
+    #[test]
+    fn signature_trigger_follows_caret_inside_inserted_pairs() {
+        let triggers = vec!["(".to_string(), ",".to_string()];
+        assert_eq!(super::signature_trigger("call()", 5, &triggers), Some("("));
+        assert_eq!(super::signature_trigger("😀call()", "😀call(".len(), &triggers), Some("("));
+        assert_eq!(super::signature_trigger("call(a,)", 7, &triggers), Some(","));
+        assert_eq!(super::signature_trigger("call(a)", 7, &triggers), None);
+    }
+
     #[test]
     fn provider_positions_translate_utf16_and_editor_columns() {
         let text = "// 😀\n😀target";

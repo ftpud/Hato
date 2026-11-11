@@ -219,6 +219,8 @@ impl RenderOnce for CompletionMenuItem {
             .font_family(cx.theme().mono_font_family.clone())
             .py_0()
             .px_1p5()
+            // Overlay scrollbars paint inside the list viewport; reserve a lane.
+            .pr_5()
             .h(rems(24. / 16.))
             .rounded(cx.theme().radius)
             .when(deprecated, |this| this.line_through())
