@@ -100,7 +100,7 @@ const WSL_SFTP: &str = r#"cd && for p in /usr/lib/openssh/sftp-server /usr/libex
 
 const MAX_PASSWORD_ATTEMPTS: u32 = 3;
 /// Connections per machine, counting the first.
-const MAX_CONNECTIONS: usize = 4;
+const MAX_CONNECTIONS: usize = 16;
 /// How long a channel request waits for a session slot to free up.
 const SESSION_WAIT: Duration = Duration::from_secs(10);
 
@@ -183,7 +183,7 @@ impl SshMaster {
                 continue;
             }
             if Instant::now() >= deadline {
-                return Err(HostError::new("EBUSY", format!("{} refuses more sessions on all {MAX_CONNECTIONS} connections (see MaxSessions in its sshd_config)", self.profile.destination())));
+                return Err(HostError::new("EBUSY", format!("{} refuses more sessions on all {} connections (see MaxSessions in its sshd_config)", self.profile.destination(), conns.len())));
             }
             std::thread::sleep(Duration::from_millis(100));
         }
