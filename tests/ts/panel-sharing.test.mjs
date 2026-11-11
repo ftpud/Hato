@@ -6,10 +6,11 @@ const built = await esbuild.build({ stdin: { contents: 'export * from "./Hato-pl
 const M = await import('data:text/javascript;base64,' + Buffer.from(built.outputFiles[0].text).toString('base64'));
 M.setPanels(builtinPanelDefs());
 const shares = { viewer: 'space-1', 'git-changes': 'space-1' };
+const viewerLayout = () => M.showPanel(M.defaultLayout(), 'viewer', shares);
 const all = l => [...l.columns.flatMap(c => c.panels), ...l.bottom.panels, ...Object.keys(l.floating), ...Object.keys(l.detached), ...l.hidden].sort();
 
 test('shared panels replace each other in the same column slot without losing layout sizes', () => {
-  const original = M.defaultLayout();
+  const original = viewerLayout();
   const viewer = M.locate(original, 'viewer');
   const diff = M.showPanel(original, 'git-changes', shares);
   assert.equal(M.locate(diff, 'viewer').kind, 'hidden');
@@ -25,7 +26,7 @@ test('shared panels replace each other in the same column slot without losing la
 
 test('shared spaces retain bottom, floating and detached geometry', () => {
   for (const kind of ['bottom', 'floating', 'detached']) {
-    const initial = M.moveTo(M.defaultLayout(), 'viewer', kind);
+    const initial = M.moveTo(viewerLayout(), 'viewer', kind);
     const next = M.showPanel(initial, 'git-changes', shares);
     assert.equal(M.locate(next, 'git-changes').kind, kind);
     if (kind !== 'bottom') assert.deepEqual(next[kind]['git-changes'], initial[kind].viewer);
@@ -36,7 +37,7 @@ test('shared spaces retain bottom, floating and detached geometry', () => {
 });
 
 test('independent panels stay visible; reconciled groups show at most one member', () => {
-  const initial = M.showPanel(M.defaultLayout(), 'git-changes', {});
+  const initial = M.showPanel(viewerLayout(), 'git-changes', {});
   assert.equal(M.visibleIn(initial, 'viewer'), true);
   assert.equal(M.visibleIn(initial, 'git-changes'), true);
   const next = M.enforcePanelSharing(initial, shares);
@@ -60,7 +61,7 @@ test('Panel sharing settings persist and file opens replace the active diff pane
       if (method === 'updates') return { modules: [], available: [], errors: [] };
     } },
   };
-  await mod.activate(ctx);
+  await mod.activate(ctx, { layout: viewerLayout() });
   const section = values.get('workspace-layout.settings').sections.find(s => s.key === 'panel-sharing');
   assert.ok(section.fields.some(f => f.key === 'viewer'), 'pinned source viewer can share space');
   for (const key of ['viewer', 'git-changes']) {
@@ -83,16 +84,15 @@ test('Panel sharing settings persist and file opens replace the active diff pane
 test('captured defaults preserve separate Git and AI panes while shared panels switch in place', () => {
   const sharing = M.defaultPanelSharing();
   let layout = M.enforcePanelSharing(M.defaultLayout(), sharing);
-  for (const [initial, replacement] of [['viewer', 'workflows'], ['agents', 'remote']]) {
+  for (const [initial, replacement] of [['git-changes', 'workflows'], ['git', 'git-task-changes'], ['terminal', 'git-history']]) {
     const slot = M.locate(layout, initial);
     layout = M.showPanel(layout, replacement, sharing);
     assert.deepEqual(M.locate(layout, replacement), slot);
     assert.equal(M.visibleIn(layout, initial), false);
-    assert.equal(M.visibleIn(layout, 'terminal'), false, 'terminal starts collapsed');
     assert.equal(M.visibleIn(layout, 'ai'), true);
-    assert.equal(M.visibleIn(layout, 'git'), true);
+    assert.equal(M.visibleIn(layout, 'files'), true);
   }
-  for (const group of new Set(Object.values(sharing))) assert.equal(Object.keys(sharing).filter(id => sharing[id] === group && M.visibleIn(layout, id)).length, 1);
+  for (const group of new Set(Object.values(sharing))) assert.ok(Object.keys(sharing).filter(id => sharing[id] === group && M.visibleIn(layout, id)).length <= 1);
   assert.deepEqual(all(layout), Object.keys(M.PANELS).sort());
   const positions = M.defaultSidebarButtons(), order = M.defaultSidebarOrder();
   const ids = Object.values(order).flat().filter(id => !id.startsWith('@spacer:'));

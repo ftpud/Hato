@@ -65,12 +65,13 @@ test('appearance reset restores all UI preferences and keeps the top bar visible
   assert.equal(mod.snapshot().sidebarButtons.ai, 'left-top');
   assert.ok(!mod.snapshot().sidebarOrder['left-top'].includes('@spacer:old'));
   assert.equal(mod.snapshot().groupBySpace, true);
-  assert.equal(mod.snapshot().panelSharing.git, undefined, 'Git keeps its own pane');
+  assert.equal(mod.snapshot().panelSharing.git, mod.snapshot().panelSharing['git-task-changes']);
+  assert.equal(mod.snapshot().panelSharing.terminal, mod.snapshot().panelSharing['git-history']);
   assert.equal(mod.snapshot().panelSharing.viewer, mod.snapshot().panelSharing['git-changes']);
   assert.notEqual(mod.snapshot().panelSharing.ai, mod.snapshot().panelSharing.agents);
   assert.deepEqual(mod.snapshot().tableStyle, { density: 'comfortable', stripes: true, dividers: false });
   assert.equal(mod.render().children.find(n => n.type === 'theme').typography.fontSize, 14);
-  assert.deepEqual(mod.methods.getLayout().mainSizes, [0.7827808027630805, 0.2172191972369195]);
+  assert.ok(Math.abs(mod.methods.getLayout().mainSizes[0] - 0.7367000579833984 / (0.7367000579833984 + 0.26329997181892395)) < 1e-9);
   assert.equal(persisted.get('appearance.theme'), 'classic');
   assert.equal(persisted.get('appearance.projectsBackground'), 'subtle');
   assert.equal(state.get('workspace-layout.projectsBackgroundOpacity'), 0.12);

@@ -48,3 +48,18 @@ test('Windows module source directories use module-relative forward slashes', as
   assert.equal(result.root, 'modules/ui/viewer');
   assert.deepEqual(result.files, ['modules/ui/viewer/index.ts']);
 });
+
+test('installed modules with empty sourceDir build their editable checkout without /src entry paths',async()=>{
+ const mod=await load();let spec;
+ const manifest={id:'explorer',kind:'ui',entry:'src/index.ts'};
+ const ctx={events:{emit(){}},host:{capabilities:{request:async()=>({grant:'source'}),release:async()=>{}},modules:{describe:async()=>({sourceDir:'',manifest}),sourceInfo:async()=>({repoRoot:'/runtime/Hato-plugins',buildTool:'/esbuild',sdkRoot:'/runtime/sdk'}),stageArtifact:async()=>({stageId:'stage-test'})},fs:{stat:async(_g,p)=>{assert.equal(p,'ui/explorer/manifest.json');return {kind:'file'};},read:async()=>({text:JSON.stringify(manifest)})},process:{run:async(_g,request)=>{spec=request;return {code:0,stdout:'export default {};',stderr:'',truncated:false};}}}};
+ const result=await mod.methods.build(ctx,{id:'explorer'});
+ assert.equal(result.ok,true);assert.equal(spec.args[0],'modules/ui/explorer/src/index.ts');assert.equal(spec.cwd,'/runtime/Hato-plugins');
+});
+
+test('bundle-only plugins without checkout sources are unavailable rather than broken builds',async()=>{
+ const mod=await load();let builds=0;
+ const ctx={events:{emit(){}},host:{capabilities:{request:async()=>({grant:'source'}),release:async()=>{}},modules:{list:async()=>[{id:'vendor-plugin',kind:'ui',active:{sha256:'active',label:'vendor-plugin@1'}}],describe:async()=>({sourceDir:'',manifest:{id:'vendor-plugin',kind:'ui',entry:'dist/index.mjs'}}),sourceInfo:async()=>({repoRoot:'/runtime',buildTool:'/esbuild'})},fs:{stat:async()=>{throw Object.assign(Error('not found'),{code:'ENOENT'});}},process:{run:async()=>{builds++;throw Error('must not build');}}}};
+ const result=await mod.methods.scanUpdates(ctx,{});
+ assert.deepEqual(result.errors,[]);assert.equal(result.modules[0].status,'source-unavailable');assert.equal(builds,0);
+});

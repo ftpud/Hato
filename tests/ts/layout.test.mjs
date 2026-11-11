@@ -21,9 +21,9 @@ test("default layout places every panel exactly once", () => {
 
 test("drop left/right creates a column; top/bottom stacks; sizes stay normalized", () => {
   let l = M.defaultLayout();
-  l = M.dropPanel(l, "terminal", "viewer", "right");
+  l = M.dropPanel(l, "terminal", "git-changes", "right");
   assert.equal(l.bottom.panels.length, 0);
-  const vi = l.columns.findIndex((c) => c.panels.includes("viewer"));
+  const vi = l.columns.findIndex((c) => c.panels.includes("git-changes"));
   assert.deepEqual(l.columns[vi + 1].panels, ["terminal"]);
   assert.ok(Math.abs(sum(l.columns.map((c) => c.size)) - 1) < 1e-6);
   l = M.dropPanel(l, "files", "projects", "bottom");
@@ -90,7 +90,7 @@ test("collapsed panes use full-name restore buttons without reserving columns or
   const mod = (await import('data:text/javascript;base64,' + Buffer.from(built.outputFiles[0].text).toString('base64'))).default;
   const layout = M.defaultLayout();
   layout.showCollapsedTray = true;
-  layout.collapsed = { projects: true, ai: true, files: true, git: true, viewer: true };
+  layout.collapsed = Object.fromEntries(layout.columns.slice(0, 3).flatMap(c => c.panels).map(id => [id, true]));
   const originalSizes = layout.columns.map(c => c.size);
   const ctx = { host: { env: { info: () => ({ repoRoot: "/runtime", dataDir: "/data" }) }, plugins: pluginsHost() }, modules: { async call(_, method) { if (method === 'list') return []; if (method === 'updates') return { modules: [], available: [], errors: [] }; } }, state: { get() { return null; }, set() {}, watch() {} }, events: { on() { return () => {}; } }, ui: { invalidate() {} }, log: { warn() {} } };
   const walk = node => [node, ...(node.children || []).flatMap(walk)];
@@ -100,7 +100,7 @@ test("collapsed panes use full-name restore buttons without reserving columns or
   assert.deepEqual(cols.fixed, [0, 0, 0, null]);
   const restore = nodes.find(node => node.key === 'restore-buttons');
   assert.equal(restore.wrap, true);
-  assert.deepEqual(restore.children.filter(node => node.type === 'button').map(node => node.text), ['Projects', 'AI / ACP', 'Editor', 'Files', 'Git changes']);
+  assert.deepEqual(restore.children.filter(node => node.type === 'button').map(node => node.text), layout.columns.slice(0, 3).flatMap(c => c.panels).map(id => M.PANELS[id].title));
   for (const id of ['projects', 'files', 'viewer']) assert.ok(!nodes.some(node => node.type === 'slot' && node.module === M.PANELS[id].slot));
   await mod.onEvent(ctx, { action: 'toggleCollapse', value: 'files', inputs: {} });
   assert.deepEqual(mod.methods.getLayout().columns.map(c => c.size), originalSizes);

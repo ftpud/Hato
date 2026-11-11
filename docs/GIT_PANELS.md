@@ -17,8 +17,8 @@ plugin checkout instead of older installed marketplace overrides. Preserve the n
 directory to retain workspaces, sessions and layout. Do not launch a second app against the same
 live data directory. The existing app needs to exit before the rebuilt app is started.
 
-Versioned plugin artifacts are included in `Hato-plugins/packages/foundation/0.1.11` and
-`Hato-plugins/packages/git/0.1.6`. Ordinary packaged launches
+Versioned plugin artifacts are included in `Hato-plugins/packages/foundation/0.1.12` and
+`Hato-plugins/packages/git/0.1.7`. Ordinary packaged launches
 that use installed marketplace overrides need the corresponding plugin update as well as the
 native update; a native rebuild alone does not replace installed plugin source overrides.
 
@@ -28,7 +28,7 @@ native update; a native rebuild alone does not replace installed plugin source o
   Commits include complete working copies of the selected files. Other staged files stay staged
   and are excluded. Pull uses fast-forward only.
 - **Changesets**: select files and create a named tab, or use “Move selected to…”. Each file
-  belongs to one tab. Changed files appear in a left-aligned directory tree with folder checkboxes. Removing a tab returns its files to Changes. Commit drafts and assignments
+  belongs to one tab. Changed files appear in a left-aligned directory tree with folder checkboxes; single-child directory chains compact into rows such as `folder1/folder2`. Removing a tab returns its files to Changes. Commit drafts and assignments
   persist per workspace and survive module reloads; these tabs do not create Git branches.
 - **Stashes**: save all working changes including untracked files, apply while keeping the
   stash, or explicitly confirm deletion. Git conflicts appear as errors and remain available
@@ -45,8 +45,11 @@ native update; a native rebuild alone does not replace installed plugin source o
 - **Compare views**: floating previous/next buttons navigate changed regions in unified and
   side-by-side diffs, including latest changes, task comparisons and history.
 
-The two new panels start hidden to preserve the saved layout. Open them from the activity bar
-or Layout. Panel placement and shared spaces remain configurable there.
+The default layout matches the latest captured setup for all 13 panels: Projects and AI on the
+left, Latest changes in the middle, Files above Git, and MCP in the right column. Git and Task
+Git Changes share a space; Git History shares the terminal space. Hidden and collapsed states,
+proportions, toolbar placement and sidebar order follow the same snapshot. Panel placement and
+shared spaces remain configurable in Layout.
 
 ## Defaults and verification
 
@@ -60,3 +63,21 @@ Verification includes both repository TypeScript suites, disposable Git reposito
 Rust checks with and without default features. Native screenshots could not be captured because
 macOS Screen Recording permission was unavailable; appearance and native click behavior still
 need visual review after rebuilding.
+
+## Language workspace cache and module builds
+
+In `lng-srv`, each language now has its own **Project settings…** action below its enablement
+button. This opens the selected language even when it is disabled for that workspace.
+
+Language services retain three recent server processes by default. Switching back reuses the
+existing JDTLS process, open-document state and index. Settings → Languages → Language server
+cache controls the number of warm servers. The least recently used process receives LSP
+`shutdown` and `exit` before termination; its existing per-workspace data directory remains on
+disk. Explicit **Rebuild server index** still starts a new index generation. Module replacement
+and application shutdown close processes, so a restart can still perform incremental imports.
+
+The Modules window resolves installed module IDs to their editable checkout using the existing
+modules-scoped source API. It does not invent `/src/index.ts` when an installed module has no
+source directory. Bundle-only plugins without checkout sources are labelled accordingly and
+updated through Settings → Plugins. Actual compiler errors remain available in a collapsed
+details control, and the wider window wraps rows instead of clipping build controls.
