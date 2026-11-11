@@ -111,6 +111,14 @@ impl DirectManipulationHandler {
         }
     }
 
+    pub fn is_active(&self) -> bool {
+        unsafe {
+            self.viewport.GetStatus().map(|status| {
+                status == DIRECTMANIPULATION_RUNNING || status == DIRECTMANIPULATION_INERTIA
+            }).unwrap_or(false)
+        }
+    }
+
     pub fn drain_events(&self) -> Vec<PlatformInput> {
         std::mem::take(&mut *self.pending_events.borrow_mut())
     }

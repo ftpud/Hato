@@ -212,8 +212,22 @@ impl Kernel {
 
     /// Static manifest for a module, read fresh from its source directory (never from JS).
     pub fn source_manifest(&self, id: &str) -> HResult<(Manifest, PathBuf)> {
-        let found = self.discover().into_iter().find(|(m, _)| m.id == id);
-        found.ok_or_else(|| HostError::not_found(format!("no module source for '{id}'")))
+        if !crate::grants::valid_module_id(id) {
+            return Err(HostError::not_found(format!("no module source for '{id}'")));
+        }
+        // Describing one module must not enumerate and parse every installed
+        // manifest. Read the same candidates in discovery precedence order,
+        // retaining fresh on-disk metadata for build/activation checks.
+        let modules = self.cfg.modules_dir();
+        let builtin = [("services", "service"), ("ui", "ui")].into_iter().find_map(|(sub, kind)| {
+            let dir = modules.join(sub).join(id);
+            let manifest = plugins::read_manifest(&dir).ok()?;
+            (manifest.distribution != "marketplace" && manifest.kind == kind).then_some((manifest, dir))
+        });
+        if self.cfg.dev_watch && builtin.is_some() { return Ok(builtin.unwrap()); }
+        let dir = self.cfg.plugins_dir().join(id);
+        if let Ok(manifest) = plugins::read_manifest(&dir) { return Ok((manifest, dir)); }
+        builtin.ok_or_else(|| HostError::not_found(format!("no module source for '{id}'")))
     }
 
     // ---- generations ---------------------------------------------------------------------------
@@ -1228,35 +1242,35 @@ impl Kernel {
     // ---- introspection ---------------------------------------------------------------------------
 
     pub fn modules_json(&self) -> Value {
+        Value::Array(self.router.module_ids().iter().filter(|id| !id.starts_with("__"))
+            .map(|id| self.module_json(id)).collect())
+    }
+
+    /// Status for one module, without constructing all other module records.
+    pub fn module_json(&self, id: &str) -> Value {
+        if id.starts_with("__") || !self.router.has_slot(id) { return Value::Null; }
         let store = self.artifacts.lock();
         let gens = self.router.all_gens();
-        let mut out = Vec::new();
-        for id in self.router.module_ids() {
-            if id.starts_with("__") {
-                continue; // kernel-internal slots (e.g. the headless test driver)
-            }
-            let active = self.router.active(&id);
-            let rec = store.get(&id).cloned().unwrap_or_default();
-            let manifest = self.manifests.lock().get(&id).map(|(m, _)| m.clone());
-            let generations: Vec<Value> = gens.iter().filter(|g| g.module_id == id).map(|g| json!({
-                "generation": g.gen_id, "version": g.version, "status": g.status().name(),
-                "inflight": g.inflight.load(Ordering::Relaxed), "errors": g.errors.load(Ordering::Relaxed),
-                "subscriptions": self.router.subscription_count(g.gen_id), "stageId": g.stage_id,
-            })).collect();
-            out.push(json!({
-                "id": id,
-                "kind": manifest.as_ref().map(|m| m.kind.clone()),
-                "active": active.as_ref().map(|g| json!({"version": g.version, "generation": g.gen_id, "label": g.label(), "sha256": g.hash, "capabilities": g.caps.caps.iter().cloned().collect::<Vec<_>>()})),
-                "seedVersion": rec.seed_hash.as_ref().and_then(|hash| rec.versions.iter().rev().find(|v| &v.sha256 == hash).map(|v| v.version)),
-                "lastKnownGood": rec.last_known_good,
-                "previous": rec.previous,
-                "versions": rec.versions,
-                "generations": generations,
-                "lastError": self.router.last_error(&id),
-                "fenced": self.router.is_fenced(&id),
-            }));
-        }
-        Value::Array(out)
+        let active = self.router.active(id);
+        let rec = store.get(id).cloned().unwrap_or_default();
+        let kind = self.manifests.lock().get(id).map(|(m, _)| m.kind.clone());
+        let generations: Vec<Value> = gens.iter().filter(|g| g.module_id == id).map(|g| json!({
+            "generation": g.gen_id, "version": g.version, "status": g.status().name(),
+            "inflight": g.inflight.load(Ordering::Relaxed), "errors": g.errors.load(Ordering::Relaxed),
+            "subscriptions": self.router.subscription_count(g.gen_id), "stageId": g.stage_id,
+        })).collect();
+        json!({
+            "id": id,
+            "kind": kind,
+            "active": active.as_ref().map(|g| json!({"version": g.version, "generation": g.gen_id, "label": g.label(), "sha256": g.hash, "capabilities": g.caps.caps.iter().cloned().collect::<Vec<_>>()})),
+            "seedVersion": rec.seed_hash.as_ref().and_then(|hash| rec.versions.iter().rev().find(|v| &v.sha256 == hash).map(|v| v.version)),
+            "lastKnownGood": rec.last_known_good,
+            "previous": rec.previous,
+            "versions": rec.versions,
+            "generations": generations,
+            "lastError": self.router.last_error(id),
+            "fenced": self.router.is_fenced(id),
+        })
     }
 
     /// Developer opt-in (`--dev-watch`): when `npm run modules:watch` rewrites a seed build, stage and

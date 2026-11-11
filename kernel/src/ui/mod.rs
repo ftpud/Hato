@@ -10,6 +10,7 @@ mod theme;
 mod images;
 mod style;
 mod transcript_scroll;
+mod tree;
 
 use crate::bridge::{UiBridge, UiMsg};
 use crate::config::Config;
@@ -19,7 +20,7 @@ use crate::ops::Document;
 use futures::StreamExt;
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::checkbox::Checkbox;
-use gpui_component::input::{Editor, EditorState, Input, InputEvent, InputState, Textarea, TextareaState};
+use gpui_component::input::{EditorState, Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_component::menu::{ContextMenuExt, DropdownMenu, PopupMenuItem};
 use gpui_component::diff::{Diff, DiffFile, DiffMode, DiffState};
 use gpui_component::spinner::Spinner;
@@ -72,13 +73,15 @@ struct EditorAssist {
 pub struct Shell {
     kernel: Arc<Kernel>,
     trees: HashMap<String, Arc<Value>>,
+    /// Owned tree-node data reused until the module publishes its next UI snapshot.
+    tree_nodes: HashMap<(String, String), Arc<Value>>,
     render_errors: HashMap<String, String>,
     inputs: HashMap<(String, String), InputSlot>,
     editors: HashMap<String, (Entity<EditorState>, Instant)>,
     /// Editable code viewers: change subscription and the latest (module, key, action, debounce)
     /// binding from the tree, keyed by document handle.
     editor_subs: HashMap<String, Subscription>,
-    editor_observers: HashMap<String, Subscription>,
+    editor_views: HashMap<String, Entity<editor::EditorView>>,
     editor_search: HashMap<String, String>,
     editor_bind: HashMap<String, (String, String, String, u64)>,
     editor_seq: HashMap<String, u64>,
@@ -146,11 +149,12 @@ impl Shell {
         Shell {
             kernel,
             trees: HashMap::new(),
+            tree_nodes: HashMap::new(),
             render_errors: HashMap::new(),
             inputs: HashMap::new(),
             editors: HashMap::new(),
             editor_subs: HashMap::new(),
-            editor_observers: HashMap::new(),
+            editor_views: HashMap::new(),
             editor_search: HashMap::new(),
             editor_bind: HashMap::new(),
             editor_seq: HashMap::new(),
@@ -178,6 +182,7 @@ impl Shell {
         match msg {
             UiMsg::Tree { module, tree, .. } => {
                 self.render_errors.remove(&module);
+                self.tree_nodes.retain(|(owner, _), _| owner != &module);
                 self.trees.insert(module, tree);
                 cx.notify();
             }
@@ -316,8 +321,9 @@ impl Shell {
                 if assist.seq != seq { return; }
                 assist.signature_pending = false;
                 let anchor = assist.signature.as_ref().map(|(_, a)| *a).unwrap_or(cursor);
+                let visible_change = assist.signature.is_some() || result.is_some();
                 assist.signature = result.map(|help| (help, anchor.min(cursor)));
-                cx.notify();
+                if visible_change { cx.notify(); }
             });
         }).detach();
     }
@@ -576,7 +582,7 @@ impl Shell {
                     btn = if tk == active { btn.primary() } else { btn.ghost() };
                     bar = bar.child(btn.on_click(move |_, _, cx| Self::fire(&k, &m, &inputs, &a, &key2, None, json!(tk), cx)));
                 }
-                let kids: Vec<Value> = n.get("children").and_then(|c| c.as_array()).cloned().unwrap_or_default();
+                let kids = n.get("children").and_then(|c| c.as_array()).map(Vec::as_slice).unwrap_or(&[]);
                 let mut d = self.apply_base(v_flex(), n, cx).child(bar);
                 if let Some(c) = kids.iter().find(|c| c.get("key").and_then(|k| k.as_str()) == Some(active.as_str())).or(kids.first()) {
                     let el = self.node(module, c, &path, depth, window, cx);
@@ -1013,111 +1019,7 @@ impl Shell {
                     .on_click(move |v, _, cx| Self::fire(&k, &m, &inputs, &action, &key2, None, json!(*v), cx))
                     .into_any_element()
             }
-            "tree" => {
-                let rows = n.get("rows").and_then(|r| r.as_array()).cloned().unwrap_or_default();
-                let sel_action = s("selectAction");
-                let exp_action = s("expandAction");
-                let act_action = s("activateAction");
-                let inputs = self.module_inputs(module);
-                // Geometry is module data; defaults match a compact list.
-                let row_h = n["rowHeight"].as_f64().or_else(|| self.control_style["listRowHeight"].as_f64()).map(|h| h.clamp(12.0, 96.0) as f32);
-                let indent = n["indent"].as_f64().unwrap_or(14.0).clamp(0.0, 64.0) as f32;
-                let row_gap = n["rowGap"].as_f64().unwrap_or(1.0).clamp(0.0, 16.0) as f32;
-                let icon_size = n["iconSize"].as_f64().unwrap_or(16.0).clamp(8.0, 48.0) as f32;
-                // Row hover fill is module presentation: a color token and its opacity.
-                let hover_bg = n["hoverBackground"].as_str().map(|c| theme::color(cx, c, cx.theme().list_hover)).unwrap_or(cx.theme().list_hover)
-                    .opacity(n["hoverOpacity"].as_f64().unwrap_or(1.0).clamp(0.0, 1.0) as f32);
-                let mut list = v_flex().w_full().min_w_0().gap(px(row_gap));
-                for (row_index, r) in rows.iter().take(5000).enumerate() {
-                    let rk = r["key"].as_str().unwrap_or("").to_string();
-                    let depth_ = r["depth"].as_u64().unwrap_or(0) as f32;
-                    let selected = r["selected"].as_bool().unwrap_or(false);
-                    let expandable = r["expandable"].as_bool().unwrap_or(false);
-                    let expanded = r["expanded"].as_bool().unwrap_or(false);
-                    let busy = r["busy"].as_bool().unwrap_or(false);
-                    let chevron = {
-                        let k = self.kernel.clone();
-                        let m = module.to_string();
-                        let a = exp_action.clone();
-                        let inputs = inputs.clone();
-                        let key2 = key.to_string();
-                        let rk2 = rk.clone();
-                        div().id(sid(module, &format!("{path}/chev/{rk}"))).w(px(16.0)).flex_none().text_xs().text_color(theme_muted).cursor_pointer()
-                            .child(if expandable {
-                                if let Some(svg) = n[if expanded { "expandedIconSvg" } else { "collapsedIconSvg" }].as_str() {
-                                    gpui_component::Icon::default().data(svg.as_bytes()).with_size(px(14.0)).into_any_element()
-                                } else { div().child(if expanded { "▾" } else { "▸" }).into_any_element() }
-                            } else { div().into_any_element() })
-                            .when(expandable, |d| d.on_click(move |_, _, cx| { cx.stop_propagation(); Self::fire(&k, &m, &inputs, &a, &key2, Some(rk2.clone()), Value::Null, cx); }))
-                    };
-                    let k = self.kernel.clone();
-                    let m = module.to_string();
-                    let a = sel_action.clone();
-                    let inputs2 = inputs.clone();
-                    let key2 = key.to_string();
-                    let rk2 = rk.clone();
-                    let act = act_action.clone();
-                    let mut row = h_flex().id(sid(module, &format!("{path}/row/{rk}"))).w_full().min_w_0().overflow_hidden().pl(px(4.0 + depth_ * indent)).pr_1().py(px(3.0)).gap_1().rounded(px(4.0)).cursor_pointer()
-                        .hover(move |s| s.bg(hover_bg))
-                        .on_mouse_down(MouseButton::Left, |_, window, cx| { window.prevent_default(); cx.stop_propagation(); })
-                        .on_click(move |ev, _, cx| {
-                            // A double click fires the first click as a selection, then the activation.
-                            let action = if ev.click_count() >= 2 && !act.is_empty() { &act } else { &a };
-                            if ev.click_count() >= 2 && act.is_empty() { return; }
-                            Self::fire(&k, &m, &inputs2, action, &key2, Some(rk2.clone()), Value::Null, cx)
-                        });
-                    if let Some(h) = row_h { row = row.h(px(h)).flex_shrink_0().py_0().gap(px(6.0)); }
-                    if self.control_style["rowDividers"].as_bool().unwrap_or(false) { row = row.border_b_1().border_color(cx.theme().border); }
-                    if self.control_style["stripedRows"].as_bool().unwrap_or(false) && row_index % 2 == 1 { row = row.bg(cx.theme().muted.opacity(0.35)); }
-                    if let Some(background) = r["background"].as_str() {
-                        row = row.bg(theme::color(cx, background, cx.theme().transparent));
-                    }
-                    if selected {
-                        row = row.bg(cx.theme().list_active);
-                    }
-                    let weight = match r["weight"].as_str() { Some("semibold") => Some(FontWeight::SEMIBOLD), Some("bold") => Some(FontWeight::BOLD), Some("medium") => Some(FontWeight::MEDIUM), _ => None };
-                    let label = v_flex().flex_1().min_w_0()
-                        .child(h_flex().w_full().min_w_0().gap_1().child(div().flex_1().min_w_0().text_sm().when_some(weight, |d, w| d.font_weight(w)).overflow_hidden().whitespace_nowrap().text_ellipsis().child(r["label"].as_str().unwrap_or("").to_string()))
-                            .when(busy, |d| d.child(div().flex_none().child(Spinner::new().xsmall().color(theme::color(cx, "primary", cx.theme().primary)))))
-                            .children(r["badges"].as_array().into_iter().flatten().take(8).map(|badge| {
-                                let color = badge["color"].as_str().map(|c| theme::color(cx, c, theme_muted)).unwrap_or(theme_muted);
-                                div().flex_none().text_xs().text_color(color).whitespace_nowrap().child(badge["text"].as_str().unwrap_or("").to_string())
-                            }))
-                            .child(div().text_xs().text_color(theme_muted).whitespace_nowrap().child(r["badge"].as_str().unwrap_or("").to_string())))
-                        .when_some(r["detail"].as_str(), |d, detail| d.child(div().text_xs().text_color(theme_muted).overflow_hidden().whitespace_nowrap().text_ellipsis().child(detail.to_string())));
-                    let icon_element = match r["iconSvg"].as_str() {
-                        Some(svg) => {
-                            let color = r["iconColor"].as_str().map(|c| theme::color(cx, c, theme_muted)).unwrap_or(theme_muted);
-                            gpui_component::Icon::default().data(svg.as_bytes()).with_size(px(icon_size)).text_color(color).into_any_element()
-                        }
-                        None => div().w(px(4.0)).flex_none().into_any_element(),
-                    };
-                    let leading = if let Some(connector) = r["connector"].as_str().filter(|c| *c == "branch" || *c == "last") {
-                        let stem = div().absolute().left(px(3.0)).top_0().w(px(1.0)).bg(theme_muted.opacity(0.55));
-                        div().relative().w(px(16.0)).h_full().flex_none()
-                            .child(if connector == "last" { stem.h(relative(0.5)) } else { stem.bottom_0() })
-                            .child(div().absolute().left(px(3.0)).top(relative(0.5)).w(px(13.0)).h(px(1.0)).bg(theme_muted.opacity(0.55))).into_any_element()
-                    } else { chevron.into_any_element() };
-                    row = row.child(leading).child(div().flex_shrink_0().child(icon_element)).child(label);
-                    let menu_items = r["contextMenu"].as_array().cloned().unwrap_or_default();
-                    if menu_items.is_empty() { list = list.child(row); continue; }
-                    // Per-row native context menu; items fire with the row key, like selection.
-                    let (k, m, inputs, key2, rk2) = (self.kernel.clone(), module.to_string(), inputs.clone(), key.to_string(), rk.clone());
-                    list = list.child(div().id(sid(module, &format!("{path}/menu/{rk}"))).w_full().min_w_0().child(row).context_menu(move |mut menu, _, _| {
-                        for item in &menu_items {
-                            if item["separator"].as_bool().unwrap_or(false) { menu = menu.separator(); continue; }
-                            let (k, m, inputs, key, rk) = (k.clone(), m.clone(), inputs.clone(), key2.clone(), rk2.clone());
-                            let action = item["action"].as_str().unwrap_or("").to_string();
-                            let value = item.get("value").cloned().unwrap_or(Value::Null);
-                            menu = menu.item(PopupMenuItem::new(item["text"].as_str().unwrap_or("").to_string()).disabled(item["disabled"].as_bool().unwrap_or(false)).on_click(move |_, _, cx| {
-                                Self::fire(&k, &m, &inputs, &action, &key, Some(rk.clone()), value.clone(), cx);
-                            }));
-                        }
-                        menu
-                    }));
-                }
-                self.apply_base(v_flex(), n, cx).min_h_0().min_w_0().overflow_hidden().child(div().id(sid(module, &path)).flex_1().min_h_0().w_full().overflow_y_scroll().child(list)).into_any_element()
-            }
+            "tree" => self.tree(module, n, &path, cx),
             "status" => {
                 let color = match n.get("level").and_then(|l| l.as_str()) {
                     Some("error") => cx.theme().danger,
@@ -1175,9 +1077,6 @@ impl Shell {
                         });
                         entry.1 = Instant::now();
                         let st = entry.0.clone();
-                        // Input's floating overlays are composed by the parent, outside the
-                        // editor entity. Repaint it when asynchronous LSP results arrive.
-                        self.editor_observers.entry(h.clone()).or_insert_with(|| cx.observe(&st, |_, _, cx| cx.notify()));
                         let language = n["language"].as_str().unwrap_or(&doc.language).to_string();
                         let query = editor::register_highlights(&language, n["highlightQuery"].as_str());
                         // Semantic name refinements update in place; the highlighter reads them on paint.
@@ -1219,11 +1118,13 @@ impl Shell {
                                     let Some(assist) = this.editor_assist.get_mut(&h3) else { return };
                                     let cursor = st.read(cx).cursor();
                                     if cursor == assist.signature_cursor { return; }
+                                    assist.signature_cursor = cursor;
+                                    let had_signature = assist.signature.is_some();
                                     if assist.signature.as_ref().is_some_and(|(_, anchor)| cursor < *anchor) {
                                         assist.signature = None; assist.signature_pending = false; assist.seq += 1;
                                     }
                                     this.refresh_signature(&h3, &st, cx);
-                                    cx.notify();
+                                    if had_signature { cx.notify(); }
                                 });
                                 self.editor_assist.insert(h.clone(), EditorAssist {
                                     module: String::new(), args: Value::Null, resolve: String::new(), signature_method: String::new(), triggers: vec![],
@@ -1301,7 +1202,10 @@ impl Shell {
                         } else {
                             self.editor_bind.remove(&h);
                         }
-                        let editor_el = editor::code_font(Editor::new(&st).readonly(!editable).h_full(), &n["font"]);
+                        let editor_el = self.editor_views.entry(h.clone()).or_insert_with(|| {
+                            cx.new(|cx| editor::EditorView::new(st.clone(), editable, n["font"].clone(), cx))
+                        }).clone();
+                        editor_el.update(cx, |view, cx| view.configure(editable, &n["font"], cx));
                         let hints = self.editor_assist.get(&h).and_then(|a| a.signature.as_ref()).and_then(|(help, _)| self.signature_popup(help, &st, cx));
                         let dismiss_hints = { let h = h.clone(); cx.listener(move |this: &mut Shell, ev: &KeyDownEvent, _, cx| {
                             if ev.keystroke.key == "escape" { if let Some(a) = this.editor_assist.get_mut(&h) { a.seq += 1; a.signature_pending = false; if a.signature.take().is_some() { cx.notify(); } } }
@@ -1348,7 +1252,7 @@ impl Shell {
                     for (k, _) in v.into_iter().take(16) {
                         self.editors.remove(&k);
                         self.editor_subs.remove(&k);
-                        self.editor_observers.remove(&k);
+                        self.editor_views.remove(&k);
                         self.editor_search.remove(&k);
                         self.editor_bind.remove(&k);
                         self.editor_seq.remove(&k);
@@ -1425,8 +1329,8 @@ impl Shell {
                 // Generic follow-to-bottom list with history paging and scroll anchoring. Items are
                 // module nodes (`children`); `followKey` changing re-enters follow mode (e.g. the
                 // last user message), `scrollKey` separates scroll state (e.g. per conversation).
-                let items: Vec<Value> = n.get("children").and_then(|m| m.as_array()).cloned().unwrap_or_default();
-                let msgs = &items;
+                let items = n.get("children").and_then(|m| m.as_array()).map(Vec::as_slice).unwrap_or(&[]);
+                let msgs = items;
                 let scroll_key = format!("{module}::{path}/{}", n["scrollKey"].as_str().unwrap_or("default"));
                 let state = self.scrolls.entry(scroll_key).or_default();
                 let first_message = msgs.first().and_then(|message| message["key"].as_str()).map(str::to_owned);

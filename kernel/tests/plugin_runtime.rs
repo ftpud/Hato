@@ -162,3 +162,54 @@ fn legacy_seed_manifest_migration_preserves_an_active_custom_build() {
     assert_eq!(kernel.artifacts.lock().get("probe").unwrap().versions.len(), 2);
     kernel.shutdown();
 }
+
+#[test]
+fn single_module_metadata_matches_discovery_and_stays_fresh() {
+    let temp = tempfile::tempdir().unwrap();
+    let host = temp.path().join("host");
+    let services = host.join("Hato-plugins/modules/services");
+    let data = temp.path().join("data");
+    let write = |dir: &std::path::Path, id: &str, kind: &str, distribution: &str, description: &str| {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join("manifest.json"), json!({"schemaVersion":2,"id":id,"kind":kind,
+            "entry":"src/index.ts","moduleApiVersion":1,"distribution":distribution,
+            "description":description}).to_string()).unwrap();
+    };
+    let builtin = services.join("probe");
+    let installed = data.join("plugins/probe");
+    write(&builtin, "probe", "service", "builtin", "initial");
+    let args = vec!["hato".into(),"--repo-root".into(),host.display().to_string(),
+        "--data-dir".into(),data.display().to_string(),"--headless".into()];
+    let kernel = Kernel::new(Config::from_args(&args).unwrap(), UiBridge::disconnected()).unwrap();
+    let matches = |kernel: &Kernel, id: &str| {
+        let expected = kernel.discover().into_iter().find(|(m, _)| m.id == id);
+        let actual = kernel.source_manifest(id).ok();
+        assert_eq!(actual.as_ref().map(|(_, dir)| dir), expected.as_ref().map(|(_, dir)| dir));
+        assert_eq!(actual.map(|(m, _)| serde_json::to_value(m).unwrap()),
+            expected.map(|(m, _)| serde_json::to_value(m).unwrap()));
+    };
+    matches(&kernel, "probe");
+    write(&builtin, "probe", "service", "builtin", "edited");
+    assert_eq!(serde_json::to_value(kernel.source_manifest("probe").unwrap().0).unwrap()["description"], "edited");
+    write(&installed, "probe", "service", "marketplace", "installed");
+    matches(&kernel, "probe");
+    assert_eq!(kernel.source_manifest("probe").unwrap().1, installed);
+    let mut dev_cfg = Config::from_args(&args).unwrap();
+    dev_cfg.dev_watch = true;
+    let dev = Kernel::new(dev_cfg, UiBridge::disconnected()).unwrap();
+    matches(&dev, "probe");
+    assert_eq!(dev.source_manifest("probe").unwrap().1, builtin);
+    write(&services.join("optional"), "optional", "service", "marketplace", "optional");
+    matches(&kernel, "optional");
+    write(&services.join("wrong-kind"), "wrong-kind", "ui", "builtin", "invalid location");
+    matches(&kernel, "wrong-kind");
+    assert!(kernel.source_manifest("../probe").is_err());
+    assert!(kernel.source_manifest("missing").is_err());
+    kernel.router.ensure_slot("probe");
+    kernel.router.ensure_slot("other");
+    let all = kernel.modules_json();
+    assert_eq!(kernel.module_json("probe"), all.as_array().unwrap().iter().find(|m| m["id"] == "probe").unwrap().clone());
+    assert_eq!(kernel.module_json("missing"), serde_json::Value::Null);
+    kernel.shutdown();
+    dev.shutdown();
+}

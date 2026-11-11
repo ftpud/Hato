@@ -55,6 +55,7 @@ pub struct WindowsWindowState {
 
     pub callbacks: Callbacks,
     pub frame_signal: Arc<PlatformFrameSignal>,
+    pub(crate) frame_demand: Arc<crate::frame_demand::FrameDemand>,
     pub input_handler: Cell<Option<PlatformInputHandler>>,
     pub ime_enabled: Cell<bool>,
     pub pending_surrogate: Cell<Option<u16>>,
@@ -170,6 +171,7 @@ impl WindowsWindowState {
             min_size,
             callbacks,
             frame_signal: Arc::new(PlatformFrameSignal::new()),
+            frame_demand: Arc::new(Default::default()),
             input_handler: Cell::new(input_handler),
             ime_enabled: Cell::new(true),
             pending_surrogate: Cell::new(pending_surrogate),
@@ -966,6 +968,15 @@ impl PlatformWindow for WindowsWindow {
 
     fn is_fullscreen(&self) -> bool {
         self.state.is_fullscreen()
+    }
+
+    fn frame_waker(&self) -> Option<Rc<dyn Fn()>> {
+        let demand = self.state.frame_demand.clone();
+        Some(Rc::new(move || demand.request()))
+    }
+
+    fn schedule_frame(&self) {
+        self.state.frame_demand.request();
     }
 
     fn on_request_frame(&self, callback: Box<dyn FnMut(RequestFrameOptions)>) {

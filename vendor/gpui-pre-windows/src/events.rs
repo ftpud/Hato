@@ -301,9 +301,16 @@ impl WindowsWindowInner {
 
     fn handle_timer_msg(&self, handle: HWND, wparam: WPARAM) -> Option<isize> {
         if wparam.0 == SIZE_MOVE_LOOP_TIMER_ID {
+            // Bound work in the native move/resize loop so a replenished task
+            // queue cannot starve Windows pointer and window-movement messages.
+            let started = std::time::Instant::now();
+            let budget = std::time::Duration::from_millis(4);
             let mut runnables = self.main_receiver.clone().try_iter();
             while let Some(Ok(runnable)) = runnables.next() {
                 WindowsDispatcher::execute_runnable(runnable);
+                if started.elapsed() >= budget {
+                    break;
+                }
             }
             self.handle_paint_msg(handle)
         } else {
@@ -1335,6 +1342,7 @@ impl WindowsWindowInner {
 
     fn handle_dm_pointer_hit_test(&self, wparam: WPARAM) -> Option<isize> {
         self.state.direct_manipulation.on_pointer_hit_test(wparam);
+        self.state.frame_demand.request();
         None
     }
 
@@ -1347,16 +1355,20 @@ impl WindowsWindowInner {
             }
             // Validate the region so a nested message pump doesn't keep
             // re-dispatching WM_PAINT for the still-invalid region in a busy
-            // loop until the in-progress draw unwinds. The vsync thread
-            // re-invalidates every window on each vsync (see
-            // `begin_vsync_thread`), so the deferred frame still gets drawn,
-            // at most one vsync late.
+            // loop until the in-progress draw unwinds. Explicitly request a
+            // retry because idle windows no longer receive periodic paints.
+            self.state.frame_demand.request();
             unsafe { ValidateRect(Some(handle), None).ok().log_err() };
             return Some(0);
         };
         let mut request_frame = self.state.callbacks.request_frame.take()?;
 
         self.state.direct_manipulation.update();
+        if self.state.direct_manipulation.is_active() {
+            // Touchpad contact and inertia must keep advancing even when they
+            // produce no visual change in this particular frame.
+            self.state.frame_demand.request();
+        }
 
         let events = self.state.direct_manipulation.drain_events();
         if !events.is_empty() {

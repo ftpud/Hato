@@ -738,8 +738,7 @@ fn dispatch(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: &Value) -> H
             gen.caps.require("modules.read")?;
             let id = arg_str(args, "id")?;
             let (m, dir) = k.source_manifest(id)?;
-            let all = k.modules_json();
-            let status = all.as_array().and_then(|a| a.iter().find(|x| x["id"] == id).cloned()).unwrap_or(Value::Null);
+            let status = k.module_json(id);
             let grant = k.grants.install_grant(id).cloned();
             let rel = dir.strip_prefix(k.cfg.plugin_root()).map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
             Ok(json!({"manifest": m, "sourceDir": rel, "installGrant": grant, "status": status, "logs": k.logs.tail(id, 20)}))

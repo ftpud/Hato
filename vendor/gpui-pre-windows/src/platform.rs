@@ -42,6 +42,7 @@ use gpui::*;
 struct TrackedWindow {
     handle: SafeHwnd,
     frame_signal: Arc<PlatformFrameSignal>,
+    frame_demand: Arc<crate::frame_demand::FrameDemand>,
 }
 
 impl TrackedWindow {
@@ -474,15 +475,20 @@ impl WindowsPlatform {
                     };
                     for hwnd in all_windows.read().iter() {
                         unsafe {
+                            if !IsWindowVisible(hwnd.as_raw()).as_bool()
+                                || IsIconic(hwnd.as_raw()).as_bool()
+                            {
+                                // Native show/restore events invalidate the window again.
+                                hwnd.frame_signal.take();
+                                continue;
+                            }
+                            // GPUI wakes us when a view changes or an animation needs
+                            // another frame. Idle windows need no paint/gesture polling.
+                            if !hwnd.frame_demand.take() {
+                                continue;
+                            }
                             if let Some(signal_at) = signal_at {
-                                if IsWindowVisible(hwnd.as_raw()).as_bool()
-                                    && !IsIconic(hwnd.as_raw()).as_bool()
-                                {
-                                    hwnd.frame_signal.record(signal_at, signal_source);
-                                } else {
-                                    // Hidden windows may not consume WM_PAINT until shown again.
-                                    hwnd.frame_signal.take();
-                                }
+                                hwnd.frame_signal.record(signal_at, signal_source);
                             }
                             RedrawWindow(Some(hwnd.as_raw()), None, None, RDW_INVALIDATE)
                                 .ok()
@@ -761,6 +767,7 @@ impl Platform for WindowsPlatform {
         self.raw_window_handles.write().push(TrackedWindow {
             handle: handle.into(),
             frame_signal: window.state.frame_signal.clone(),
+            frame_demand: window.state.frame_demand.clone(),
         });
 
         Ok(Box::new(window))

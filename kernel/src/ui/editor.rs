@@ -7,6 +7,36 @@ use gpui_component::highlighter::SyntaxHighlighter;
 use serde_json::{json, Value};
 use crate::{kernel::Kernel, router::Reply};
 
+/// Keep editor notifications (including cursor blinking and async overlays) in
+/// their own view instead of invalidating every panel in the shell.
+pub struct EditorView {
+    state: Entity<EditorState>,
+    editable: bool,
+    font: Value,
+    _subscription: Subscription,
+}
+
+impl EditorView {
+    pub fn new(state: Entity<EditorState>, editable: bool, font: Value, cx: &mut Context<Self>) -> Self {
+        let subscription = cx.observe(&state, |_, _, cx| cx.notify());
+        Self { state, editable, font, _subscription: subscription }
+    }
+
+    pub fn configure(&mut self, editable: bool, font: &Value, cx: &mut Context<Self>) {
+        if self.editable != editable || self.font != *font {
+            self.editable = editable;
+            self.font = font.clone();
+            cx.notify();
+        }
+    }
+}
+
+impl Render for EditorView {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        code_font(gpui_component::input::Editor::new(&self.state).readonly(!self.editable).h_full(), &self.font)
+    }
+}
+
 pub struct ModuleDefinitions {
     pub kernel: Arc<Kernel>, pub module: String, pub method: String, pub args: Value, pub document: String,
 }
