@@ -45,6 +45,10 @@ impl InputBaseState<EditorMode> {
 
         let text = self.text.clone();
         let mut symbol_range = self.text.word_range(offset).unwrap_or(offset..offset);
+        if !symbol_range.is_empty() && self.extras.lsp.pending_hover.as_ref() == Some(&symbol_range) {
+            return;
+        }
+        self.extras.lsp.pending_hover = (!symbol_range.is_empty()).then(|| symbol_range.clone());
         let editor = cx.entity();
         let should_delay = self.extras.hover_popover.is_none();
         // Ask the provider only after the delay: every mouse move replaces this
@@ -59,7 +63,9 @@ impl InputBaseState<EditorMode> {
             let task = this.update_in(cx, |_, window, cx| {
                 provider.hover(&text, offset, window, cx)
             })?;
-            let result = task.await?;
+            let result = task.await;
+            _ = editor.update(cx, |editor, _| editor.extras.lsp.pending_hover = None);
+            let result = result?;
 
             _ = editor.update(cx, |editor, cx| {
                 match result {
@@ -115,6 +121,7 @@ impl InputBaseState<EditorMode> {
         self.extras.hover_definition.clear();
         self.extras.hover_popover = None;
         self.extras.lsp._hover_task = Task::ready(Ok(()));
+        self.extras.lsp.pending_hover = None;
         if changed {
             cx.notify();
         }

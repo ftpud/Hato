@@ -70,6 +70,9 @@ pub struct Lsp {
     /// take effect without a refetch.
     pub(crate) semantic_tokens: Vec<(lsp_types::Range, SharedString)>,
     pub(crate) _hover_task: Task<Result<()>>,
+    /// Word range of the hover request in flight (Hato patch): small pointer moves inside the
+    /// same word must not cancel and restart a slow request.
+    pub(crate) pending_hover: Option<std::ops::Range<usize>>,
     pub(crate) _definition_task: Task<Result<()>>,
     pub(crate) _document_color_task: Task<()>,
     pub(crate) _semantic_tokens_task: Task<()>,
@@ -90,6 +93,7 @@ impl Default for Lsp {
             document_colors: vec![],
             semantic_tokens: vec![],
             _hover_task: Task::ready(Ok(())),
+            pending_hover: None,
             _definition_task: Task::ready(Ok(())),
             _document_color_task: Task::ready(()),
             _semantic_tokens_task: Task::ready(()),

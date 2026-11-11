@@ -7,8 +7,11 @@ export interface LanguageServerSpec {
   id: string; executable: string; args: string[]; initializationOptions?: any;
   projectSettings?: { title: string; enabledLabel: string; initializationSettings?: boolean; fields: {
     key: string; label: string; setting: string; type: "paths" | "text" | "toggle"; description?: string; directory?: boolean;
+    /** Send the workspace-relative value to the server as an absolute path. */ absolute?: boolean;
   }[] };
   settings?: Record<string, any>; installHint: string; dependencySetup?: LanguageDependencySetup;
+  /** Build file names (e.g. "pom.xml") whose error diagnostics are reported as project import problems. */
+  buildFiles?: string[];
 }
 export interface LanguageDefinition {
   id: string; name: string; extensions?: string[]; filenames?: string[];
