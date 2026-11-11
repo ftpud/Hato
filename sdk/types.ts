@@ -367,9 +367,19 @@ export type UiNode =
        *  deletion point). Clicking one fires `lineMarkerAction` with {marker: value, y}. */
       lineMarkers?: { line: number; endLine?: number; color: UiColor; value?: Json }[]; lineMarkerAction?: string; lineMarkerWidth?: number;
       /** Optional module-supplied lexical highlighter (for languages without a bundled grammar). */ syntaxRules?: SyntaxRule[];
+      /** Code font; unset fields keep the theme's mono font. `weight` 100–900, `size` px, `lineHeight` × size. */
+      font?: { family?: string; weight?: number; size?: number; lineHeight?: number };
+      /** Tree-sitter highlights query replacing the bundled one for `language` (all views of that grammar). */
+      highlightQuery?: string;
+      /** Restyle tokens by text: `{baseCapture: {text: capture}}`, e.g. `{type: {Runnable: "type.interface"}}`. */
+      nameCaptures?: Record<string, Record<string, string>>;
       /** Method on this UI module returning LSP LocationLink[]. Receives args + document/text/position. */ definitionMethod?: string; definitionArgs?: Json | object;
       /** Methods on the rendering module receiving document/text/UTF-16 position and definitionArgs. */
       hoverMethod?: string; completionMethod?: string; completionTriggers?: string[];
+      /** Completion items render `label` (+ muted `labelDetails.detail`) and right-aligned `labelDetails.description`
+       *  (else `detail`); `data.presentation: {icon?: {text, color?, background?}, bold?, mutedFrom?}` adds a kind
+       *  badge, bolds the label and mutes it from the UTF-8 offset `mutedFrom` (e.g. parameters). */
+      completionMenu?: { width?: number; minWidth?: number; maxHeight?: number };
       /** Parameter hints: called with document/text/position/context (LSP SignatureHelpContext) after a
        *  trigger (default "(" and ",") and on every edit while shown; return LSP SignatureHelp or null. */
       signatureMethod?: string; signatureTriggers?: string[];

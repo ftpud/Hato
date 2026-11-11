@@ -91,3 +91,28 @@ export class LspPeer {
   }
   get alive() { return !this.closed; }
 }
+
+// Semantic token kinds a client accepts; editors use them to tell interfaces from classes, fields
+// from locals, and so on.
+export const SEMANTIC_TYPES = ["namespace", "type", "class", "enum", "interface", "struct", "typeParameter", "parameter", "variable", "property",
+  "enumMember", "event", "function", "method", "macro", "keyword", "modifier", "comment", "string", "number", "regexp", "operator", "decorator"];
+/** Decode relative semantic tokens into `{identifier: kind}`; a name used with several kinds is dropped. */
+export function semanticNames(result: any, legend: any, text: string): Record<string, string> {
+  const data: unknown = result?.data, types: unknown = legend?.tokenTypes;
+  if (!Array.isArray(data) || !Array.isArray(types)) return {};
+  const lines = text.split("\n"), out = new Map<string, string | null>();
+  let line = 0, start = 0;
+  for (let i = 0; i + 4 < data.length; i += 5) {
+    const [dl, ds, length, type] = [data[i], data[i + 1], data[i + 2], data[i + 3]].map(Number);
+    if (![dl, ds, length, type].every(Number.isInteger)) break;
+    line += dl; start = dl ? ds : start + ds;
+    const kind = types[type];
+    if (typeof kind !== "string" || length < 1 || length > 128) continue;
+    const name = lines[line]?.slice(start, start + length);
+    if (!name || !/^[\p{L}_$][\p{L}\p{N}_$]*$/u.test(name)) continue;
+    const seen = out.get(name);
+    out.set(name, seen === undefined || seen === kind ? kind : null);
+    if (out.size > 5000) break;
+  }
+  return Object.fromEntries([...out].filter((entry): entry is [string, string] => entry[1] !== null));
+}

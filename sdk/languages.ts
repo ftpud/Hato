@@ -13,6 +13,8 @@ export interface LanguageServerSpec {
 export interface LanguageDefinition {
   id: string; name: string; extensions?: string[]; filenames?: string[];
   grammar: string; syntaxRules?: SyntaxRule[]; server?: LanguageServerSpec;
+  /** Highlights query for the bundled grammar; an array is joined with newlines. */
+  highlightQuery?: string | string[];
   pluginId?: string;
 }
 /** Contributions are data: installing a language never grants it native code execution. */

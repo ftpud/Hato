@@ -4,6 +4,8 @@
 //
 // Token keys are tree-sitter capture names ("keyword", "type", "string.escape", ...). A dotted
 // capture without its own entry falls back to its parent ("function.method" → "function").
+// Semantic classes from language servers use "type.interface", "type.enum", ...; `bracket.0`,
+// `bracket.1`, ... color brackets by nesting depth (cycled).
 
 export interface SyntaxToken { color?: string; background?: string; bold?: boolean; italic?: boolean; underline?: boolean; fontWeight?: number }
 export interface SyntaxPalette {
@@ -30,6 +32,8 @@ const weirdLight: SyntaxPalette = {
     attribute: { color: "#808000", background: "#e4ffcd" },
     tag: { color: "#000000" },
     type: { color: "#000000", background: "#adc9ff" },
+    "type.interface": { color: "#000000", background: "#ffd4aa" },
+    "type.typeParameter": { color: "#20999d", bold: true },
     constructor: { color: "#000000", bold: true },
     constant: { color: "#800080", background: "#e4ffcd", bold: true, italic: true },
     property: { color: "#800080", bold: true },
@@ -42,6 +46,9 @@ const weirdLight: SyntaxPalette = {
     "comment.doc": { color: "#808080", italic: true },
     operator: { color: "#25324d" },
     punctuation: { color: "#25324d" },
+    "bracket.0": { color: "#1c2cf0" },
+    "bracket.1": { color: "#3d8e33" },
+    "bracket.2": { color: "#8f4a20" },
   },
 };
 const weirdDark: SyntaxPalette = {
@@ -58,6 +65,8 @@ const weirdDark: SyntaxPalette = {
     number: { color: "#8db6ff" },
     attribute: { color: "#c2c07e", background: "#304231" },
     type: { color: "#cbd8e8", background: "#29384a" },
+    "type.interface": { color: "#ead7c3", background: "#4a3a29" },
+    "type.typeParameter": { color: "#6fc3c6", bold: true },
     constructor: { color: "#f0f0f0", bold: true },
     constant: { color: "#caa2d1", background: "#304231", bold: true, italic: true },
     property: { color: "#d9a0e8", bold: true },
@@ -67,6 +76,9 @@ const weirdDark: SyntaxPalette = {
     "string.escape": { color: "#9ac8a2", background: "#293d30", bold: true },
     comment: { color: "#99a39b", background: "#293a32", italic: true },
     "comment.doc": { color: "#99a39b", background: "#293a32", italic: true },
+    "bracket.0": { color: "#7aa2f7" },
+    "bracket.1": { color: "#9ece6a" },
+    "bracket.2": { color: "#e0af68" },
   },
 };
 

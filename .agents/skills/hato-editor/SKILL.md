@@ -38,9 +38,11 @@ Read [AGENTS.md](../../../AGENTS.md) first; this is a short map of facts that ar
 - `EditorState::set_soft_wrap` / `set_line_number` exist; `Diff::soft_wrap` exists.
 - LSP seams on `state.lsp_mut()`: completion, hover, definition, code actions, document colors,
   semantic tokens. There is **no signature-help provider**, and completion
-  `additional_text_edits` are **not applied** (auto-import needs host work). The completion menu
-  is rendered in `gpui-component/src/input/popovers/completion_menu.rs` (label + detail only);
-  restyling it means patching the crate (see `[patch.crates-io]` + `vendor/` in `Cargo.toml`).
+  `additional_text_edits` are **not applied** (auto-import needs host work). gpui-component is
+  vendored (`vendor/gpui-component`, `[patch.crates-io]`): the completion menu
+  (`input/popovers/completion_menu.rs`) renders `label`, muted `labelDetails.detail`, right-aligned
+  `labelDetails.description` and `data.presentation` (`{icon, bold}`); size comes from
+  `codeViewer.completionMenu`. Hover cards (`hover_popover.rs`) render module markdown.
 
 ## Hato seams built on top (use these before adding Rust)
 
@@ -52,7 +54,17 @@ Read [AGENTS.md](../../../AGENTS.md) first; this is a short map of facts that ar
   `signatureMethod` (parameter-hint popup, drawn by `Shell::signature_popup`), and
   `completionResolveMethod` (auto-import: an accepted, unambiguous completion is resolved and its
   `additionalTextEdits` applied by `editor::apply_text_edits`).
-- Completion presentation (IDEA-style label/detail) is shaped in `viewer` (`shapeCompletions`).
+- Completion and hover presentation (IDEA-style: kind badges, receiver-own members bold and first,
+  owner + multi-line signature + compact params) is shaped in `viewer/src/assist.ts`.
+- gpui-component keeps the **first** capture reported for a token (matches arrive by start
+  position, then pattern order). Bundled queries written for last-wins precedence lose constants,
+  attributes etc. to `(identifier) @variable`; a language plugin fixes that with
+  `contributes.languages[].highlightQuery` (passed as `codeViewer.highlightQuery`, re-registered
+  globally by `editor::register_highlights`). Java's lives in `language-java/manifest.json`.
+- `codeViewer.nameCaptures` restyles tokens by text per base capture; `viewer` fills it from LSP
+  semantic tokens (`language-service.semanticNames`) to tell interfaces/fields apart.
+- Scheme tokens `bracket.0..N` color brackets by nesting depth (`bracket_depths` in `editor.rs`).
+- `codeViewer.font` (family/weight/size/lineHeight) refines the editor font; `viewer` settings.
 - Language servers are opt-in per workspace (`language-service` project config, default off);
   the bottom-bar `lng-srv` menu lives in `language-status`/`language-tools`.
 

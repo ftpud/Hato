@@ -723,8 +723,14 @@ impl DirectWriteState {
                 &mut grid_fit_mode,
             )?;
         }
+        // Hato patch: hinted fonts (JetBrains Mono's gasp table) make DirectWrite recommend
+        // bi-level or GDI-classic modes at code sizes, which draws jagged, unsmoothed glyphs.
+        // Always smooth in both directions, as on macOS.
         let rendering_mode = match rendering_mode {
-            DWRITE_RENDERING_MODE1_OUTLINE => DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC,
+            DWRITE_RENDERING_MODE1_OUTLINE
+            | DWRITE_RENDERING_MODE1_ALIASED
+            | DWRITE_RENDERING_MODE1_GDI_CLASSIC
+            | DWRITE_RENDERING_MODE1_GDI_NATURAL => DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC,
             m => m,
         };
 

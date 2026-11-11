@@ -67,6 +67,8 @@ tempfile = "3"
 [patch.crates-io]
 # Modifier-click requests definitions without waiting for a hover response.
 gpui-base = { path = "vendor/gpui-base" }
+# Completion menu rows rendered from module presentation hints; larger hover popover.
+gpui-component = { path = "vendor/gpui-component" }
 gpui-pre-windows = { path = "vendor/gpui-pre-windows" }
 
 [profile.dev]

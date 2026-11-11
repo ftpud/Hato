@@ -81,6 +81,8 @@ pub struct Shell {
     editor_bind: HashMap<String, (String, String, String, u64)>,
     editor_seq: HashMap<String, u64>,
     editor_syntax: HashMap<String, Value>,
+    /// Per-editor semantic name refinements (`codeViewer.nameCaptures`), shared with its highlighter.
+    editor_names: HashMap<String, (Value, editor::NameCaptures)>,
     editor_reveal: HashMap<String, String>,
     editor_wrap: HashMap<String, bool>,
     editor_assist: HashMap<String, EditorAssist>,
@@ -149,6 +151,7 @@ impl Shell {
             editor_bind: HashMap::new(),
             editor_seq: HashMap::new(),
             editor_syntax: HashMap::new(),
+            editor_names: HashMap::new(),
             editor_reveal: HashMap::new(),
             editor_wrap: HashMap::new(),
             editor_assist: HashMap::new(),
@@ -1145,12 +1148,24 @@ impl Shell {
                         entry.1 = Instant::now();
                         let st = entry.0.clone();
                         let language = n["language"].as_str().unwrap_or(&doc.language).to_string();
-                        // Reconfigure when the grammar, lexical rules or scheme decoration changes.
-                        let syntax = json!({"language": language, "rules": n["syntaxRules"], "decorated": editor::overlay_state().1});
+                        let query = editor::register_highlights(&language, n["highlightQuery"].as_str());
+                        // Semantic name refinements update in place; the highlighter reads them on paint.
+                        let names = {
+                            let entry = self.editor_names.entry(h.clone()).or_insert_with(|| (Value::Null, Default::default()));
+                            if entry.0 != n["nameCaptures"] {
+                                entry.0 = n["nameCaptures"].clone();
+                                *entry.1.borrow_mut() = editor::parse_name_captures(&n["nameCaptures"]);
+                                st.update(cx, |_, cx| cx.notify());
+                            }
+                            entry.1.clone()
+                        };
+                        let named = !names.borrow().is_empty();
+                        // Reconfigure when the grammar, lexical rules, query, names or scheme decoration changes.
+                        let syntax = json!({"language": language, "rules": n["syntaxRules"], "decorated": editor::overlay_state().1, "query": query, "named": named});
                         let previous = self.editor_syntax.get(&h);
-                        if previous.map(|v| (&v["language"], &v["rules"], &v["decorated"])) != Some((&syntax["language"], &syntax["rules"], &syntax["decorated"])) {
+                        if previous.map(|v| (&v["language"], &v["rules"], &v["decorated"], &v["query"], &v["named"])) != Some((&syntax["language"], &syntax["rules"], &syntax["decorated"], &syntax["query"], &syntax["named"])) {
                             let overridden = previous.is_some_and(|v| v["overridden"].as_bool().unwrap_or(false));
-                            let installed = st.update(cx, |state, cx| editor::configure_syntax(state, &language, n["syntaxRules"].clone(), overridden, cx));
+                            let installed = st.update(cx, |state, cx| editor::configure_syntax(state, &language, n["syntaxRules"].clone(), names.clone(), overridden, cx));
                             let mut syntax = syntax; syntax["overridden"] = json!(installed);
                             self.editor_syntax.insert(h.clone(), syntax);
                         }
@@ -1209,7 +1224,10 @@ impl Shell {
                                 true
                             }) as gpui_component::input::ShowDocumentHandler)
                         };
-                        st.update(cx, |state, _| { state.lsp_mut().definition_provider = provider; state.lsp_mut().hover_provider = hover; state.lsp_mut().completion_provider = completion; state.lsp_mut().show_document = show_document; });
+                        let menu = &n["completionMenu"];
+                        let menu_px = |key: &str, default: f32, max: f64| menu[key].as_f64().filter(|v| v.is_finite()).map(|v| px(v.clamp(80.0, max) as f32)).unwrap_or(px(default));
+                        let menu_options = gpui_component::input::CompletionMenuOptions { max_width: menu_px("width", 320.0, 1600.0), min_width: menu_px("minWidth", 120.0, 1600.0), max_height: menu_px("maxHeight", 240.0, 1200.0) };
+                        st.update(cx, |state, _| { state.lsp_mut().definition_provider = provider; state.lsp_mut().hover_provider = hover; state.lsp_mut().completion_provider = completion; state.lsp_mut().show_document = show_document; state.lsp_mut().completion_menu = menu_options; });
                         if let Some(reveal_key) = n["reveal"]["key"].as_str() {
                             if self.editor_reveal.get(&h).map(|s| s.as_str()) != Some(reveal_key) {
                                 let line = n["reveal"]["line"].as_u64().unwrap_or(0).min(u32::MAX as u64) as u32;
@@ -1246,7 +1264,7 @@ impl Shell {
                         } else {
                             self.editor_bind.remove(&h);
                         }
-                        let editor_el = Editor::new(&st).readonly(!editable).h_full();
+                        let editor_el = editor::code_font(Editor::new(&st).readonly(!editable).h_full(), &n["font"]);
                         let hints = self.editor_assist.get(&h).and_then(|a| a.signature.as_ref()).and_then(|(help, _)| self.signature_popup(help, &st, cx));
                         let dismiss_hints = { let h = h.clone(); cx.listener(move |this: &mut Shell, ev: &KeyDownEvent, _, cx| {
                             if ev.keystroke.key == "escape" { if let Some(a) = this.editor_assist.get_mut(&h) { if a.signature.take().is_some() { cx.notify(); } } }
@@ -1296,6 +1314,7 @@ impl Shell {
                         self.editor_bind.remove(&k);
                         self.editor_seq.remove(&k);
                         self.editor_syntax.remove(&k);
+                        self.editor_names.remove(&k);
                         self.editor_reveal.remove(&k);
                         self.editor_wrap.remove(&k);
                         self.editor_assist.remove(&k);

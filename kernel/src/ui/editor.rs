@@ -117,7 +117,7 @@ static OVERLAY: LazyLock<RwLock<SyntaxOverlay>> = LazyLock::new(Default::default
 pub fn set_overlay(styles: HashMap<String, HighlightStyle>) {
     let mut o = OVERLAY.write().unwrap();
     if o.styles == styles { return; }
-    o.decorated = styles.values().any(|s| s.background_color.is_some() || s.underline.is_some());
+    o.decorated = styles.values().any(|s| s.background_color.is_some() || s.underline.is_some()) || styles.contains_key("bracket.0");
     o.styles = styles; o.generation += 1;
 }
 /// (generation, whether editors need the overlay-aware highlighter).
@@ -134,9 +134,113 @@ impl HighlightStyleResolver for OverlayResolver<'_> {
         }
     }
 }
-fn with_overlay<T>(resolver: &dyn HighlightStyleResolver, f: impl FnOnce(&dyn HighlightStyleResolver) -> T) -> T {
+fn with_overlay<T>(resolver: &dyn HighlightStyleResolver, f: impl FnOnce(&dyn HighlightStyleResolver, &[HighlightStyle]) -> T) -> T {
     let o = OVERLAY.read().unwrap();
-    if o.styles.is_empty() { f(resolver) } else { f(&OverlayResolver(resolver, &o.styles)) }
+    // Scheme bracket palette: `bracket.0`, `bracket.1`, ... cycled by nesting depth.
+    let brackets: Vec<HighlightStyle> = (0..16).map_while(|i| o.styles.get(&format!("bracket.{i}")).copied()).collect();
+    if o.styles.is_empty() { f(resolver, &brackets) } else { f(&OverlayResolver(resolver, &o.styles), &brackets) }
+}
+
+/// Module-supplied highlight queries for bundled grammars (`codeViewer.highlightQuery`). The
+/// grammar keeps its parser, injections and locals; an invalid query is ignored. Returns a key
+/// that changes with the active query so editors can be re-highlighted.
+static QUERIES: LazyLock<RwLock<HashMap<String, (u64, Option<gpui_component::highlighter::LanguageConfig>)>>> = LazyLock::new(Default::default);
+pub fn register_highlights(language: &str, query: Option<&str>) -> u64 {
+    use gpui_component::highlighter::LanguageRegistry;
+    use std::hash::{Hash, Hasher};
+    let key = query.map(|q| { let mut h = std::collections::hash_map::DefaultHasher::new(); q.hash(&mut h); h.finish() | 1 }).unwrap_or(0);
+    let current = QUERIES.read().unwrap().get(language).map(|(k, _)| *k).unwrap_or(0);
+    if current == key || language.is_empty() || language.len() > 64 { return current; }
+    let registry = LanguageRegistry::singleton();
+    let mut queries = QUERIES.write().unwrap();
+    let original = match queries.get(language) { Some((_, original)) => original.clone(), None => registry.language(language) };
+    let Some(original) = original else { return current };
+    let Some(grammar) = original.language.clone() else { return current };
+    match query {
+        Some(q) if q.len() <= 256 * 1024 => match tree_sitter::Query::new(&grammar, q) {
+            Ok(_) => {
+                let mut config = original.clone();
+                config.highlights = q.to_string().into();
+                registry.register(language, &config);
+            }
+            Err(err) => { log::warn!("ignoring highlight query for {language}: {err}"); return current; }
+        },
+        Some(_) => return current,
+        None => registry.register(language, &original),
+    }
+    queries.insert(language.to_string(), (key, Some(original)));
+    key
+}
+
+/// Restyle spans by their text: `{baseCapture: {text: capture}}` (e.g. `{"type": {"Runnable":
+/// "type.interface"}}`), so a module can apply semantic classes that survive edits.
+pub type NameCaptures = Rc<RefCell<Vec<(String, HashMap<String, String>)>>>;
+pub fn parse_name_captures(spec: &Value) -> Vec<(String, HashMap<String, String>)> {
+    spec.as_object().into_iter().flatten().take(16).filter(|(base, _)| !base.is_empty() && base.len() <= 80).map(|(base, names)| {
+        let names = names.as_object().into_iter().flatten().take(20_000)
+            .filter_map(|(name, capture)| Some((name.clone(), capture.as_str().filter(|c| !c.is_empty() && c.len() <= 80 && name.len() <= 128)?.to_string()))).collect();
+        (base.clone(), names)
+    }).filter(|(_, names): &(String, HashMap<String, String>)| !names.is_empty()).collect()
+}
+
+const OPEN_BRACKETS: [&str; 3] = ["(", "[", "{"];
+const CLOSE_BRACKETS: [&str; 3] = [")", "]", "}"];
+/// Byte offsets and nesting depth of bracket tokens in `range` (strings and comments excluded).
+fn bracket_depths(tree: &tree_sitter::Tree, range: &Range<usize>) -> Vec<(usize, bool, usize)> {
+    fn visit<'t>(node: tree_sitter::Node<'t>, range: &Range<usize>, out: &mut Vec<tree_sitter::Node<'t>>) {
+        if node.end_byte() <= range.start || node.start_byte() >= range.end || out.len() > 20_000 { return; }
+        if node.child_count() == 0 {
+            if !node.is_named() && (OPEN_BRACKETS.contains(&node.kind()) || CLOSE_BRACKETS.contains(&node.kind())) { out.push(node); }
+            return;
+        }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) { visit(child, range, out); }
+    }
+    let mut leaves = Vec::new();
+    visit(tree.root_node(), range, &mut leaves);
+    // Bracket children per ancestor, computed once per call.
+    let mut cache: HashMap<usize, Vec<(usize, bool)>> = HashMap::new();
+    leaves.into_iter().map(|leaf| {
+        let pos = leaf.start_byte();
+        let close = CLOSE_BRACKETS.contains(&leaf.kind());
+        let mut depth: isize = if close { -1 } else { 0 };
+        let mut ancestor = leaf.parent();
+        while let Some(a) = ancestor {
+            let kids = cache.entry(a.id()).or_insert_with(|| {
+                let mut cursor = a.walk();
+                a.children(&mut cursor).filter(|c| !c.is_named()).filter_map(|c| {
+                    if OPEN_BRACKETS.contains(&c.kind()) { Some((c.start_byte(), true)) } else if CLOSE_BRACKETS.contains(&c.kind()) { Some((c.start_byte(), false)) } else { None }
+                }).collect()
+            });
+            let net: isize = kids.iter().filter(|(p, _)| *p < pos).map(|(_, open)| if *open { 1 } else { -1 }).sum();
+            depth += net.max(0);
+            ancestor = a.parent();
+        }
+        (pos, close, depth.max(0) as usize)
+    }).collect()
+}
+/// Lay `spans` over sorted, contiguous `styles`, splitting where needed. Overlaid styles are
+/// merged so a token keeps its background.
+fn overlay_spans(styles: Vec<(Range<usize>, HighlightStyle)>, spans: &[(Range<usize>, HighlightStyle)]) -> Vec<(Range<usize>, HighlightStyle)> {
+    if spans.is_empty() { return styles; }
+    let mut out = Vec::with_capacity(styles.len() + spans.len() * 2);
+    let mut next = 0;
+    for (range, style) in styles {
+        let mut cursor = range.start;
+        while next < spans.len() && spans[next].0.end <= cursor { next += 1; }
+        let mut i = next;
+        while i < spans.len() && spans[i].0.start < range.end {
+            let (span, over) = &spans[i];
+            let (start, end) = (span.start.max(cursor), span.end.min(range.end));
+            if start >= end { i += 1; continue; }
+            if cursor < start { out.push((cursor..start, style)); }
+            let merged = style.highlight(*over);
+            out.push((start..end, merged)); cursor = end;
+            i += 1;
+        }
+        if cursor < range.end { out.push((cursor..range.end, style)); }
+    }
+    out
 }
 
 /// Parse a module scheme's `tokens` map into native styles. Unknown keys and bad colors are ignored.
@@ -218,6 +322,16 @@ pub fn position_json(text: &str, offset: usize) -> Value { module_position(&Rope
 /// Module line markers painted in a strip at the editor's left edge (e.g. Git change bars).
 /// `line..end_line` (zero-based, exclusive); an empty range is a deletion point between lines.
 pub struct LineMarker { pub line: usize, pub end_line: usize, pub color: Hsla, pub value: Value }
+/// Module-chosen code font (`codeViewer.font`): family, weight 100–900, size in px, and line
+/// height as a multiple of the size. Unset fields keep the editor's theme defaults.
+pub fn code_font(mut editor: gpui_component::input::Editor, font: &Value) -> gpui_component::input::Editor {
+    if let Some(family) = font["family"].as_str().map(str::trim).filter(|f| !f.is_empty() && f.len() <= 128) { editor = editor.font_family(SharedString::from(family.to_owned())); }
+    if let Some(size) = font["size"].as_f64().filter(|v| v.is_finite()) { editor = editor.text_size(px(size.clamp(8.0, 40.0) as f32)); }
+    if let Some(height) = font["lineHeight"].as_f64().filter(|v| v.is_finite()) { editor = editor.line_height(relative(height.clamp(1.0, 3.0) as f32)); }
+    if let Some(weight) = font["weight"].as_f64().filter(|v| v.is_finite()) { editor = editor.font_weight(FontWeight(weight.clamp(100.0, 900.0) as f32)); }
+    editor
+}
+
 pub fn line_markers(spec: &Value, color: impl Fn(&str) -> Option<Hsla>) -> Vec<LineMarker> {
     spec.as_array().into_iter().flatten().take(5000).filter_map(|m| {
         let line = m["line"].as_u64()? as usize;
@@ -285,7 +399,7 @@ impl InputHighlighter for LexicalHighlighter {
         }
     }
     fn styles(&self, range: &Range<usize>, resolver: &dyn HighlightStyleResolver) -> Vec<(Range<usize>, HighlightStyle)> {
-        with_overlay(resolver, |resolver| self.lexical_styles(range, resolver))
+        with_overlay(resolver, |resolver, _| self.lexical_styles(range, resolver))
     }
     fn fold_ranges(&self, _: &Rope) -> Vec<FoldRange> { vec![] }
 }
@@ -307,11 +421,11 @@ impl LexicalHighlighter {
 /// was removed, or the syntax scheme paints token backgrounds). Edits are applied incrementally
 /// with a short synchronous budget; anything slower is reparsed shortly after typing settles.
 /// Ordinary editors keep gpui-component's own background-parsing adapter.
-struct GrammarHighlighter { inner: Rc<RefCell<SyntaxHighlighter>>, reparse: Rc<RefCell<Option<Task<()>>>> }
+struct GrammarHighlighter { inner: Rc<RefCell<SyntaxHighlighter>>, reparse: Rc<RefCell<Option<Task<()>>>>, names: NameCaptures }
 const SYNC_PARSE: Duration = Duration::from_millis(4);
 const MAX_GRAMMAR_BYTES: usize = 4 * 1024 * 1024;
 impl GrammarHighlighter {
-    fn new(language: &str) -> Self { Self { inner: Rc::new(RefCell::new(SyntaxHighlighter::new(language))), reparse: Rc::new(RefCell::new(None)) } }
+    fn new(language: &str, names: NameCaptures) -> Self { Self { inner: Rc::new(RefCell::new(SyntaxHighlighter::new(language))), reparse: Rc::new(RefCell::new(None)), names } }
     fn settle(&mut self, done: bool, text: &Rope, window: &mut Window, cx: &mut Context<EditorState>) {
         if done || text.len() > MAX_GRAMMAR_BYTES { self.reparse.borrow_mut().take(); return; }
         let (inner, text) = (self.inner.clone(), text.clone());
@@ -346,7 +460,28 @@ impl InputHighlighter for GrammarHighlighter {
         self.settle(done, text, window, cx);
     }
     fn styles(&self, range: &Range<usize>, resolver: &dyn HighlightStyleResolver) -> Vec<(Range<usize>, HighlightStyle)> {
-        with_overlay(resolver, |resolver| self.inner.borrow().styles(range, resolver))
+        with_overlay(resolver, |resolver, brackets| {
+            let inner = self.inner.borrow();
+            let mut styles = inner.styles(range, resolver);
+            let names = self.names.borrow();
+            if !names.is_empty() {
+                let bases: Vec<_> = names.iter().filter_map(|(base, map)| Some((resolver.style(base)?, map))).collect();
+                let text = inner.text();
+                for (span, style) in styles.iter_mut() {
+                    if span.len() > 128 { continue; }
+                    let Some((_, map)) = bases.iter().find(|(base, _)| base == style) else { continue };
+                    if let Some(next) = map.get(&text.slice(span.clone()).to_string()).and_then(|capture| resolver.style(capture)) { *style = next; }
+                }
+            }
+            if !brackets.is_empty() {
+                if let Some(tree) = inner.tree() {
+                    let spans: Vec<_> = bracket_depths(tree, range).into_iter()
+                        .map(|(pos, _, depth)| (pos..pos + 1, brackets[depth % brackets.len()])).collect();
+                    styles = overlay_spans(styles, &spans);
+                }
+            }
+            styles
+        })
     }
     fn fold_ranges(&self, _: &Rope) -> Vec<FoldRange> {
         fn collect(node: tree_sitter::Node, out: &mut Vec<FoldRange>) {
@@ -366,14 +501,14 @@ impl InputHighlighter for GrammarHighlighter {
 }
 /// Install highlighting for a code editor. The module-aware factory replaces gpui-component's
 /// default only when needed: lexical rules, a decorated syntax scheme, or a previous override.
-pub fn configure_syntax(state: &mut EditorState, language: &str, rules: Value, overridden: bool, cx: &mut Context<EditorState>) -> bool {
+pub fn configure_syntax(state: &mut EditorState, language: &str, rules: Value, names: NameCaptures, overridden: bool, cx: &mut Context<EditorState>) -> bool {
     let has_rules = rules.as_array().is_some_and(|rules| !rules.is_empty());
-    let needed = has_rules || overridden || overlay_state().1;
+    let needed = has_rules || overridden || overlay_state().1 || !names.borrow().is_empty();
     if needed {
         state.set_highlighter_factory(Rc::new(move |lang| {
             Some(match LexicalHighlighter::compile(lang, &rules) {
                 Some(highlighter) => Box::new(highlighter) as Box<dyn InputHighlighter>,
-                None => Box::new(GrammarHighlighter::new(lang)) as Box<dyn InputHighlighter>,
+                None => Box::new(GrammarHighlighter::new(lang, names.clone())) as Box<dyn InputHighlighter>,
             })
         }), cx);
     }
@@ -423,5 +558,58 @@ mod tests {
         let matches: Vec<_> = h.regex.find_iter(text).map(|m| (m.start(), m.as_str())).collect();
         assert_eq!(matches, vec![(3, "// entity"), (13, "entity")]);
         assert!(LexicalHighlighter::compile("custom", &json!([{"pattern":"(", "capture":"keyword"}])).is_none());
+    }
+}
+#[cfg(test)]
+mod highlight_query_tests {
+    use std::sync::Mutex;
+    use gpui_component::input::{HighlightStyleResolver, Rope};
+    use gpui_component::highlighter::SyntaxHighlighter;
+    use gpui_kit::{hsla, HighlightStyle};
+    /// Resolves every capture to a distinct color so tests can read capture names back.
+    struct Names(Mutex<Vec<String>>);
+    impl HighlightStyleResolver for Names {
+        fn style(&self, name: &str) -> Option<HighlightStyle> {
+            let mut v = self.0.lock().unwrap();
+            let i = v.iter().position(|n| n == name).unwrap_or_else(|| { v.push(name.to_string()); v.len() - 1 });
+            Some(HighlightStyle { color: Some(hsla(i as f32 / 1000.0, 0.5, 0.5, 1.0)), ..Default::default() })
+        }
+    }
+    #[test]
+    fn module_query_overrides_bundled_grammar_and_brackets_nest() {
+        // The Java query ships with the language-java plugin (nested checkout); skip without it.
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Hato-plugins/modules/services/language-java/manifest.json");
+        let Ok(manifest) = std::fs::read_to_string(path) else { return };
+        let manifest: serde_json::Value = serde_json::from_str(&manifest).unwrap();
+        let query = manifest["contributes"]["languages"][0]["highlightQuery"].as_array().unwrap()
+            .iter().map(|l| l.as_str().unwrap()).collect::<Vec<_>>().join("\n");
+        let language = "java-query-test";
+        let config = gpui_component::highlighter::LanguageRegistry::singleton().language("java").unwrap();
+        gpui_component::highlighter::LanguageRegistry::singleton().register(language, &config);
+        assert_ne!(super::register_highlights(language, Some(&query)), 0, "query must compile");
+        let code = "@Component\nclass A implements EventHandler {\n void f() {\n  switch (t.get()) {\n   case DROPDOWN: X.CDS_NAME.add(this.ids);\n  }\n }\n}\n";
+        let mut h = SyntaxHighlighter::new(language);
+        h.update(None, &Rope::from_str(code), None);
+        let names = Names(Mutex::new(vec![]));
+        let captures: std::collections::HashMap<String, String> = h.styles(&(0..code.len()), &names).into_iter().filter_map(|(r, s)| {
+            Some((code[r].to_string(), names.0.lock().unwrap()[(s.color?.h * 1000.0).round() as usize].clone()))
+        }).collect();
+        for (text, capture) in [("Component", "attribute"), ("EventHandler", "type"), ("switch", "keyword"), ("case", "keyword"),
+            ("DROPDOWN", "constant"), ("CDS_NAME", "constant"), ("X", "type"), ("ids", "property"), ("{", "punctuation.bracket")] {
+            assert_eq!(captures.get(text).map(String::as_str), Some(capture), "{text}");
+        }
+        let depths: Vec<String> = super::bracket_depths(h.tree().unwrap(), &(0..code.len())).iter().map(|(p, _, d)| format!("{}{d}", &code[*p..*p + 1])).collect();
+        assert_eq!(depths, ["{0", "(1", ")1", "{1", "(2", "(3", ")3", ")2", "{2", "(3", ")3", "}2", "}1", "}0"]);
+        assert_eq!(super::register_highlights(language, None), 0);
+    }
+    #[test]
+    fn overlay_spans_split_and_merge() {
+        let base = HighlightStyle { background_color: Some(hsla(0.0, 0.0, 0.5, 1.0)), ..Default::default() };
+        let over = HighlightStyle { color: Some(hsla(0.5, 0.5, 0.5, 1.0)), ..Default::default() };
+        let out = super::overlay_spans(vec![(0..4, base), (4..6, HighlightStyle::default())], &[(1..2, over), (4..5, over)]);
+        let ranges: Vec<_> = out.iter().map(|(r, _)| r.clone()).collect();
+        assert_eq!(ranges, [0..1, 1..2, 2..4, 4..5, 5..6]);
+        assert_eq!(out[1].1.background_color, base.background_color);
+        assert_eq!(out[1].1.color, over.color);
     }
 }

@@ -120,6 +120,7 @@ fn chars_eq_ignore_case(left: char, right: char) -> bool {
 /// use gpui_base::input::CompletionMenuOptions;
 /// let options = CompletionMenuOptions {
 ///     max_width: gpui::px(480.),
+///     ..Default::default()
 /// };
 /// let _copied = options;
 /// let _again = options;
@@ -132,12 +133,18 @@ pub struct CompletionMenuOptions {
     /// truncate longer labels. Widen this when hosting an editor that
     /// surfaces long completion labels.
     pub max_width: Pixels,
+    /// Minimum width of the popover (Hato patch).
+    pub min_width: Pixels,
+    /// Maximum height of the item list (Hato patch).
+    pub max_height: Pixels,
 }
 
 impl Default for CompletionMenuOptions {
     fn default() -> Self {
         Self {
             max_width: px(320.),
+            min_width: px(120.),
+            max_height: px(240.),
         }
     }
 }
