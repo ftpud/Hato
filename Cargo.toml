@@ -65,6 +65,8 @@ tempfile = "3"
 
 # Local patch: lets Linux cross-builds use prebuilt shaders (see vendor/gpui-pre-windows/build.rs).
 [patch.crates-io]
+# Modifier-click requests definitions without waiting for a hover response.
+gpui-base = { path = "vendor/gpui-base" }
 gpui-pre-windows = { path = "vendor/gpui-pre-windows" }
 
 [profile.dev]
