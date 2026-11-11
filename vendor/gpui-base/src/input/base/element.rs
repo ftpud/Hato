@@ -960,7 +960,24 @@ impl<M: InputModeKind> TextElement<M> {
     ) -> Vec<(Path<Pixels>, bool)> {
         let state = self.state.read(cx);
         if !state.search_session.is_active() {
-            return vec![];
+            if !state.is_code_editor() {
+                return vec![];
+            }
+            let selected = state.selected_range();
+            if selected.is_empty() || selected.len() > 4096 {
+                return vec![];
+            }
+            let needle = state.text.slice(selected.clone()).to_string();
+            if needle.trim().is_empty() || needle.contains('\n') {
+                return vec![];
+            }
+            let visible = &last_layout.visible_range_offset;
+            let text = state.text.slice(visible.clone()).to_string();
+            return text.match_indices(&needle).filter_map(|(offset, _)| {
+                let range = (visible.start + offset)..(visible.start + offset + needle.len());
+                if range == selected { return None; }
+                Self::layout_match_range(range, last_layout, bounds).map(|path| (path, false))
+            }).collect();
         }
         let ranges = state.search_session.matcher.matched_ranges();
         let current_match_ix = state.search_session.matcher.current_match_index();
