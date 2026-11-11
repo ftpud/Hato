@@ -9,7 +9,7 @@ async function moduleAt(path) {
 const walk = node => [node, ...(node.children || []).flatMap(walk)];
 function context(service) {
   let ws = { id: 'one', view: { ui: {}, previewPath: null } }, watcher;
-  const ctx = { moduleId: 'test', state: { get: () => ws, set() {}, watch(_, fn) { watcher = fn; } }, events: { on() {} }, ui: { invalidate() {} }, modules: { async call(mod, method, args) {
+  const ctx = { host: { plugins: { list: async () => ({ plugins: [] }) } }, moduleId: 'test', state: { get: () => ws, set() {}, watch(_, fn) { watcher = fn; } }, events: { on() {}, emit() {} }, ui: { invalidate() {} }, modules: { async call(mod, method, args) {
     if (method === 'settings.get') return true;
     if (method === 'view.patch') { ws = { ...ws, view: { ...ws.view, ...args.patch, ui: { ...ws.view.ui, ...args.patch.ui } } }; watcher(ws); return; }
     return service(mod, method, args);
@@ -131,4 +131,38 @@ test('late terminal attaches from another workspace never replace current block 
   release(); await pending;
   assert.deepEqual(walk(mod.render()).filter(n => n.type === 'terminal').map(n => n.pty), ['two:main']);
   assert.equal((await mod.canSwap()).ok, true);
+});
+
+test('Markdown terminal tabs with colon-containing IDs can be selected, closed and run again', async () => {
+  const mod = await moduleAt('Hato-plugins/modules/ui/terminal-panel/src/index.ts');
+  const calls = [];
+  const c = context(async (_, method, args) => {
+    calls.push({ method, ...args });
+    if (method === 'activity') return [];
+    return { pty: args.workspaceId + ':' + args.key };
+  });
+  await mod.activate(c.ctx);
+  try {
+    const args = { workspaceId: 'one', path: 'docs/setup:local.md', block: 0, code: 'sleep 100', language: 'sh' };
+    const { key } = await mod.methods.runCode(c.ctx, args);
+    assert.equal(key, 'md:docs/setup:local.md:0');
+    await mod.onEvent(c.ctx, { action: 'select:main' });
+    await mod.onEvent(c.ctx, { action: 'select:' + key });
+    assert.equal(walk(mod.render()).find(n => n.type === 'terminal').pty, 'one:' + key);
+    const close = walk(mod.render()).find(n => n.action === 'close:' + key);
+    assert.equal(close.disabled, false);
+    await mod.onEvent(c.ctx, { action: close.action });
+    assert.ok(calls.some(call => call.method === 'close' && call.key === key), 'release the actual Markdown PTY');
+    assert.ok(!c.selected().view.ui.terminalTabs.keys.includes(key));
+    assert.equal(walk(mod.render()).find(n => n.type === 'terminal').pty, 'one:main');
+    await mod.methods.runCode(c.ctx, args);
+    assert.equal(calls.filter(call => call.method === 'attach' && call.key === key).length, 2, 'a closed Markdown terminal can be recreated');
+    assert.ok(c.selected().view.ui.terminalTabs.keys.includes(key));
+  } finally { await mod.deactivate(); }
+});
+
+test('terminal panel can activate without a workspace or a previous snapshot', async () => {
+  const mod = await moduleAt('Hato-plugins/modules/ui/terminal-panel/src/index.ts');
+  const ctx = { state: { get: () => null, watch() {} }, events: { on() {} }, ui: { invalidate() {} } };
+  try { await mod.activate(ctx); assert.ok(mod.render()); } finally { await mod.deactivate(); }
 });

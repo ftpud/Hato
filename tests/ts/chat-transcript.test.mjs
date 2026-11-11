@@ -34,3 +34,12 @@ test("older-history control and follow key", () => {
   assert.equal(T.followKey(msgs), "u2");
   assert.equal(T.followKey([]), undefined);
 });
+
+
+test("reasoning is muted italic text without bold summary markers", () => {
+  const body = walk(T.messageNode({ key: "r", role: "thought", text: "\n**Checking**\n\n\n*Release*\n" })).find(n => n.key === "body");
+  assert.equal(body.text, "Checking\nRelease");
+  assert.equal(body.color, "muted");
+  assert.equal(body.style.italic, true);
+  assert.equal(body.style.fontWeight, 400);
+});

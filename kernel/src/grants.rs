@@ -38,6 +38,9 @@ pub struct Manifest {
     pub id: String,
     pub kind: String,
     pub entry: String,
+    /// Marketplace-only sources are built/exported but never auto-discovered as built-ins.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub distribution: String,
     #[serde(rename = "moduleApiVersion")]
     pub module_api_version: u32,
     #[serde(default)]
@@ -88,6 +91,9 @@ impl Manifest {
     pub fn validate(&self) -> HResult<()> {
         if self.schema_version != 1 && self.schema_version != 2 {
             return Err(HostError::invalid(format!("unsupported manifest schemaVersion {}", self.schema_version)));
+        }
+        if !self.distribution.is_empty() && !matches!(self.distribution.as_str(), "builtin" | "marketplace") {
+            return Err(HostError::invalid(format!("invalid distribution {:?}", self.distribution)));
         }
         if !self.runs_on.is_empty() && !matches!(self.runs_on.as_str(), "ui" | "workspace" | "either") {
             return Err(HostError::invalid(format!("invalid runsOn {:?}", self.runs_on)));

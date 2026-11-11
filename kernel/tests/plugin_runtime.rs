@@ -37,3 +37,128 @@ fn development_checkout_reloads_and_preserves_snapshot() {
     assert_eq!(updated["count"], 1);
     kernel.shutdown();
 }
+
+#[test]
+fn marketplace_sources_are_not_builtin_plugins_but_installed_artifacts_are_discovered() {
+    let temp = tempfile::tempdir().unwrap();
+    let host = temp.path().join("host");
+    let modules = host.join("Hato-plugins/modules/services");
+    let data = temp.path().join("data");
+    let source = modules.join("optional-probe");
+    std::fs::create_dir_all(&source).unwrap();
+    let manifest = json!({"schemaVersion":2,"id":"optional-probe","kind":"service","entry":"src/index.ts","moduleApiVersion":1,"distribution":"marketplace"});
+    std::fs::write(source.join("manifest.json"), manifest.to_string()).unwrap();
+    let baseline = modules.join("baseline");
+    std::fs::create_dir_all(&baseline).unwrap();
+    std::fs::write(baseline.join("manifest.json"), json!({"schemaVersion":2,"id":"baseline","kind":"service","entry":"src/index.ts","moduleApiVersion":1}).to_string()).unwrap();
+    let args = vec!["hato".into(), "--repo-root".into(), host.display().to_string(), "--data-dir".into(), data.display().to_string(), "--headless".into()];
+    let kernel = Kernel::new(Config::from_args(&args).unwrap(), UiBridge::disconnected()).unwrap();
+    let before = kernel.discover_all();
+    assert_eq!(before.len(), 1);
+    assert_eq!(before[0].manifest.id, "baseline");
+    let installed = data.join("plugins/optional-probe");
+    std::fs::create_dir_all(&installed).unwrap();
+    std::fs::write(installed.join("manifest.json"), manifest.to_string()).unwrap();
+    let after = kernel.discover_all();
+    let plugin = after.iter().find(|d| d.manifest.id == "optional-probe").unwrap();
+    assert_eq!(plugin.source, hato_kernel::plugins::Source::User);
+    assert!(!kernel.plugins.is_enabled("optional-probe", plugin.source));
+    assert!(kernel.grants.install_grant("optional-probe").is_none());
+    kernel.shutdown();
+}
+
+#[test]
+fn manifest_only_seed_changes_refresh_cached_call_permissions() {
+    let temp = tempfile::tempdir().unwrap();
+    let host = temp.path().join("host");
+    let plugins = host.join("Hato-plugins");
+    let modules = plugins.join("modules/services");
+    let builds = plugins.join("build/modules");
+    let data = temp.path().join("data");
+    std::fs::create_dir_all(&builds).unwrap();
+    for id in ["probe", "storage"] { std::fs::create_dir_all(modules.join(id)).unwrap(); }
+    let manifest = |id: &str, calls: Vec<&str>| json!({"schemaVersion":2,"id":id,"kind":"service","entry":"src/index.ts","moduleApiVersion":1,"calls":calls});
+    std::fs::write(modules.join("storage/manifest.json"), manifest("storage", vec![]).to_string()).unwrap();
+    std::fs::write(builds.join("storage.mjs"), "export default {id:'storage',moduleApiVersion:1,methods:{ping:()=>true}};").unwrap();
+    let probe_manifest = modules.join("probe/manifest.json");
+    std::fs::write(&probe_manifest, manifest("probe", vec![]).to_string()).unwrap();
+    let code = "export default {id:'probe',moduleApiVersion:1,async activate(ctx){await ctx.modules.call('storage','ping',{})},methods:{health:()=>true}};";
+    std::fs::write(builds.join("probe.mjs"), code).unwrap();
+    let args = vec!["hato".into(), "--repo-root".into(), host.display().to_string(), "--data-dir".into(), data.display().to_string(), "--headless".into()];
+    let config = || Config::from_args(&args).unwrap();
+    let kernel = Kernel::new(config(), UiBridge::disconnected()).unwrap();
+    kernel.boot();
+    assert!(kernel.router.active("probe").is_none());
+    assert!(kernel.router.last_error("probe").unwrap().contains("not allowed"));
+    kernel.shutdown();
+    drop(kernel);
+
+    // Reproduce an old registry whose artifact cache identifies the seed only by its JS hash.
+    let registry_path = data.join("module-registry.json");
+    let mut registry: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&registry_path).unwrap()).unwrap();
+    registry["modules"]["probe"].as_object_mut().unwrap().remove("seedManifestHash");
+    std::fs::write(&registry_path, registry.to_string()).unwrap();
+    std::fs::write(&probe_manifest, manifest("probe", vec!["storage"]).to_string()).unwrap();
+    let kernel = Kernel::new(config(), UiBridge::disconnected()).unwrap();
+    // Simulate the normal trusted approval for the updated manifest.
+    kernel.grants.record_approval("probe", &["call:storage".into()]);
+    kernel.boot();
+    let active = kernel.router.active("probe").expect("approved calls from the updated manifest must take effect");
+    assert_eq!(active.version, 2);
+    assert!(active.caps.may_call("storage"));
+    let store = kernel.artifacts.lock();
+    assert!(store.load("probe", 1).unwrap().1.calls.is_empty(), "the old artifact stays immutable for rollback");
+    assert_eq!(store.load("probe", 2).unwrap().0, code, "only the manifest changed");
+    drop(store);
+    kernel.shutdown();
+    drop(kernel);
+
+    let kernel = Kernel::new(config(), UiBridge::disconnected()).unwrap();
+    kernel.boot();
+    assert_eq!(kernel.router.active("probe").unwrap().version, 2, "unchanged manifests must not create versions on every restart");
+    kernel.shutdown();
+    drop(kernel);
+
+    // Permission removal must also take effect, even while its old approval remains recorded.
+    std::fs::write(&probe_manifest, manifest("probe", vec![]).to_string()).unwrap();
+    let kernel = Kernel::new(config(), UiBridge::disconnected()).unwrap();
+    kernel.boot();
+    assert!(kernel.router.active("probe").is_none());
+    assert!(kernel.router.last_error("probe").unwrap().contains("not allowed"));
+    assert_eq!(kernel.artifacts.lock().get("probe").unwrap().active, Some(1), "reuse only the matching manifest, including when narrowing permissions");
+    kernel.shutdown();
+}
+
+#[test]
+fn legacy_seed_manifest_migration_preserves_an_active_custom_build() {
+    let temp = tempfile::tempdir().unwrap();
+    let host = temp.path().join("host");
+    let source = host.join("Hato-plugins/modules/services/probe");
+    let builds = host.join("Hato-plugins/build/modules");
+    let data = temp.path().join("data");
+    std::fs::create_dir_all(&source).unwrap();
+    std::fs::create_dir_all(&builds).unwrap();
+    std::fs::write(source.join("manifest.json"), json!({"schemaVersion":2,"id":"probe","kind":"service","entry":"src/index.ts","moduleApiVersion":1}).to_string()).unwrap();
+    let code = |v| format!("export default {{id:'probe',moduleApiVersion:1,methods:{{read:()=>{v}}}}};");
+    std::fs::write(builds.join("probe.mjs"), code(1)).unwrap();
+    let args = vec!["hato".into(), "--repo-root".into(), host.display().to_string(), "--data-dir".into(), data.display().to_string(), "--headless".into()];
+    let config = || Config::from_args(&args).unwrap();
+    let kernel = Kernel::new(config(), UiBridge::disconnected()).unwrap();
+    kernel.boot();
+    let manifest = kernel.router.active("probe").unwrap().manifest.clone();
+    {
+        let mut store = kernel.artifacts.lock();
+        let custom = store.put("probe", &code(2), &manifest, "build").unwrap();
+        let record = store.record("probe");
+        record.active = Some(custom.version);
+        record.seed_manifest_hash = None;
+        store.save();
+    }
+    kernel.shutdown();
+    drop(kernel);
+    let kernel = Kernel::new(config(), UiBridge::disconnected()).unwrap();
+    kernel.boot();
+    assert_eq!(kernel.router.active("probe").unwrap().version, 2);
+    assert_eq!(kernel.artifacts.lock().get("probe").unwrap().versions.len(), 2);
+    kernel.shutdown();
+}

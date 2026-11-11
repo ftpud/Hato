@@ -79,3 +79,52 @@ Native pointer interactions and OS window appearance still require a desktop smo
 
 `tests/integration/ssh-password.sh` needs `gcc`, `openssl` and `/usr/sbin/sshd`, and no root: it starts throwaway servers and
 preloads a shim that supplies a test password's hash. Build first with `cargo build --no-default-features && npm run modules:build`.
+
+## Language plugins
+
+`tests/integration/languages.js` uses disposable files and real language servers through the
+kernel's scoped process/stream primitives. Build the native host and prepare marketplace artifacts
+with `npm run release:prepare --prefix Hato-plugins` first, then run:
+
+```sh
+HATO_T_TS_SERVER=/absolute/path/to/typescript-language-server \
+HATO_T_JDTLS=/absolute/path/to/jdtls JAVA_HOME=/path/to/supported/jdk \
+  tests/integration/run-integration.sh tests/integration/languages.js /tmp/hato-language-check
+```
+
+The TypeScript launcher is required; JDTLS is optional. The driver checks SAP CDS/MTAEXT and TS
+highlight registrations, cross-file definitions, viewer target/reveal routing, and optional Java
+navigation, automatic startup, project settings, source-folder browsing, hover and the method picker. To add real SSH transport coverage against a throwaway loopback sshd, also set
+`HATO_T_SSH_KEY`, `HATO_T_SSH_USER`, `HATO_T_SSH_PORT`, and an isolated `HATO_SSH_KNOWN_HOSTS`.
+The SSH endpoint must see the same temporary directory and server executable as the local host.
+It registers the SSH project without selecting it, avoiding remote daemon auto-installation.
+Native Ctrl/Cmd-click and on-screen highlighting still need a desktop visual check.
+
+## Marketplace catalogue lag and local installs
+
+After preparing marketplace artifacts, run the real Settings install flow in an isolated profile:
+
+```sh
+tests/integration/run-integration.sh tests/integration/marketplace-local.js /tmp/hato-marketplace-check
+```
+
+This driver reads the public GitHub catalogue, installs the prepared SAP package through Settings,
+and checks that the other language offers remain visible, system plugins are preserved, and the
+normal native installation approval occurs. It needs network access. Deterministic catalogue-lag,
+integrity-failure and fresh-profile staging regressions also run in `Hato-plugins/tests/marketplace.test.mjs`.
+
+## Language dependency buttons and Markdown terminal close
+
+After preparing the latest packages, this test checks the real Settings action buttons, downloads
+JDTLS into a temporary tool directory, persists/verifies the workspace launcher, then closes a
+running Markdown shell-block terminal and verifies that its PTY is released:
+
+```sh
+HATO_LANGUAGE_TOOLS_HOME=/tmp/hato-dependency-tools \
+  tests/integration/run-integration.sh tests/integration/dependency-settings.js /tmp/hato-dependency-data
+```
+
+Use fresh directories for a download test; reuse the tool directory to exercise installation reuse.
+It needs Python 3.8+ and network access. Installer unit tests cover hashes, archive containment,
+launcher quoting, missing Java/Node runtime downloads, interrupted-install locks, errors and local/SSH
+routing. Terminal regressions cover full colon-containing tab IDs, closing/reopening, and empty-workspace startup.

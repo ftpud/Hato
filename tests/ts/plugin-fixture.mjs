@@ -14,6 +14,7 @@ export function builtinPlugins(overrides = {}) {
       const file = path.join(root, "Hato-plugins", "modules", kind, id, "manifest.json");
       if (!fs.existsSync(file)) continue;
       const m = JSON.parse(fs.readFileSync(file, "utf8"));
+      if (m.distribution === "marketplace") continue;
       out.push({
         id: m.id, name: m.name || m.id, kind: m.kind, description: m.description || "", source: "builtin", enabled: true,
         active: `${m.id}@0001`, provides: m.provides || [], requires: m.requires || [], dependencies: m.dependencies || [],

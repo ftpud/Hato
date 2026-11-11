@@ -24,7 +24,7 @@ test('Markdown renders one Run button per shell block and dispatches each to its
   const events = {}, executions = [];
   let selected = { id: 'ws', view: { previewPath: 'README.md', ui: {} } };
   const watchers = [];
-  const ctx = { moduleId: 'viewer', state: { get: () => selected, set() {}, watch: (_, fn) => { watchers.push(fn); } },
+  const ctx = { host: { plugins: { list: async () => ({ plugins: [] }) } }, moduleId: 'viewer', state: { get: () => selected, set() {}, watch: (_, fn) => { watchers.push(fn); } },
     events: { on: (topic, fn) => { events[topic] = fn; }, emit: (topic, args) => { void events[topic]?.(args); } }, ui: { invalidate() {} },
     modules: { async call(module, method, args) {
       if (method === 'settings.get') return null;

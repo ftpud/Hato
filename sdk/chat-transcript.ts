@@ -38,7 +38,7 @@ export function messageNode(m: ChatMessage, opts: TranscriptOptions = {}): UiNod
   if (m.role === "thought") {
     return { type: "column", key: m.key, gap: 2, style: { borderLeft: 2, borderColor: "border", paddingX: 12, paddingY: 4, color: "muted", fontSize: 14 }, children: [
       { type: "label", key: "kind", text: "REASONING", size: "xs" },
-      markdown("body", m.text, opts.linkAction),
+      { type: "label", key: "body", text: m.text.replace(/\*\*([^]*?)\*\*/g, "$1").replace(/\*([^*\n]+)\*/g, "$1").replace(/\r\n?/g, "\n").replace(/\n[ \t]*\n+/g, "\n").trim(), wrap: true, selectable: true, color: "muted", style: { italic: true, fontWeight: 400, color: "muted", lineHeight: 18 } },
     ] };
   }
   if (m.role === "tool") {

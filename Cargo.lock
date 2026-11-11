@@ -3202,12 +3202,14 @@ dependencies = [
  "image",
  "libc",
  "log",
+ "lsp-types",
  "notify",
  "objc2-app-kit 0.2.2",
  "objc2-foundation 0.2.2",
  "parking_lot",
  "portable-pty",
  "rand 0.8.8",
+ "regex",
  "rquickjs",
  "rusqlite",
  "russh",
@@ -3218,6 +3220,7 @@ dependencies = [
  "similar",
  "tempfile",
  "tokio",
+ "tree-sitter",
  "ureq",
 ]
 

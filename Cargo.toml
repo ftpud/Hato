@@ -16,6 +16,10 @@ path = "kernel/src/lib.rs"
 [dependencies]
 # GPUI pinned through gpui-kit 0.8.1 (gpui-pre 0.3.10). See docs/COMPATIBILITY.md.
 gpui-kit = { version = "=0.8.1", optional = true }
+lsp-types = { version = "=0.97.0", optional = true }
+regex = { version = "1", optional = true }
+# Same version gpui-component links; used for incremental edits in module-themed highlighting.
+tree-sitter = { version = "=0.26.13", optional = true }
 gpui-component = { version = "=0.8.1", features = ["tree-sitter-languages"], optional = true }
 rquickjs = { version = "=0.14.0", features = ["std"] }
 rusqlite = { version = "=0.41.1", features = ["bundled", "limits"] }
@@ -54,7 +58,7 @@ objc2-foundation = { version = "=0.2.2", features = ["NSData", "NSThread"], opti
 [features]
 # The desktop window. Build the headless remote daemon with `--no-default-features`.
 default = ["gui"]
-gui = ["dep:gpui-kit", "dep:gpui-component", "dep:image", "dep:objc2-app-kit", "dep:objc2-foundation"]
+gui = ["dep:lsp-types", "dep:regex", "dep:tree-sitter", "dep:gpui-kit", "dep:gpui-component", "dep:image", "dep:objc2-app-kit", "dep:objc2-foundation"]
 
 [dev-dependencies]
 tempfile = "3"

@@ -22,7 +22,7 @@ test('font preferences restore, apply immediately, persist, and keep the confirm
   assert.equal(typography().fontWeight, 400);
   const contribution = () => state.get('workspace-layout.settings');
   assert.ok(contribution().sections.find(s => s.key === 'typography').fields[0].options.some(o => o.value === 'JetBrains Mono'));
-  assert.deepEqual(contribution().sections.map(s => s.key), ['appearance', 'typography', 'side-panels', 'panel-sharing', 'sidebar-order', 'tables', 'workspace-chrome']);
+  assert.deepEqual(contribution().sections.map(s => s.key), ['appearance', 'syntax', 'typography', 'side-panels', 'panel-sharing', 'sidebar-order', 'tables', 'workspace-chrome']);
   listeners.get('settings.change')({ module: 'workspace-layout', section: 'typography', key: 'fontFamily', value: 'JetBrains Mono' });
   await tick();
   assert.equal(typography().fontFamily, 'JetBrains Mono');

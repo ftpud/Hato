@@ -3,6 +3,7 @@
 // generation's private QuickJS runtime. There are NO Node APIs: all privileged work goes through
 // `ctx.host`, a capability broker implemented by the Rust kernel.
 
+import type { SyntaxPalette } from "./syntax-schemes";
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 /** Opaque, kernel-owned handle. Unforgeable: the kernel checks kind and owning module on every use. */
 export type Handle = string;
@@ -299,6 +300,8 @@ export type UiNode =
       /** Runtime application icon (macOS Dock and app switcher), including unbundled source launches. */ applicationIcon?: ImageAttachment;
       typography?: { fontFamily?: string; monoFontFamily?: string; fontSize?: number; monoFontSize?: number; fontWeight?: number };
       terminal?: { light?: string[]; dark?: string[] };
+      /** Syntax color scheme per appearance (see sdk/syntax-schemes.ts); omit for built-in colors. */
+      syntax?: { light?: SyntaxPalette; dark?: SyntaxPalette };
       chrome?: { toasts?: { position?: "bottom-right" | "bottom-left" | "top-right" | "top-left"; width?: number; durationMs?: number; max?: number } } })
   | (Base & { type: "titleBar"; children: UiNode[] })
   | (Base & { type: "row" | "column"; children: UiNode[]; /** Embedded wallpaper, cover-cropped behind children. */ backgroundImage?: ImageAttachment;
@@ -346,7 +349,8 @@ export type UiNode =
   | (Base & { type: "popover"; children: UiNode[]; closeAction: string; top?: number; bottom?: number; left?: number; right?: number; /** Height as a fraction of the parent (0.1–1). */ heightFraction?: number; maxHeight?: number })
   | (Base & { type: "toggle"; label: string; checked: boolean; action: string; disabled?: boolean })
   | (Base & { type: "tree"; rows: TreeRow[]; selectAction: string; expandAction: string; /** Fired with the row key on double click (after the first click's selectAction). */ activateAction?: string;
-      /** Fixed row height (px); omit for content height. */ rowHeight?: number; /** Indent per depth level (px). */ indent?: number; rowGap?: number; iconSize?: number; expandedIconSvg?: string; collapsedIconSvg?: string })
+      /** Fixed row height (px); omit for content height. */ rowHeight?: number;
+      /** Hover fill color token (default "hover") and its opacity 0–1 (default 1). */ hoverBackground?: UiColor; hoverOpacity?: number; /** Indent per depth level (px). */ indent?: number; rowGap?: number; iconSize?: number; expandedIconSvg?: string; collapsedIconSvg?: string })
   /** Native diff view of a unified patch (e.g. `git diff` output) held in a document handle. */
   | (Base & { type: "diff"; document: Handle | null; mode?: "split" | "unified"; softWrap?: boolean; header?: boolean; placeholder?: string; emptyText?: string })
   | (Base & { type: "status"; text: string; level?: "info" | "warn" | "error" | "success" })
@@ -356,7 +360,24 @@ export type UiNode =
   /** Native syntax-highlighted editor over a document handle (read-only unless `editable`).
    *  Edits stay native; after `changeDebounceMs` (default 400) of quiet, `changeAction` fires
    *  with value {document, text}. The module decides whether/how to persist the text. */
-  | (Base & { type: "codeViewer"; document: Handle | null; placeholder?: string; editable?: boolean; changeAction?: string; changeDebounceMs?: number })
+  | (Base & { type: "codeViewer"; document: Handle | null; placeholder?: string; editable?: boolean; changeAction?: string; changeDebounceMs?: number;
+      /** Override the document grammar without replacing its editor/buffer. */ language?: string;
+      /** Wrap long lines at the panel width (default true). */ softWrap?: boolean;
+      /** Bars at the editor's left edge for zero-based lines `line..endLine` (exclusive; equal = a
+       *  deletion point). Clicking one fires `lineMarkerAction` with {marker: value, y}. */
+      lineMarkers?: { line: number; endLine?: number; color: UiColor; value?: Json }[]; lineMarkerAction?: string; lineMarkerWidth?: number;
+      /** Optional module-supplied lexical highlighter (for languages without a bundled grammar). */ syntaxRules?: SyntaxRule[];
+      /** Method on this UI module returning LSP LocationLink[]. Receives args + document/text/position. */ definitionMethod?: string; definitionArgs?: Json | object;
+      /** Methods on the rendering module receiving document/text/UTF-16 position and definitionArgs. */
+      hoverMethod?: string; completionMethod?: string; completionTriggers?: string[];
+      /** Parameter hints: called with document/text/position/context (LSP SignatureHelpContext) after a
+       *  trigger (default "(" and ",") and on every edit while shown; return LSP SignatureHelp or null. */
+      signatureMethod?: string; signatureTriggers?: string[];
+      /** Called with {item} when an offered completion is accepted; a returned item's
+       *  `additionalTextEdits` (e.g. imports) are applied without moving the caret. */
+      completionResolveMethod?: string;
+      /** LSP {uri, selection} fired only when a definition is activated. */ openLocationAction?: string;
+      /** One-shot cursor movement; a new key repeats it. Positions use zero-based UTF-16. */ reveal?: { key: string; line: number; character: number } })
   | (Base & { type: "terminal"; pty: Handle | null; placeholder?: string })
   /** Native picture file dialog; fires `action` with attachments (or {error}). */
   | (Base & { type: "imagePicker"; action: string; disabled?: boolean; text?: string; iconSvg?: string; iconSize?: number; dialogTitle?: string; maxFiles?: number; maxBytes?: number })
@@ -371,12 +392,21 @@ export type UiNode =
   | (Base & { type: "spacer" })
   | (Base & { type: "modal"; title: string; children: UiNode[]; closeAction?: string; /** Card width (px). */ width?: number });
 
-export interface TreeRow { /** Shows an animated activity indicator after the label. */ busy?: boolean; iconSvg?: string; iconColor?: UiColor; connector?: "branch" | "last"; key: string; label: string; depth: number; expandable: boolean; expanded: boolean; selected: boolean; /** Shown as-is after the label. */ badge?: string; detail?: string; weight?: "medium" | "semibold" | "bold"; /** Module-side classification (not rendered). */ icon?: string }
+/** Ordered lexical rules; earliest match wins, then declaration order. Rust regex syntax. */
+export interface SyntaxRule { pattern: string; capture: string }
+
+export interface TreeRow { /** Shows an animated activity indicator after the label. */ busy?: boolean; iconSvg?: string; iconColor?: UiColor; connector?: "branch" | "last"; key: string; label: string; depth: number; expandable: boolean; expanded: boolean; selected: boolean; /** Shown as-is after the label. */ badge?: string;
+  /** Colored short texts before `badge` (e.g. "+12" success, "−3" danger). */ badges?: { text: string; color?: UiColor }[];
+  /** Native right-click menu; items fire `action` with this row's key as rowKey and `value`. */
+  contextMenu?: ({ text: string; action: string; value?: Json; disabled?: boolean } | { separator: true })[];
+  detail?: string; weight?: "medium" | "semibold" | "bold"; /** Module-side classification (not rendered). */ icon?: string }
 export interface ImageAttachment { name: string; mimeType: string; data: string }
 export interface ChatMessage { images?: ImageAttachment[]; key: string; role: "user" | "assistant" | "thought" | "tool" | "system" | "error" | "plan"; text: string; title?: string; status?: string }
 
 /** Published at <moduleId>.settings; only the owning module can write it. */
 export type SettingField =
+  | { key: string; label: string; description?: string; type: "action"; buttonLabel: string; disabled?: boolean }
+  | { key: string; label: string; description?: string; type: "text"; value: string; placeholder?: string }
   | { key: string; label: string; description?: string; type: "toggle"; value: boolean }
   | { key: string; label: string; description?: string; type: "select"; value: string; options: { value: string; label: string }[] }
   | { key: string; label: string; description?: string; type: "order"; value: string; items: { id: string; label: string }[]; allowSpacers?: boolean };

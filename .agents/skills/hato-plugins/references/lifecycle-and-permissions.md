@@ -25,12 +25,15 @@ A default-exported `AppModule` supports `activate`, `deactivate`, `snapshot`, `c
 
 ```text
 kernel.discover_all()
-├── repository modules/                         Built-ins, enabled by default
+├── repository modules/                         Built-ins, except distribution: marketplace
 └── <data>/plugins/<id>/                        Installed user plugins, disabled by default
     └── registry <data>/plugins.json            Enabled state and root override
         └── grant checks and dependency/contract ordering
             └── artifact versions → active JS generation
 ```
+
+For package installation, updates, publication and marketplace-only discovery, see
+[marketplace](marketplace.md). Declare RPC calls explicitly as well as lifecycle dependencies.
 
 `kernel/src/plugins.rs` handles registry and installation mechanics. `kernel/src/kernel.rs`
 handles enable/disable, dependency cascades, rescan, installation and selection of the `shell.root`

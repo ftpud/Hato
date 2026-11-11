@@ -46,6 +46,9 @@ activate. `activate {id, stageId}` performs cutover; `buildAndActivate {id}` com
 The standalone builder only writes seed bundles. Build, stage and activation are separate states;
 native approval requirements still apply.
 
+For optional marketplace modules, versioned artifacts, local installs and publication, follow
+[marketplace](marketplace.md). A source folder need not be a bundled system plugin.
+
 ## Adding a built-in plugin
 
 - Create `modules/services/<id>/` or `modules/ui/<id>/`, with a manifest and default AppModule

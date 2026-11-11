@@ -122,3 +122,57 @@ test('settings search, grouped navigation, table layout and order controls route
   assert.ok(walk(mod.render(ctx)).some(n => n.key === 'plugin-tabs'), 'explicit page navigation clears the search');
   mod.deactivate();
 });
+
+test('text settings submit the current native input on Enter and validate string values', async () => {
+  const { default: mod } = await load('Hato-plugins/modules/ui/settings/src/index.ts');
+  const emitted = [];
+  const state = { sections: [{ key: 'server', title: 'Language server', fields: [{ key: 'executable', label: 'Executable', type: 'text', value: 'jdtls' }] }] };
+  const ctx = { moduleId: 'settings', host: { modules: { list: async () => [{ id: 'example', active: {} }] }, plugins: { list: async () => ({ plugins: [] }) } },
+    state: { get: () => state, watch: () => () => {} }, events: { on() {}, emit: (topic, payload) => emitted.push({ topic, payload }) }, ui: { invalidate() {} } };
+  await mod.activate(ctx);
+  await mod.methods.open(ctx, { module: 'example', section: 'server' });
+  const input = walk(mod.render(ctx)).find(n => n.type === 'textInput' && n.submitAction === 'change');
+  assert.equal(input.value, 'jdtls');
+  mod.onEvent(ctx, { action: 'change', key: input.key, value: null, inputs: { [input.key]: '/opt/jdtls/bin/jdtls' } });
+  assert.deepEqual(emitted.at(-1), { topic: 'settings.change', payload: { module: 'example', section: 'server', key: 'executable', value: '/opt/jdtls/bin/jdtls' } });
+  mod.deactivate();
+  const { exportSettings } = await load('sdk/settings.ts');
+  let listener, published, saved;
+  exportSettings({ moduleId: 'example', state: { set(_key, value) { published = value; } }, events: { on(_topic, fn) { listener = fn; } }, ui: { invalidate() {} } }, () => state.sections,
+    (_section, _key, value) => { saved = value; });
+  listener({ module: 'example', section: 'server', key: 'executable', value: null });
+  await tick(); assert.match(published.error, /Invalid/); assert.equal(saved, undefined);
+  listener(emitted.at(-1).payload);
+  await tick(); assert.equal(saved, '/opt/jdtls/bin/jdtls');
+});
+
+test('settings action buttons route validated actions without treating them as preference values', async () => {
+  const { default: mod } = await load('Hato-plugins/modules/ui/settings/src/index.ts');
+  const emitted = [];
+  let disabled = false;
+  const contribution = () => ({ sections: [{ key: 'java', title: 'Java', fields: [{ key: 'install', type: 'action', label: 'Dependencies', buttonLabel: 'Install missing dependencies', disabled }] }] });
+  const ctx = { moduleId: 'settings', host: { modules: { list: async () => [{ id: 'language-service', active: {} }] }, plugins: { list: async () => ({ plugins: [] }) } },
+    state: { get: contribution, watch: () => () => {} }, events: { on() {}, emit: (topic, payload) => emitted.push({ topic, payload }) }, ui: { invalidate() {} } };
+  await mod.activate(ctx); await mod.methods.open(ctx, { module: 'language-service', section: 'java' });
+  try {
+    const button = walk(mod.render(ctx)).find(n => n.action === 'settingAction');
+    assert.equal(button.text, 'Install missing dependencies');
+    mod.onEvent(ctx, { action: 'settingAction', key: button.key });
+    assert.deepEqual(emitted, [{ topic: 'settings.action', payload: { module: 'language-service', section: 'java', key: 'install' } }]);
+    disabled = true;
+    mod.onEvent(ctx, { action: 'settingAction', key: button.key });
+    mod.onEvent(ctx, { action: 'change', key: button.key, value: 'forged' });
+    assert.equal(emitted.length, 1);
+  } finally { mod.deactivate(); }
+  const { exportSettings } = await load('sdk/settings.ts');
+  const handlers = {}, actions = [], changes = [];
+  disabled = false;
+  exportSettings({ moduleId: 'language-service', events: { on: (key, fn) => { handlers[key] = fn; } }, state: { set() {} }, ui: { invalidate() {} } },
+    () => contribution().sections, (_section, key) => changes.push(key), { action: async (section, key) => actions.push([section, key]) });
+  handlers['settings.action']({ module: 'language-service', section: 'java', key: 'install' });
+  await tick(); assert.deepEqual(actions, [['java', 'install']]);
+  disabled = true;
+  handlers['settings.action']({ module: 'language-service', section: 'java', key: 'install' });
+  handlers['settings.change']({ module: 'language-service', section: 'java', key: 'install', value: 'forged' });
+  await tick(); assert.equal(actions.length, 1); assert.deepEqual(changes, []);
+});

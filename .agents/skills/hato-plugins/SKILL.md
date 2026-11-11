@@ -1,6 +1,6 @@
 ---
 name: hato-plugins
-description: Build, extend, debug, or explain Hato plugins and their wiring across TypeScript services, UI contributions, hot reload, native capabilities, and SSH daemons. Use for Hato architecture and plugin development references.
+description: Build, extend, debug, or explain Hato plugins and their wiring across TypeScript services, UI contributions, hot reload, native capabilities, and SSH daemons. Use for Hato architecture, plugin development, marketplace packaging, installation, updates and publishing references.
 ---
 
 # Hato plugin development
@@ -16,6 +16,7 @@ hato-plugins/
 └── references/
     ├── architecture.md              Repository tree and end-to-end execution path
     ├── build-and-reload.md          Bundling, activation, tests and native rebuild boundaries
+    ├── marketplace.md               Optional packages, install/update/run, dependencies and publishing
     ├── lifecycle-and-permissions.md Manifests, discovery, swaps, handles and approvals
     ├── ui-composition.md            Contributions → layout → UiNode → native renderer
     ├── service-flows.md             Workspace, persistence, Files/Git, terminal and AI wiring
@@ -27,10 +28,14 @@ Read only the branches needed for the current task:
 
 - Finding an owner or tracing behavior: [architecture](references/architecture.md).
 - Building, adding a module, or making a running app use edits: [build and reload](references/build-and-reload.md).
+- Marketplace packaging, installing/updating/running optional plugins, or publishing a catalogue:
+  [marketplace](references/marketplace.md).
 - Plugin enablement, missing dependencies, hot-swap failure, or permission errors:
   [lifecycle and permissions](references/lifecycle-and-permissions.md).
 - Panels, sidebars, settings UI, rendering or styling: [UI composition](references/ui-composition.md).
 - Inspecting the actual design of a panel, popup or element: [visual review](references/visual-review.md).
+- Source editor, syntax highlighting, color schemes or LSP editor features: the sibling
+  [hato-editor skill](../hato-editor/SKILL.md).
 - Application data, refresh events, workspace routing or agent behavior:
   [service flows](references/service-flows.md).
 - A missing native primitive, resource stream, remote install, or disconnect behavior:

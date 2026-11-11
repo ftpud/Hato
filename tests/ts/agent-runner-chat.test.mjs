@@ -12,7 +12,7 @@ function harness() {
   const listeners = new Map(), requests = [], dbWrites = [];
   const ctx = { modules: { call: async () => null }, log: { error() {}, info() {}, warn() {} }, events: { emit() {} }, host: {
     env: { info: () => ({ platform: 'linux' }) },
-    db: { openNamespace: async () => 'db', query: async (_db, sql) => sql.startsWith('PRAGMA') ? [{ name: 'images_json' }] : [], exec: async (_db, sql, args) => { dbWrites.push({ sql, args }); return { changes: 1 }; } },
+    db: { openNamespace: async () => 'db', query: async (_db, sql) => sql.startsWith('PRAGMA') ? [{ name: 'images_json' }, { name: 'tool_call_id' }] : sql.startsWith('SELECT seq FROM messages') && dbWrites.some(w => w.sql.startsWith('INSERT INTO messages') && w.args[7] === 'call-1') ? [{ seq: 42 }] : [], exec: async (_db, sql, args) => { dbWrites.push({ sql, args }); return { changes: 1 }; } },
     capabilities: { request: async () => ({ grant: 'grant' }), release: async () => {} }, resources: { release: async () => {} },
     streams: { listen: async (handle, opts, onData) => { if (opts.channel === 'stdout') listeners.set(handle, onData); return { close: async () => {} }; } },
     process: { run: async () => ({ code: 0, stdout: '__HATO_EXEC__=/usr/local/bin/test\n__HATO_PATH__=/usr/local/bin:/usr/bin\n', stderr: '' }), spawn: async () => ({ handle: 'process' }), closeStdin: async () => {}, write: async (handle, data) => {
@@ -82,4 +82,26 @@ test('reconnect after a configuration change starts a new provider session when 
   assert.ok(requests.some(r => r.method === 'session/load'));
   assert.equal(requests.filter(r => r.method === 'session/new').length, 2);
   await mod.methods.stop(ctx, { id: 'mcp' });
+});
+
+
+test('tool updates persist one row per call, including repeated starts and content-only updates', async () => {
+  const mod = (await load('Hato-plugins/modules/services/agent-runner/src/index.ts')).default;
+  const { ctx, listeners, dbWrites } = harness();
+  await mod.activate(ctx);
+  await mod.methods.create(ctx, { spec: spec() });
+  for (const update of [
+    { sessionUpdate: 'tool_call', title: 'Run tests', status: 'in_progress' },
+    { sessionUpdate: 'tool_call', title: 'Run tests', status: 'in_progress' },
+    { sessionUpdate: 'tool_call_update', content: [{ type: 'text', text: 'output' }] },
+    { sessionUpdate: 'tool_call_update', status: 'completed' },
+  ]) listeners.get('process')(JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'provider-session', update: { toolCallId: 'call-1', ...update } } }) + '\n');
+  await new Promise(setImmediate);
+  const inserts = dbWrites.filter(w => w.sql.startsWith('INSERT INTO messages') && w.args[1] === 'tool');
+  assert.equal(inserts.length, 1);
+  const updates = dbWrites.filter(w => w.sql.startsWith('UPDATE messages SET text=CASE'));
+  assert.equal(updates.length, 3);
+  assert.equal(updates.at(-1).args[3], 'completed');
+  assert.equal(updates.at(-1).args[4], 42);
+  await mod.methods.stop(ctx, { id: 'chat' });
 });

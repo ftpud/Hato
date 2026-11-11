@@ -17,6 +17,8 @@ export interface AgentSpec {
   approvalPolicy?: "ask" | "auto-low";
   /** Provider session options (mode, reasoning and other advertised settings) reapplied on every connect. */
   settings?: Record<string, string | boolean>;
+  /** True once the user named the agent; automatic "Provider/Model" naming then stops. */
+  customName?: boolean;
   /** Workflow session ownership used for scoped tool activity tracing. */
   workflow?: { runId: string; blockId: string };
 }
@@ -72,4 +74,31 @@ export function agentSettings(value: unknown): Record<string, string | boolean> 
   for (const [k, v] of Object.entries(value).slice(0, 32))
     if (k && k.length <= 200 && (typeof v === "boolean" || (typeof v === "string" && v.length <= 500))) out[k] = v;
   return out;
+}
+
+/** Provider name without its adapter, e.g. "Claude (claude-agent-acp)" → "Claude". */
+export function providerLabel(profile: { name?: string; provider?: string } | null | undefined): string {
+  const name = String(profile?.name || profile?.provider || "Agent").replace(/\s*\([^)]*\)\s*$/, "").trim();
+  return name || "Agent";
+}
+/** Model id currently selected on a session (config option, legacy models, or the saved spec). */
+export function currentModel(s: { configOptions?: any[]; models?: any; model?: string }): string {
+  const option = s.configOptions?.find(o => o.category === "model");
+  return String(option?.currentValue ?? s.models?.currentModelId ?? s.model ?? "");
+}
+/** Automatic agent name "Provider/Model" ("Provider" until a model is known). */
+export function autoAgentName(s: { profile?: { name?: string; provider?: string }; configOptions?: any[]; models?: any; model?: string }): string {
+  const provider = providerLabel(s.profile), id = currentModel(s);
+  const model = id ? modelChoices(s).find(m => m.id === id)?.label || id : "";
+  return (model ? `${provider}/${model}` : provider).slice(0, 120);
+}
+/** Whether a name is still automatic (never typed by the user) and may follow provider/model changes. */
+export function isAutoAgentName(s: { name: string; customName?: boolean; profile?: { name?: string; provider?: string }; configOptions?: any[]; models?: any; model?: string }): boolean {
+  if (typeof s.customName === "boolean") return !s.customName;
+  // Agents from before the flag existed: infer from the name's shape.
+  const provider = providerLabel(s.profile), full = String(s.profile?.name || "");
+  if (["Chat", "Agent", provider, full].includes(s.name)) return true;
+  const [head, ...rest] = s.name.split("/"), model = rest.join("/");
+  if (!model || (head !== provider && head !== full)) return false;
+  return model === currentModel(s) || modelChoices(s).some(m => m.label === model || m.id === model) || model === s.model;
 }

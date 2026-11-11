@@ -102,7 +102,7 @@ test('terminal output marks inactive tabs unread and selecting a tab clears its 
 test('editor context menu closes only tabs to the right and then all tabs', async () => {
   const { default: mod } = await load('Hato-plugins/modules/ui/viewer/src/index.ts');
   let selected = { id: 'ws', view: { previewPath: 'b.ts', ui: { viewerTabs: ['a.ts', 'b.ts', 'c.ts'] } } }, watcher;
-  const ctx = { moduleId: 'viewer', state: { get: () => selected, set() {}, watch: (_, callback) => { watcher = callback; } }, events: { on() {} }, ui: { invalidate() {} }, modules: { async call(module, method, args) {
+  const ctx = { host: { plugins: { list: async () => ({ plugins: [] }) } }, moduleId: 'viewer', state: { get: () => selected, set() {}, watch: (_, callback) => { watcher = callback; } }, events: { on() {} }, ui: { invalidate() {} }, modules: { async call(module, method, args) {
     if (method === 'settings.get') return null;
     if (method === 'open') return { document: args.relativePath, relativePath: args.relativePath };
     if (method === 'view.patch') { selected = { ...selected, view: { ...selected.view, ...args.patch, ui: { ...selected.view.ui, ...args.patch.ui } } }; watcher(selected); }

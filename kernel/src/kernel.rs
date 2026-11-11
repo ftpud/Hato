@@ -147,6 +147,7 @@ impl Kernel {
             for dir in sorted_dirs(&self.cfg.modules_dir().join(sub)) {
                 match plugins::read_manifest(&dir) {
                     Ok(m) => {
+                        if m.distribution == "marketplace" { continue; }
                         let expected_kind = if sub == "services" { "service" } else { "ui" };
                         if m.kind != expected_kind {
                             log::error!("manifest {} kind does not match its location", dir.display());
@@ -328,9 +329,21 @@ impl Kernel {
             if let Some(code) = self.seed_path(d).and_then(|p| std::fs::read_to_string(p).ok()) {
                 let hash = sha256_hex(code.as_bytes());
                 let mut store = self.artifacts.lock();
-                let known = store.has_hash(&id, &hash);
+                let manifest_hash = sha256_hex(serde_json::to_string(m).unwrap_or_default().as_bytes());
+                let known = store.has_artifact(&id, &hash, m);
                 let rec_seed = store.get(&id).and_then(|r| r.seed_hash.clone());
-                if rec_seed.as_deref() != Some(hash.as_str()) && !self.cfg.safe_mode {
+                // Migrate legacy registries by inspecting the last imported seed's manifest.
+                // Do not replace an active custom build merely because the new field is absent.
+                let previous_manifest_hash = store.get(&id).and_then(|r| r.seed_manifest_hash.clone()).or_else(|| {
+                    let r = store.get(&id)?;
+                    let seed = r.seed_hash.as_ref()?;
+                    let version = r.versions.iter().rev().find(|v| &v.sha256 == seed && matches!(v.origin.as_str(), "seed" | "plugin"))
+                        .map(|v| v.version).or_else(|| store.has_hash(&id, seed))?;
+                    let (_, previous_manifest, _) = store.load(&id, version).ok()?;
+                    Some(sha256_hex(serde_json::to_string(&previous_manifest).ok()?.as_bytes()))
+                });
+                let seed_changed = rec_seed.as_deref() != Some(hash.as_str()) || previous_manifest_hash.as_deref() != Some(manifest_hash.as_str());
+                if seed_changed && !self.cfg.safe_mode {
                     let v = match known {
                         Some(v) => Some(v),
                         None => match store.put(&id, &code, m, if d.source == Source::User { "plugin" } else { "seed" }) {
@@ -350,8 +363,12 @@ impl Kernel {
                         }
                         rec.active = Some(v);
                         rec.seed_hash = Some(hash);
+                        rec.seed_manifest_hash = Some(manifest_hash);
                         store.save();
                     }
+                } else if !self.cfg.safe_mode && store.get(&id).is_some_and(|r| r.seed_manifest_hash.is_none()) {
+                    store.record(&id).seed_manifest_hash = Some(manifest_hash);
+                    store.save();
                 }
             }
             let (active, lkg) = {

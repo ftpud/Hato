@@ -31,3 +31,9 @@ When touching application logic or presentation currently hardcoded in Rust, mov
 For plugin builds, activation, lifecycle, permissions and service/UI wiring, consult
 [the Hato plugin skill](.agents/skills/hato-plugins/SKILL.md). Its reference tree links to the
 relevant subsystem guides; load only the branches needed for the task.
+
+Module sources live in the nested `Hato-plugins/` repository (its own Git history and
+`AGENTS.md`); `sdk/` and `kernel/` belong to this repository. Keep commits separate.
+
+For the source editor, diff/markdown views, syntax highlighting and color schemes, and the
+completion/hover/definition seams, see [the Hato editor skill](.agents/skills/hato-editor/SKILL.md).

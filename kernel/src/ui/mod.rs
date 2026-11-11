@@ -4,6 +4,7 @@
 //! asynchronously through the UI bridge and are cached.
 pub mod interact;
 mod canvas;
+mod editor;
 pub mod terminal_view;
 mod theme;
 mod images;
@@ -58,6 +59,16 @@ struct InputSlot {
     _sub: Subscription,
 }
 
+/// Per-editor assistance driven by text changes: parameter hints and auto-import of accepted
+/// completions. Policy (what to request, how to present items) stays in the rendering module.
+struct EditorAssist {
+    module: String, args: Value, resolve: String, signature_method: String, triggers: Vec<String>,
+    prev: String, offered: editor::Offered,
+    /// Active signature help (LSP SignatureHelp) and the caret offset it was requested at.
+    signature: Option<(Value, usize)>, seq: u64,
+    _subs: Vec<Subscription>,
+}
+
 pub struct Shell {
     kernel: Arc<Kernel>,
     trees: HashMap<String, Arc<Value>>,
@@ -69,6 +80,10 @@ pub struct Shell {
     editor_subs: HashMap<String, Subscription>,
     editor_bind: HashMap<String, (String, String, String, u64)>,
     editor_seq: HashMap<String, u64>,
+    editor_syntax: HashMap<String, Value>,
+    editor_reveal: HashMap<String, String>,
+    editor_wrap: HashMap<String, bool>,
+    editor_assist: HashMap<String, EditorAssist>,
     diffs: HashMap<String, (Entity<DiffState>, Instant)>,
     terminals: HashMap<String, Entity<TerminalView>>,
     scrolls: HashMap<String, transcript_scroll::TranscriptScroll>,
@@ -133,6 +148,10 @@ impl Shell {
             editor_subs: HashMap::new(),
             editor_bind: HashMap::new(),
             editor_seq: HashMap::new(),
+            editor_syntax: HashMap::new(),
+            editor_reveal: HashMap::new(),
+            editor_wrap: HashMap::new(),
+            editor_assist: HashMap::new(),
             diffs: HashMap::new(),
             terminals: HashMap::new(),
             scrolls: HashMap::new(),
@@ -212,6 +231,108 @@ impl Shell {
                 Self::fire(&kernel, &module, &[], &action, &key, None, json!(href.to_string()), cx);
             }
         })
+    }
+
+    /// React to an editor text change: auto-import for an accepted completion, and parameter hints.
+    fn editor_changed(&mut self, h: &str, st: &Entity<EditorState>, window: &mut Window, cx: &mut Context<Self>) {
+        let kernel = self.kernel.clone();
+        let Some(assist) = self.editor_assist.get_mut(h) else { return };
+        let text = st.read(cx).value().to_string();
+        let prev = std::mem::replace(&mut assist.prev, text.clone());
+        let change = editor::inserted(&prev, &text);
+        let call_args = |assist: &EditorAssist, text: &str, offset: usize| {
+            let mut args = assist.args.as_object().cloned().unwrap_or_default();
+            args.insert("document".into(), json!(h)); args.insert("text".into(), json!(text));
+            args.insert("position".into(), editor::position_json(text, offset));
+            args
+        };
+        // Auto-import: an insertion of 2+ characters that completes an offered item's text.
+        if !assist.resolve.is_empty() {
+            let fresh = assist.offered.borrow().as_ref().is_some_and(|(at, _)| at.elapsed() < Duration::from_secs(120));
+            if let (true, Some((start, segment))) = (fresh, change.as_ref()) {
+                let end = start + segment.len();
+                let items = assist.offered.borrow().as_ref().map(|(_, items)| items.clone()).unwrap_or_default();
+                let matches: Vec<&lsp_types::CompletionItem> = if segment.chars().count() < 2 { vec![] } else {
+                    items.iter().filter(|i| { let t = editor::completion_text(i); !t.is_empty() && t.ends_with(segment.as_str()) && text[..end].ends_with(t) }).collect()
+                };
+                // The menu does not report which row was chosen: only act when every match is the
+                // same symbol (or overloads of one callable), never guess between classes.
+                let callable = |i: &&lsp_types::CompletionItem| matches!(i.kind, Some(lsp_types::CompletionItemKind::METHOD | lsp_types::CompletionItemKind::FUNCTION | lsp_types::CompletionItemKind::CONSTRUCTOR));
+                let unambiguous = !matches.is_empty() && (matches.iter().all(|i| i.label == matches[0].label) || matches.iter().all(callable));
+                if unambiguous {
+                    let item = matches[0].clone();
+                    *assist.offered.borrow_mut() = None;
+                    let mut args = call_args(assist, &text, end);
+                    args.insert("item".into(), json!(item));
+                    let task = editor::module_call(&kernel, &assist.module, &assist.resolve, Value::Object(args), cx);
+                    let st = st.clone();
+                    cx.spawn_in(window, async move |_, cx| {
+                        let Ok(value) = task.await else { return };
+                        let Ok(item) = serde_json::from_value::<lsp_types::CompletionItem>(value) else { return };
+                        let edits = item.additional_text_edits.unwrap_or_default();
+                        if edits.is_empty() { return; }
+                        let _ = st.update_in(cx, |state, window, cx| editor::apply_text_edits(state, &edits, window, cx));
+                    }).detach();
+                }
+            }
+        }
+        // Parameter hints: open on a trigger character, refresh while open, close on null.
+        if assist.signature_method.is_empty() { return; }
+        let cursor = st.read(cx).cursor();
+        let triggered = change.as_ref().is_some_and(|(_, seg)| assist.triggers.iter().any(|t| seg.ends_with(t.as_str())));
+        if !triggered && assist.signature.is_none() { return; }
+        assist.seq += 1;
+        let seq = assist.seq;
+        let mut args = call_args(assist, &text, cursor);
+        if let Some((help, _)) = &assist.signature { args.insert("context".into(), json!({"isRetrigger": true, "triggerKind": 3, "activeSignatureHelp": help})); }
+        else { args.insert("context".into(), json!({"isRetrigger": false, "triggerKind": 2, "triggerCharacter": change.as_ref().map(|(_, s)| s.chars().last().unwrap_or('(').to_string())})); }
+        let task = editor::module_call(&kernel, &assist.module, &assist.signature_method, Value::Object(args), cx);
+        let h = h.to_string();
+        cx.spawn(async move |this, cx| {
+            let result = task.await.ok().filter(|v| v["signatures"].as_array().is_some_and(|s| !s.is_empty()));
+            let _ = this.update(cx, |this: &mut Shell, cx| {
+                let Some(assist) = this.editor_assist.get_mut(&h) else { return };
+                if assist.seq != seq { return; }
+                let anchor = assist.signature.as_ref().map(|(_, a)| *a).unwrap_or(cursor);
+                assist.signature = result.map(|help| (help, anchor.min(cursor)));
+                cx.notify();
+            });
+        }).detach();
+    }
+
+    /// Parameter-hint popup above the caret: the active signature with its current parameter bold.
+    fn signature_popup(&self, help: &Value, st: &Entity<EditorState>, cx: &App) -> Option<AnyElement> {
+        let state = st.read(cx);
+        let caret = state.range_to_bounds(&(state.cursor()..state.cursor()))?;
+        let origin = state.input_bounds().origin;
+        let signatures = help["signatures"].as_array()?;
+        let index = help["activeSignature"].as_u64().unwrap_or(0) as usize;
+        let signature = signatures.get(index.min(signatures.len().saturating_sub(1)))?;
+        let label = signature["label"].as_str()?.to_string();
+        let active = signature["activeParameter"].as_u64().or_else(|| help["activeParameter"].as_u64()).map(|i| i as usize);
+        let range = active.and_then(|i| signature["parameters"].as_array()?.get(i).cloned()).and_then(|p| match &p["label"] {
+            Value::String(name) => label.find(name.as_str()).map(|start| start..start + name.len()),
+            Value::Array(o) if o.len() == 2 => {
+                // UTF-16 offsets into the label.
+                let to_byte = |units: u64| { let mut n = 0u64; label.char_indices().find(|(_, c)| { let hit = n >= units; n += c.len_utf16() as u64; hit }).map(|(b, _)| b).unwrap_or(label.len()) };
+                Some(to_byte(o[0].as_u64()?)..to_byte(o[1].as_u64()?))
+            }
+            _ => None,
+        });
+        let mut highlights = vec![];
+        if let Some(r) = range.filter(|r| r.start < r.end && label.is_char_boundary(r.start) && label.is_char_boundary(r.end)) {
+            highlights.push((r, HighlightStyle { font_weight: Some(FontWeight::BOLD), color: Some(cx.theme().foreground), ..Default::default() }));
+        }
+        let line_h = state.line_height().unwrap_or(px(18.0));
+        let x = (caret.origin.x - origin.x - px(12.0)).max(px(4.0));
+        let y = caret.origin.y - origin.y;
+        let top = if y > px(34.0) { y - px(30.0) } else { y + line_h + px(2.0) };
+        Some(div().absolute().left(x).top(top).max_w(px(640.0)).px_2().py_1().rounded(px(5.0)).border_1().border_color(cx.theme().border)
+            .bg(cx.theme().popover).shadow_md().text_sm().font_family(cx.theme().mono_font_family.clone()).text_color(cx.theme().muted_foreground)
+            .child(h_flex().gap_2()
+                .when(signatures.len() > 1, |d| d.child(div().text_xs().child(format!("{}/{}", index + 1, signatures.len()))))
+                .child(StyledText::new(label).with_highlights(highlights)))
+            .into_any_element())
     }
 
     fn note_echo(&mut self, ik: &(String, String), text: &str) {
@@ -875,6 +996,9 @@ impl Shell {
                 let indent = n["indent"].as_f64().unwrap_or(14.0).clamp(0.0, 64.0) as f32;
                 let row_gap = n["rowGap"].as_f64().unwrap_or(1.0).clamp(0.0, 16.0) as f32;
                 let icon_size = n["iconSize"].as_f64().unwrap_or(16.0).clamp(8.0, 48.0) as f32;
+                // Row hover fill is module presentation: a color token and its opacity.
+                let hover_bg = n["hoverBackground"].as_str().map(|c| theme::color(cx, c, cx.theme().list_hover)).unwrap_or(cx.theme().list_hover)
+                    .opacity(n["hoverOpacity"].as_f64().unwrap_or(1.0).clamp(0.0, 1.0) as f32);
                 let mut list = v_flex().w_full().min_w_0().gap(px(row_gap));
                 for (row_index, r) in rows.iter().take(5000).enumerate() {
                     let rk = r["key"].as_str().unwrap_or("").to_string();
@@ -906,7 +1030,7 @@ impl Shell {
                     let rk2 = rk.clone();
                     let act = act_action.clone();
                     let mut row = h_flex().id(sid(module, &format!("{path}/row/{rk}"))).w_full().min_w_0().overflow_hidden().pl(px(4.0 + depth_ * indent)).pr_1().py(px(3.0)).gap_1().rounded(px(4.0)).cursor_pointer()
-                        .hover(|s| s.bg(cx.theme().list_hover))
+                        .hover(move |s| s.bg(hover_bg))
                         .on_mouse_down(MouseButton::Left, |_, window, cx| { window.prevent_default(); cx.stop_propagation(); })
                         .on_click(move |ev, _, cx| {
                             // A double click fires the first click as a selection, then the activation.
@@ -924,6 +1048,10 @@ impl Shell {
                     let label = v_flex().flex_1().min_w_0()
                         .child(h_flex().w_full().min_w_0().gap_1().child(div().flex_1().min_w_0().text_sm().when_some(weight, |d, w| d.font_weight(w)).overflow_hidden().whitespace_nowrap().text_ellipsis().child(r["label"].as_str().unwrap_or("").to_string()))
                             .when(busy, |d| d.child(div().flex_none().child(Spinner::new().xsmall().color(theme::color(cx, "primary", cx.theme().primary)))))
+                            .children(r["badges"].as_array().into_iter().flatten().take(8).map(|badge| {
+                                let color = badge["color"].as_str().map(|c| theme::color(cx, c, theme_muted)).unwrap_or(theme_muted);
+                                div().flex_none().text_xs().text_color(color).whitespace_nowrap().child(badge["text"].as_str().unwrap_or("").to_string())
+                            }))
                             .child(div().text_xs().text_color(theme_muted).whitespace_nowrap().child(r["badge"].as_str().unwrap_or("").to_string())))
                         .when_some(r["detail"].as_str(), |d, detail| d.child(div().text_xs().text_color(theme_muted).overflow_hidden().whitespace_nowrap().text_ellipsis().child(detail.to_string())));
                     let icon_element = match r["iconSvg"].as_str() {
@@ -940,7 +1068,22 @@ impl Shell {
                             .child(div().absolute().left(px(3.0)).top(relative(0.5)).w(px(13.0)).h(px(1.0)).bg(theme_muted.opacity(0.55))).into_any_element()
                     } else { chevron.into_any_element() };
                     row = row.child(leading).child(div().flex_shrink_0().child(icon_element)).child(label);
-                    list = list.child(row);
+                    let menu_items = r["contextMenu"].as_array().cloned().unwrap_or_default();
+                    if menu_items.is_empty() { list = list.child(row); continue; }
+                    // Per-row native context menu; items fire with the row key, like selection.
+                    let (k, m, inputs, key2, rk2) = (self.kernel.clone(), module.to_string(), inputs.clone(), key.to_string(), rk.clone());
+                    list = list.child(div().id(sid(module, &format!("{path}/menu/{rk}"))).w_full().min_w_0().child(row).context_menu(move |mut menu, _, _| {
+                        for item in &menu_items {
+                            if item["separator"].as_bool().unwrap_or(false) { menu = menu.separator(); continue; }
+                            let (k, m, inputs, key, rk) = (k.clone(), m.clone(), inputs.clone(), key2.clone(), rk2.clone());
+                            let action = item["action"].as_str().unwrap_or("").to_string();
+                            let value = item.get("value").cloned().unwrap_or(Value::Null);
+                            menu = menu.item(PopupMenuItem::new(item["text"].as_str().unwrap_or("").to_string()).disabled(item["disabled"].as_bool().unwrap_or(false)).on_click(move |_, _, cx| {
+                                Self::fire(&k, &m, &inputs, &action, &key, Some(rk.clone()), value.clone(), cx);
+                            }));
+                        }
+                        menu
+                    }));
                 }
                 self.apply_base(v_flex(), n, cx).min_h_0().min_w_0().overflow_hidden().child(div().id(sid(module, &path)).flex_1().min_h_0().w_full().overflow_y_scroll().child(list)).into_any_element()
             }
@@ -1001,6 +1144,80 @@ impl Shell {
                         });
                         entry.1 = Instant::now();
                         let st = entry.0.clone();
+                        let language = n["language"].as_str().unwrap_or(&doc.language).to_string();
+                        // Reconfigure when the grammar, lexical rules or scheme decoration changes.
+                        let syntax = json!({"language": language, "rules": n["syntaxRules"], "decorated": editor::overlay_state().1});
+                        let previous = self.editor_syntax.get(&h);
+                        if previous.map(|v| (&v["language"], &v["rules"], &v["decorated"])) != Some((&syntax["language"], &syntax["rules"], &syntax["decorated"])) {
+                            let overridden = previous.is_some_and(|v| v["overridden"].as_bool().unwrap_or(false));
+                            let installed = st.update(cx, |state, cx| editor::configure_syntax(state, &language, n["syntaxRules"].clone(), overridden, cx));
+                            let mut syntax = syntax; syntax["overridden"] = json!(installed);
+                            self.editor_syntax.insert(h.clone(), syntax);
+                        }
+                        // Soft wrap is a module preference (default on, matching the editor's default).
+                        let wrap = n["softWrap"].as_bool().unwrap_or(true);
+                        if self.editor_wrap.get(&h) != Some(&wrap) {
+                            st.update(cx, |state, cx| state.set_soft_wrap(wrap, window, cx));
+                            self.editor_wrap.insert(h.clone(), wrap);
+                        }
+                        let resolve = s("completionResolveMethod");
+                        let signature_method = s("signatureMethod");
+                        if b("editable") && (!resolve.is_empty() || !signature_method.is_empty()) {
+                            if !self.editor_assist.contains_key(&h) {
+                                let (h2, h3) = (h.clone(), h.clone());
+                                let changed = cx.subscribe_in(&st, window, move |this: &mut Shell, st, ev: &InputEvent, window, cx| {
+                                    if matches!(ev, InputEvent::Change) { this.editor_changed(&h2, st, window, cx); }
+                                });
+                                // While hints are shown, follow the caret: re-render to reposition, close when it leaves the call.
+                                let moved = cx.observe(&st, move |this: &mut Shell, st, cx| {
+                                    let Some(assist) = this.editor_assist.get_mut(&h3) else { return };
+                                    let Some((_, anchor)) = assist.signature.as_ref() else { return };
+                                    let state = st.read(cx);
+                                    let cursor = state.cursor();
+                                    let text = state.text();
+                                    use gpui_component::input::RopeExt;
+                                    if cursor < *anchor || text.offset_to_point(cursor).row != text.offset_to_point(*anchor).row { assist.signature = None; }
+                                    cx.notify();
+                                });
+                                self.editor_assist.insert(h.clone(), EditorAssist {
+                                    module: String::new(), args: Value::Null, resolve: String::new(), signature_method: String::new(), triggers: vec![],
+                                    prev: st.read(cx).value().to_string(), offered: std::rc::Rc::new(std::cell::RefCell::new(None)), signature: None, seq: 0, _subs: vec![changed, moved],
+                                });
+                            }
+                            let assist = self.editor_assist.get_mut(&h).unwrap();
+                            assist.module = module.to_string(); assist.args = n["definitionArgs"].clone(); assist.resolve = resolve; assist.signature_method = signature_method;
+                            assist.triggers = n["signatureTriggers"].as_array().map(|t| t.iter().filter_map(|s| s.as_str().map(str::to_owned)).collect()).unwrap_or_else(|| vec!["(".into(), ",".into()]);
+                        } else { self.editor_assist.remove(&h); }
+                        let offered = self.editor_assist.get(&h).filter(|a| !a.resolve.is_empty()).map(|a| a.offered.clone());
+                        let provider = n["definitionMethod"].as_str().filter(|m| !m.is_empty()).map(|method| std::rc::Rc::new(editor::ModuleDefinitions {
+                            kernel: self.kernel.clone(), module: module.to_string(), method: method.to_string(),
+                            args: n["definitionArgs"].clone(), document: h.clone(),
+                        }) as std::rc::Rc<dyn gpui_component::input::DefinitionProvider>);
+                        let intelligence = |field: &str| n[field].as_str().filter(|m| !m.is_empty()).map(|method| std::rc::Rc::new(editor::ModuleIntelligence {
+                            kernel: self.kernel.clone(), module: module.to_string(), method: method.to_string(),
+                            args: n["definitionArgs"].clone(), document: h.clone(),
+                            triggers: n["completionTriggers"].as_array().map(|items| items.iter().filter_map(|s| s.as_str().map(str::to_owned)).collect()).unwrap_or_default(),
+                            offered: offered.clone(),
+                        }));
+                        let hover = intelligence("hoverMethod").map(|p| p as std::rc::Rc<dyn gpui_component::input::HoverProvider>);
+                        let completion = intelligence("completionMethod").map(|p| p as std::rc::Rc<dyn gpui_component::input::CompletionProvider>);
+                        let action = s("openLocationAction");
+                        let show_document = if action.is_empty() { None } else {
+                            let (kernel, module, key, document) = (self.kernel.clone(), module.to_string(), key.to_string(), h.clone());
+                            Some(std::rc::Rc::new(move |params: &lsp_types::ShowDocumentParams, _: &mut Window, _: &mut App| {
+                                kernel.ui_event(&module, json!({"action": action, "key": key, "value": {"document": document, "uri": params.uri, "selection": params.selection}, "inputs": {}}));
+                                true
+                            }) as gpui_component::input::ShowDocumentHandler)
+                        };
+                        st.update(cx, |state, _| { state.lsp_mut().definition_provider = provider; state.lsp_mut().hover_provider = hover; state.lsp_mut().completion_provider = completion; state.lsp_mut().show_document = show_document; });
+                        if let Some(reveal_key) = n["reveal"]["key"].as_str() {
+                            if self.editor_reveal.get(&h).map(|s| s.as_str()) != Some(reveal_key) {
+                                let line = n["reveal"]["line"].as_u64().unwrap_or(0).min(u32::MAX as u64) as u32;
+                                let character = n["reveal"]["character"].as_u64().unwrap_or(0).min(u32::MAX as u64) as u32;
+                                st.update(cx, |state, cx| state.set_cursor_position(editor::native_position(&state.value().to_string(), line, character), window, cx));
+                                self.editor_reveal.insert(h.clone(), reveal_key.to_string());
+                            }
+                        }
                         let editable = b("editable");
                         let change = s("changeAction");
                         if editable && !change.is_empty() {
@@ -1029,7 +1246,44 @@ impl Shell {
                         } else {
                             self.editor_bind.remove(&h);
                         }
-                        Editor::new(&st).readonly(!editable).h_full().into_any_element()
+                        let editor_el = Editor::new(&st).readonly(!editable).h_full();
+                        let hints = self.editor_assist.get(&h).and_then(|a| a.signature.as_ref()).and_then(|(help, _)| self.signature_popup(help, &st, cx));
+                        let dismiss_hints = { let h = h.clone(); cx.listener(move |this: &mut Shell, ev: &KeyDownEvent, _, cx| {
+                            if ev.keystroke.key == "escape" { if let Some(a) = this.editor_assist.get_mut(&h) { if a.signature.take().is_some() { cx.notify(); } } }
+                        }) };
+                        let markers = editor::line_markers(&n["lineMarkers"], |c| Some(theme::color(cx, c, theme_muted)));
+                        if markers.is_empty() { div().relative().size_full().capture_key_down(dismiss_hints).child(editor_el).children(hints).into_any_element() } else {
+                            // Marker strip over the gutter's left edge, positioned from the editor's
+                            // own layout so it follows scrolling, folding and soft wrap.
+                            let width = n["lineMarkerWidth"].as_f64().unwrap_or(3.0).clamp(1.0, 12.0) as f32;
+                            let markers = std::rc::Rc::new(markers);
+                            let (paint_state, paint_markers) = (st.clone(), markers.clone());
+                            let strip = canvas(|_, _, _| (), move |bounds, _, window, cx| {
+                                for (top, bottom, i) in editor::marker_spans(paint_state.read(cx), &paint_markers) {
+                                    let (top, bottom) = (top.max(bounds.top()), bottom.min(bounds.bottom()));
+                                    if bottom <= top { continue; }
+                                    let deleted = paint_markers[i].end_line == paint_markers[i].line;
+                                    let w = if deleted { px(width + 3.0) } else { px(width) };
+                                    window.paint_quad(fill(Bounds::new(point(bounds.left(), top), size(w, bottom - top)), paint_markers[i].color));
+                                }
+                            }).size_full();
+                            let action = s("lineMarkerAction");
+                            let (k, m, key2, hit_state) = (self.kernel.clone(), module.to_string(), key.to_string(), st.clone());
+                            let inputs = self.module_inputs(module);
+                            div().relative().size_full().capture_key_down(dismiss_hints).child(editor_el).children(hints)
+                                .child(div().id(sid(module, &format!("{path}/markers"))).absolute().left_0().top_0().bottom_0().w(px(width + 5.0))
+                                    .when(!action.is_empty(), |d| d.cursor_pointer().on_mouse_down(MouseButton::Left, move |ev, window, cx| {
+                                        let spans = editor::marker_spans(hit_state.read(cx), &markers);
+                                        let hit = spans.iter().find(|(t, b, _)| ev.position.y >= *t - px(2.0) && ev.position.y <= *b + px(2.0));
+                                        if let Some((top, _, i)) = hit {
+                                            window.prevent_default(); cx.stop_propagation();
+                                            let editor_top = hit_state.read(cx).input_bounds().origin.y;
+                                            Self::fire(&k, &m, &inputs, &action, &key2, None, json!({"marker": markers[*i].value, "y": f32::from(*top - editor_top)}), cx);
+                                        }
+                                    }))
+                                    .child(strip))
+                                .into_any_element()
+                        }
                     }
                     None => div().p_3().text_sm().text_color(theme_muted).child(placeholder).into_any_element(),
                 };
@@ -1041,6 +1295,10 @@ impl Shell {
                         self.editor_subs.remove(&k);
                         self.editor_bind.remove(&k);
                         self.editor_seq.remove(&k);
+                        self.editor_syntax.remove(&k);
+                        self.editor_reveal.remove(&k);
+                        self.editor_wrap.remove(&k);
+                        self.editor_assist.remove(&k);
                     }
                 }
                 self.apply_base(div(), n, cx).flex().flex_col().size_full().min_w_0().min_h_0().overflow_hidden().child(body).into_any_element()

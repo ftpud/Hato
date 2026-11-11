@@ -7,13 +7,14 @@ All code paths below are relative to the repository root.
 ```text
 Hato/
 ├── AGENTS.md                          Application/native boundary and verification rules
-├── modules/
-│   ├── services/<id>/
-│   │   ├── manifest.json              Identity, dependencies, capabilities, contracts
-│   │   └── src/index.ts               AppModule activation, methods, state and workflows
-│   └── ui/<id>/
-│       ├── manifest.json              UI plugin plus shell contributions
-│       └── src/index.ts               UiNode render tree, events and presentation
+├── Hato-plugins/                      Separate nested Git repo; owns all module TypeScript
+│   └── modules/
+│       ├── services/<id>/
+│       │   ├── manifest.json          Identity, dependencies, capabilities, contracts
+│       │   └── src/index.ts           AppModule activation, methods, state and workflows
+│       └── ui/<id>/
+│           ├── manifest.json          UI plugin plus shell contributions
+│           └── src/index.ts           UiNode render tree, events and presentation
 ├── sdk/
 │   ├── types.ts                       AppModule, ModuleContext, NativeHost, UiNode contracts
 │   ├── runtime.ts                     WorkspaceDescriptor, scoped grants, SSH helpers
@@ -43,6 +44,14 @@ Hato/
     ├── ts/                            Node tests bundling TS entry points with esbuild
     └── integration/                   Headless app drivers and isolated fixture setup
 ```
+
+Module folders live in `Hato-plugins/modules/{services,ui}/<id>`, not at the Hato root. Each
+`manifest.json` has a one-line `description`; grep those to find an owner. Non-obvious owners:
+projects tree → `projects` + `projects-panel`; worktree tasks → `git-tasks`; per-workspace view
+state (selected file, tabs) → `workspace` (`view.patch`); chat → `ai` (UI) + `ai-sessions`;
+background agents → `persistent-agents` (desktop) + `agent-runner` (daemon); MCP tools →
+`internal-mcp` registry; app theme node → `workspace-layout`. Editor details: the
+[hato-editor skill](../../hato-editor/SKILL.md).
 
 ## Execution tree
 

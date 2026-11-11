@@ -1,5 +1,5 @@
 //! Generic theme token application; application palettes can be supplied by UI modules.
-use gpui_component::{ActiveTheme, Theme, ThemeMode};
+use gpui_component::{highlighter::HighlightTheme, ActiveTheme, Theme, ThemeMode};
 use gpui_kit::{px, rgb, App, FontWeight, Global, Hsla};
 use serde_json::Value;
 
@@ -83,7 +83,7 @@ pub fn chrome(cx: &App) -> Value {
 pub fn configure(cx: &mut App, node: &Value, data_dir: &std::path::Path) {
     let palette = &node["palette"];
     if !palette.is_object() { return; }
-    let config = serde_json::json!({ "palette": palette, "typography": node["typography"], "terminal": node["terminal"], "chrome": node["chrome"] });
+    let config = serde_json::json!({ "palette": palette, "typography": node["typography"], "terminal": node["terminal"], "chrome": node["chrome"], "syntax": node["syntax"] });
     let wanted_dark = match node["mode"].as_str() { Some("dark") => Some(true), Some("light") => Some(false), _ => None };
     let dark = cx.theme().mode.is_dark();
     let same = cx.has_global::<ModulePalette>() && cx.global::<ModulePalette>().0 == config;
@@ -96,6 +96,28 @@ pub fn configure(cx: &mut App, node: &Value, data_dir: &std::path::Path) {
             log::warn!("cannot cache appearance: {err}");
         }
     }
+}
+
+/// Layer a module syntax scheme (`{tokens, editor}`) over gpui-component's highlight theme.
+/// Token colors and font styles go into the theme (editors, diffs, markdown code); the full
+/// per-capture styles, including backgrounds, also feed the editor overlay.
+fn highlight_theme(base: &HighlightTheme, scheme: &Value) -> Option<HighlightTheme> {
+    let mut theme = serde_json::to_value(base).ok()?;
+    let hex = |v: &Value| v.as_str().and_then(hex_color).map(|c| { let c = gpui_kit::Rgba::from(c); format!("#{:02x}{:02x}{:02x}{:02x}", (c.r * 255.0).round() as u8, (c.g * 255.0).round() as u8, (c.b * 255.0).round() as u8, (c.a * 255.0).round() as u8) });
+    for (name, t) in scheme["tokens"].as_object().into_iter().flatten() {
+        let mut style = serde_json::Map::new();
+        if let Some(c) = hex(&t["color"]) { style.insert("color".into(), Value::String(c)); }
+        if let Some(i) = t["italic"].as_bool() { style.insert("font_style".into(), Value::String(if i { "italic" } else { "normal" }.into())); }
+        let weight = t["fontWeight"].as_f64().map(|w| ((w / 100.0).round() * 100.0).clamp(100.0, 900.0) as u64)
+            .or_else(|| t["bold"].as_bool().map(|b| if b { 700 } else { 400 }));
+        if let Some(w) = weight { style.insert("font_weight".into(), w.into()); }
+        theme["style"]["syntax"][name] = Value::Object(style);
+    }
+    for (key, field) in [("background", "editor.background"), ("foreground", "editor.foreground"), ("activeLine", "editor.active_line.background"),
+        ("lineNumber", "editor.line_number"), ("activeLineNumber", "editor.active_line_number"), ("gutter", "editor.gutter.background"), ("invisible", "editor.invisible")] {
+        if let Some(c) = hex(&scheme["editor"][key]) { theme["style"][field] = Value::String(c); }
+    }
+    match serde_json::from_value(theme) { Ok(t) => Some(t), Err(err) => { log::warn!("invalid syntax scheme: {err}"); None } }
 }
 
 pub fn font_weight(cx: &App) -> FontWeight {
@@ -210,7 +232,12 @@ pub fn apply(cx: &mut App, dark: bool) {
         c.switch = border;
         c.switch_thumb = color(0xffffff);
         theme.radius = px(6.0);
+        if let Some(highlight) = config["syntax"][if dark { "dark" } else { "light" }].as_object().and_then(|_| highlight_theme(&theme.highlight_theme, &config["syntax"][if dark { "dark" } else { "light" }])) {
+            theme.highlight_theme = std::sync::Arc::new(highlight);
+        }
     });
+    super::editor::set_overlay(super::editor::scheme_styles(&config["syntax"][if dark { "dark" } else { "light" }]["tokens"], hex_color));
+    cx.refresh_windows();
 }
 
 #[cfg(test)]
@@ -226,5 +253,21 @@ mod tests {
             assert!(palette_color(&json!({ "primary": value }), "primary").is_none());
         }
         assert!(palette_color(&json!({}), "primary").is_none());
+    }
+
+    #[test]
+    fn syntax_scheme_layers_over_the_highlight_theme() {
+        let base = HighlightTheme::default_light();
+        let scheme = json!({"tokens": {"keyword": {"color": "#000080", "bold": true}, "comment": {"color": "#808080", "italic": true}, "string": {"background": "#dfffdf"}},
+            "editor": {"background": "#f8faff"}});
+        let theme = highlight_theme(&base, &scheme).expect("scheme applies");
+        let keyword = gpui_component::input::HighlightStyleResolver::style(&theme, "keyword").unwrap();
+        assert_eq!(keyword.color, Some(rgb(0x000080).into()));
+        assert_eq!(keyword.font_weight, Some(FontWeight::BOLD));
+        let comment = gpui_component::input::HighlightStyleResolver::style(&theme, "comment").unwrap();
+        assert_eq!(comment.font_style, Some(gpui_kit::FontStyle::Italic));
+        assert_eq!(theme.style.editor_background, Some(rgb(0xf8faff).into()));
+        let styles = crate::ui::editor::scheme_styles(&scheme["tokens"], hex_color);
+        assert_eq!(styles["string"].background_color, Some(rgb(0xdfffdf).into()));
     }
 }

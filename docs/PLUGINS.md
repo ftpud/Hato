@@ -165,3 +165,38 @@ then activate from the Modules panel once the call ends. Its in-flight guard sta
 Source patch tools edit existing modules only. To add a new plugin, prepare a manifest
 and runnable JavaScript bundle, install its folder through Settings → Plugins, then enable it and
 approve its permissions. Installation does not run npm or compile TypeScript automatically.
+
+## Language packages and editor providers
+
+Language registrations are `contributes.languages` data, discovered from enabled/active plugins.
+See `sdk/languages.ts` and [the language package guide](../Hato-plugins/LANGUAGES.md) for the contract,
+server prerequisites, SAP file coverage and SSH routing. The viewer consumes contributions even
+without the optional language-service plugin, so syntax-only packages need no process capability.
+
+`codeViewer` accepts a grammar override, ordered `syntaxRules`, one-shot UTF-16 `reveal` positions,
+and a `definitionMethod` on its owning UI module. Native definition requests invoke only that owner;
+its ordinary module-call permissions control any downstream language-service call. The optional
+`openLocationAction` handles activated LSP locations in TypeScript. Server protocols, language
+selection, URI/workspace mapping, and navigation policy stay outside the native renderer.
+
+Settings fields may use `type: "text"`; their text input submits on Enter. Consumers should read
+submitted text from the event's `inputs[key]`, since native text-input submission has a null value.
+
+A manifest may declare `distribution: "marketplace"` to exclude its source folder from built-in
+runtime discovery, including in development checkouts. Builders still compile/export it. Installing
+its versioned artifact creates a normal user plugin, initially disabled, with the usual native
+permission approval during installation or enablement. The language packages use this setting and have no install-time
+system grant. An omitted distribution preserves existing built-in discovery behavior.
+
+Artifact reuse includes the manifest as well as JavaScript bytes. Seed records track
+`seedManifestHash` separately from `seedHash`, so changing calls/capabilities with unchanged code
+imports the correct manifest. Older registries migrate from their stored seed manifest without
+replacing an active custom build when the seed is unchanged. Stored rollback artifacts remain immutable.
+
+Settings contributions can declare `type: "action"` fields with `buttonLabel`, `disabled`, and
+`description`. Settings validates the active field before emitting `settings.action {module, section,
+key}`; `exportSettings(..., {action})` validates it again and delegates to the owning module.
+Owners publish progress/disabled state, errors and completion through their settings export.
+Language providers may supply `server.dependencySetup` recipes; language-service owns target-side
+checks, verified user-space installs, and workspace-scoped executable configuration. These are
+module-only workflows over existing process APIs, including SSH.

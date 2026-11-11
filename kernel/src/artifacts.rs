@@ -32,6 +32,9 @@ pub struct ModuleRecord {
     /// Hash of the most recently imported seed build (to detect `npm run modules:build` changes).
     #[serde(rename = "seedHash", default)]
     pub seed_hash: Option<String>,
+    /// Manifest identity is independent of the JavaScript hash: permissions/config may change alone.
+    #[serde(rename = "seedManifestHash", default, skip_serializing_if = "Option::is_none")]
+    pub seed_manifest_hash: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -113,6 +116,15 @@ impl ArtifactStore {
             x.note = note.chars().take(500).collect();
         }
         self.save();
+    }
+
+    /// Deduplication must include the manifest; identical code can carry different permissions.
+    pub fn has_artifact(&self, id: &str, hash: &str, manifest: &Manifest) -> Option<u32> {
+        let expected = serde_json::to_value(manifest).ok()?;
+        self.get(id)?.versions.iter().rev().filter(|v| v.sha256 == hash).find_map(|v| {
+            let (_, stored, _) = self.load(id, v.version).ok()?;
+            (serde_json::to_value(stored).ok()? == expected).then_some(v.version)
+        })
     }
 
     pub fn has_hash(&self, id: &str, hash: &str) -> Option<u32> {
