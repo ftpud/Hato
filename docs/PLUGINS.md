@@ -229,7 +229,8 @@ limit a rule to files or directories. `contentPattern` matches a bounded source
 prefix after C-style comments and quoted literals have been masked; `$FILE_STEM`
 is replaced with the regex-escaped filename without its extension. It is a
 lightweight classifier, not a language parser. Matching rules compose in order;
-only fields supplied by a later match override earlier ones. The presentation
+rules sort by optional numeric `priority` (default 0), then retain their declaration
+order. Only fields supplied by a later match override earlier ones. The presentation
 fields are `iconSvg`, `iconColor`, `background`, and `description`.
 
 Only enabled, active plugins contribute. A module can publish the same contract
@@ -243,6 +244,17 @@ Views use `FilePresentationClient` to request metadata asynchronously. A second
 language only needs its contribution (and optional settings publisher), without
 changes to explorer/viewer code. Java is the first implementation: declaration
 icons and configurable main/test/resource roots in Settings → Java file appearance.
+Java's **Enable Java file coloring** toggle controls backgrounds independently of icons.
+
+The optional **Path highlights** marketplace package adds global rules in Settings →
+Path highlights. Add a rule, enter a workspace-relative path and `#RRGGBB` color,
+and press Enter to save each text field. Folder paths include descendants;
+`**/src/test` also matches nested modules. Rules use priority 100 to override language
+backgrounds while preserving icons. Later user rules override earlier ones. Global
+opacity defaults to 6%; both the package and each rule have an enable toggle.
+Rules are persisted once on the UI host and shared by all projects, tasks and
+workspaces, including SSH workspaces; each path resolves against its workspace root.
+
 The generic `TreeRow.background` field requires a host with row-tint support;
 selection and hover remain visible above the tint.
 

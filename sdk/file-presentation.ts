@@ -10,6 +10,8 @@ export interface FilePresentation {
 }
 export interface FilePresentationRule extends FilePresentation {
   id: string;
+  /** Higher priorities override lower priorities. Default 0; explicit user rules typically use 100. */
+  priority?: number;
   /** Regex against the workspace-relative path, using forward slashes. */
   pathPattern: string;
   kind?: "file" | "dir";
@@ -36,7 +38,7 @@ export function filePresentationRules(plugins: PluginInfo[], state?: (key: strin
       } catch { /* One malformed plugin rule cannot break file browsing. */ }
     }
   }
-  return rules;
+  return rules.sort((a, b) => (Number.isFinite(a.rule.priority) ? a.rule.priority! : 0) - (Number.isFinite(b.rule.priority) ? b.rule.priority! : 0));
 }
 
 /** Mask C-style comments and quoted literals; retain line breaks and declarations. */
