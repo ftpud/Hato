@@ -18,7 +18,7 @@
     "files":        { "kind": "service", "capabilities": ["fs.scope", "process.scope", "ssh.connect", "ui.document", "remote.daemon"], "calls": ["workspace", "persistence"] },
     "git":          { "kind": "service", "capabilities": ["process.scope", "ssh.connect", "ui.document", "fs.scope", "remote.daemon"], "calls": ["workspace", "persistence"] },
     "terminals":    { "kind": "service", "capabilities": ["pty.scope", "ssh.connect", "remote.daemon"], "calls": ["workspace", "persistence"] },
-    "remote-runtime": { "kind": "service", "capabilities": ["remote.daemon", "remote.daemon.admin", "ssh.connect"], "calls": ["workspace", "persistence"] },
+    "remote-runtime": { "kind": "service", "capabilities": ["remote.daemon", "remote.daemon.admin", "ssh.connect", "ssh.forward"], "calls": ["workspace", "persistence"] },
     "acp":          { "kind": "service", "capabilities": ["process.scope", "ssh.connect"], "calls": ["workspace", "persistence", "ai-sessions", "internal-mcp"] },
     "ai-sessions":  { "kind": "service", "capabilities": ["approvals.request"], "calls": ["persistence", "workspace", "acp", "internal-mcp", "mcp-auth"] },
     "internal-mcp": { "kind": "service", "capabilities": ["net.loopback", "ssh.connect", "ssh.forward", "fs.scope", "modules.read"], "calls": ["module-dev", "workspace", "persistence"] },
