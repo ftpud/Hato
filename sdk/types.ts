@@ -349,9 +349,9 @@ export type UiNode =
    *  (content height then, unless `heightFraction` is set). */
   | (Base & { type: "popover"; children: UiNode[]; closeAction: string; top?: number; bottom?: number; left?: number; right?: number; /** Height as a fraction of the parent (0.1–1). */ heightFraction?: number; maxHeight?: number })
   | (Base & { type: "toggle"; label: string; checked: boolean; action: string; disabled?: boolean })
-  | (Base & { type: "tree"; rows: TreeRow[]; selectAction: string; expandAction: string; /** Fired with the row key on double click (after the first click's selectAction). */ activateAction?: string;
+  | (Base & { type: "tree"; rows: TreeRow[]; selectAction: string; expandAction: string; /** Fired with the row key as the pointer enters a row, and without one when it leaves the list. */ hoverAction?: string; /** Fired with the row key on double click (after the first click's selectAction). */ activateAction?: string;
       /** Fixed row height (px); omit for content height. */ rowHeight?: number;
-      /** Hover fill color token (default "hover") and its opacity 0–1 (default 1). */ hoverBackground?: UiColor; hoverOpacity?: number; /** Indent per depth level (px). */ indent?: number; rowGap?: number; iconSize?: number; expandedIconSvg?: string; collapsedIconSvg?: string })
+      /** Hover fill color token (default "hover") and its opacity 0–1 (default 1). */ hoverBackground?: UiColor; hoverOpacity?: number; /** Indent per depth level (px). */ indent?: number; rowGap?: number; iconSize?: number; /** Non-square row icon box (px); overrides iconSize per axis. */ iconWidth?: number; iconHeight?: number; expandedIconSvg?: string; collapsedIconSvg?: string })
   /** Native diff view of a unified patch (e.g. `git diff` output) held in a document handle. */
   | (Base & { type: "diff"; document: Handle | null; /** Initially fold file patches; later user expansion is preserved. */ filesCollapsed?: boolean; /** Floating navigation between changed regions; labels supplied by the module. */ changeNavigation?: { previous: string; next: string }; mode?: "split" | "unified"; softWrap?: boolean; header?: boolean; placeholder?: string; emptyText?: string })
   | (Base & { type: "status"; text: string; level?: "info" | "warn" | "error" | "success" })
@@ -408,7 +408,7 @@ export type UiNode =
 /** Ordered lexical rules; earliest match wins, then declaration order. Rust regex syntax. */
 export interface SyntaxRule { pattern: string; capture: string }
 
-export interface TreeRow { /** Optional plugin-supplied row tint; selection/hover take precedence. */ background?: UiColor; description?: string; /** Shows an animated activity indicator after the label. */ busy?: boolean; iconSvg?: string; iconColor?: UiColor; connector?: "branch" | "last"; key: string; label: string; depth: number; expandable: boolean; expanded: boolean; selected: boolean; /** Shown as-is after the label. */ badge?: string;
+export interface TreeRow { /** Optional plugin-supplied row tint; selection/hover take precedence. */ background?: UiColor; /** Native hover tooltip for the row. */ tooltip?: string; description?: string; /** Shows an animated activity indicator after the label. */ busy?: boolean; iconSvg?: string; iconColor?: UiColor; connector?: "branch" | "last"; key: string; label: string; depth: number; expandable: boolean; expanded: boolean; selected: boolean; /** Shown as-is after the label. */ badge?: string;
   /** Colored short texts before `badge` (e.g. "+12" success, "−3" danger). */ badges?: { text: string; color?: UiColor }[];
   /** Native right-click menu; items fire `action` with this row's key as rowKey and `value`. */
   contextMenu?: ({ text: string; action: string; value?: Json; disabled?: boolean } | { separator: true })[];

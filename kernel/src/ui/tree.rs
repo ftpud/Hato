@@ -22,7 +22,15 @@ impl Shell {
             div().id(sid(module, path)).flex_1().min_h_0().w_full().overflow_y_scroll()
                 .child(v_flex().w_full().min_w_0().gap(px(gap)).children(rows)).into_any_element()
         };
-        self.apply_base(v_flex(), n, cx).min_h_0().min_w_0().overflow_hidden().child(body).into_any_element()
+        let tree = self.apply_base(v_flex(), n, cx).min_h_0().min_w_0().overflow_hidden().child(body);
+        let hover_action = node["hoverAction"].as_str().unwrap_or("").to_string();
+        if hover_action.is_empty() { return tree.into_any_element(); }
+        // Rows report the row entered; leaving the whole list reports no row, so moving between
+        // rows never flickers through an empty state.
+        let (k, m, inputs, key) = (self.kernel.clone(), module.to_string(), self.module_inputs(module), node["key"].as_str().unwrap_or("_").to_string());
+        tree.id(sid(module, &format!("{path}/hover"))).on_hover(move |hovered, _, cx| {
+            if !*hovered { Self::fire(&k, &m, &inputs, &hover_action, &key, None, Value::Null, cx); }
+        }).into_any_element()
     }
 
     fn tree_rows(&self, module: &str, n: &Value, path: &str, range: Range<usize>, cx: &mut Context<Self>) -> Vec<AnyElement> {
@@ -33,12 +41,16 @@ impl Shell {
         let sel_action = s("selectAction");
         let exp_action = s("expandAction");
         let act_action = s("activateAction");
+        let hover_action = s("hoverAction");
         let inputs = self.module_inputs(module);
         // Geometry is module data; defaults match a compact list.
         let row_h = n["rowHeight"].as_f64().or_else(|| self.control_style["listRowHeight"].as_f64()).map(|h| h.clamp(12.0, 96.0) as f32);
         let indent = n["indent"].as_f64().unwrap_or(14.0).clamp(0.0, 64.0) as f32;
         let row_gap = n["rowGap"].as_f64().unwrap_or(1.0).clamp(0.0, 16.0) as f32;
         let icon_size = n["iconSize"].as_f64().unwrap_or(16.0).clamp(8.0, 48.0) as f32;
+        // Optional non-square icon box (e.g. a commit graph spanning the full row height).
+        let icon_w = n["iconWidth"].as_f64().map(|w| w.clamp(8.0, 320.0) as f32);
+        let icon_h = n["iconHeight"].as_f64().map(|h| h.clamp(8.0, 96.0) as f32);
         // Row hover fill is module presentation: a color token and its opacity.
         let hover_bg = n["hoverBackground"].as_str().map(|c| theme::color(cx, c, cx.theme().list_hover)).unwrap_or(cx.theme().list_hover)
             .opacity(n["hoverOpacity"].as_f64().unwrap_or(1.0).clamp(0.0, 1.0) as f32);
@@ -83,6 +95,14 @@ impl Shell {
                     Self::fire(&k, &m, &inputs2, action, &key2, Some(rk2.clone()), Value::Null, cx)
                 });
             if let Some(h) = row_h { row = row.h(px(h)).flex_shrink_0().py_0().gap(px(6.0)); }
+            if let Some(tip) = r["tooltip"].as_str().filter(|t| !t.is_empty()) {
+                let tip = tip.to_string();
+                row = row.tooltip(move |window, cx| gpui_component::tooltip::Tooltip::new(tip.clone()).build(window, cx));
+            }
+            if !hover_action.is_empty() {
+                let (k, m, inputs, key, rk, action) = (self.kernel.clone(), module.to_string(), inputs.clone(), key.to_string(), rk.clone(), hover_action.clone());
+                row = row.on_hover(move |hovered, _, cx| { if *hovered { Self::fire(&k, &m, &inputs, &action, &key, Some(rk.clone()), Value::Null, cx); } });
+            }
             if self.control_style["rowDividers"].as_bool().unwrap_or(false) { row = row.border_b_1().border_color(cx.theme().border); }
             if self.control_style["stripedRows"].as_bool().unwrap_or(false) && row_index % 2 == 1 { row = row.bg(cx.theme().muted.opacity(0.35)); }
             if let Some(background) = r["background"].as_str() {
@@ -104,7 +124,10 @@ impl Shell {
             let icon_element = match r["iconSvg"].as_str() {
                 Some(svg) => {
                     let color = r["iconColor"].as_str().map(|c| theme::color(cx, c, theme_muted)).unwrap_or(theme_muted);
-                    gpui_component::Icon::default().data(svg.as_bytes()).with_size(px(icon_size)).text_color(color).into_any_element()
+                    let icon = gpui_component::Icon::default().data(svg.as_bytes()).text_color(color);
+                    if icon_w.is_some() || icon_h.is_some() {
+                        icon.w(px(icon_w.unwrap_or(icon_size))).h(px(icon_h.unwrap_or(icon_size))).into_any_element()
+                    } else { icon.with_size(px(icon_size)).into_any_element() }
                 }
                 None => div().w(px(4.0)).flex_none().into_any_element(),
             };
