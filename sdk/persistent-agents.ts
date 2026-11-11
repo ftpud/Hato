@@ -1,5 +1,6 @@
+import type { McpLaunchOptions } from "./provider-mcp";
 import type { ChatMessage } from "./types";
-export interface AgentProfile { id: string; provider: string; name: string; executable: string; args: string[]; envRefs?: Record<string,string>; enabled?: boolean }
+export interface AgentProfile { id: string; provider: string; name: string; executable: string; args: string[]; mcpLaunch?: McpLaunchOptions; envRefs?: Record<string,string>; enabled?: boolean }
 export type McpTransport = "stdio" | "http" | "sse";
 /** Remote server authentication. OAuth tokens live in the mcp-auth service, never in this config. */
 export interface McpAuth { type: "none" | "oauth" | "bearer"; token?: string; clientId?: string; clientSecret?: string; scopes?: string; redirectPort?: number }

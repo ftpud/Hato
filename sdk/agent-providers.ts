@@ -1,8 +1,10 @@
+import type { McpLaunchOptions } from "./provider-mcp";
 import type { ModuleContext, PluginInfo } from './types';
 export interface AgentProvider {
   id: string; name: string; module: string;
   profile: { id: string; name: string; executable: string; args: string[] };
   adapter: { pkg: string; bin: string };
+  mcpLaunch?: McpLaunchOptions;
   usageCommand?: string;
   auth?: { key: string; field: string; label: string; description: string; default: boolean; envRemove: string[] };
 }
@@ -38,6 +40,6 @@ export async function providerProfiles(ctx: ModuleContext) {
   }
   return rows.map(p => {
     const definition = available.find(d => d.id === p.provider);
-    return { ...p, providerModule: definition?.module, authOption: definition?.auth };
+    return { ...p, providerModule: definition?.module, mcpLaunch: definition?.mcpLaunch, authOption: definition?.auth };
   });
 }

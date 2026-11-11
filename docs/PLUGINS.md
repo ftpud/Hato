@@ -245,3 +245,23 @@ changes to explorer/viewer code. Java is the first implementation: declaration
 icons and configurable main/test/resource roots in Settings → Java file appearance.
 The generic `TreeRow.background` field requires a host with row-tint support;
 selection and hover remain visible above the tint.
+
+## Provider MCP launch compatibility
+
+An agent provider can declare `mcpLaunch: {flag, stdioType?, tools?}` in its
+`agentProviders` contribution. Its resolved profiles carry this policy into both
+chat and daemon-hosted agent launchers. Only stdio MCP entries move into the launch
+configuration; HTTP/SSE entries keep their normal ACP session negotiation.
+
+Copilot uses `--additional-mcp-config` because its ACP session setup can silently
+ignore stdio MCP servers (upstream github/copilot-cli issue 3889). Hato's generic
+Node launcher runs on the workspace machine, writes a per-process configuration
+in an OS temporary directory (0700 directory, 0600 file), and passes only `@path`
+to the CLI. The configuration travels to the launcher in a private spawn
+environment variable which is removed before starting the provider. It is never
+added to a global config or the repository. The launcher forwards termination
+signals and removes its temporary file when the child exits. The `tools` list
+controls visibility, while existing Hato tool approvals continue to apply.
+
+A changed provider launch policy takes effect on a new connection. Existing
+agents keep their running processes; update daemon plugins only when idle.
