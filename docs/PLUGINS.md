@@ -207,3 +207,41 @@ Owners publish progress/disabled state, errors and completion through their sett
 Language providers may supply `server.dependencySetup` recipes; language-service owns target-side
 checks, verified user-space installs, and workspace-scoped executable configuration. These are
 module-only workflows over existing process APIs, including SSH.
+
+## File presentation contributions
+
+Plugins can style explorer rows and viewer tabs through `sdk/file-presentation.ts`.
+Neither view contains language-specific rules. Add `contributes.filePresentation`
+to the module manifest, using a `FilePresentationContribution`:
+
+```json
+{
+  "rules": [
+    { "id": "test-root", "pathPattern": "^tests(?:/|$)", "background": "#22c55e24" },
+    { "id": "interface", "pathPattern": "\\.example$", "kind": "file",
+      "contentPattern": "\\binterface\\s+$FILE_STEM\\b", "iconSvg": "<svg .../>" }
+  ]
+}
+```
+
+`pathPattern` matches a workspace-relative path with `/` separators. `kind` can
+limit a rule to files or directories. `contentPattern` matches a bounded source
+prefix after C-style comments and quoted literals have been masked; `$FILE_STEM`
+is replaced with the regex-escaped filename without its extension. It is a
+lightweight classifier, not a language parser. Matching rules compose in order;
+only fields supplied by a later match override earlier ones. The presentation
+fields are `iconSvg`, `iconColor`, `background`, and `description`.
+
+Only enabled, active plugins contribute. A module can publish the same contract
+at `<module-id>.filePresentation` to override its manifest defaults, for example
+after persisted settings change. The files service watches provider changes and
+performs scoped, cached reads on the workspace machine. Reads are batched with
+four concurrent requests and capped at 32 KiB per file. Paths outside the workspace
+remain subject to the normal native scope checks. Failed reads use path rules.
+
+Views use `FilePresentationClient` to request metadata asynchronously. A second
+language only needs its contribution (and optional settings publisher), without
+changes to explorer/viewer code. Java is the first implementation: declaration
+icons and configurable main/test/resource roots in Settings → Java file appearance.
+The generic `TreeRow.background` field requires a host with row-tint support;
+selection and hover remain visible above the tint.

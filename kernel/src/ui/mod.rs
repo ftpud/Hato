@@ -645,7 +645,9 @@ impl Shell {
                 }
                 let icon_size = px(n["iconSize"].as_f64().unwrap_or(16.0).clamp(10.0, 48.0) as f32);
                 if let Some(svg) = n["iconSvg"].as_str() {
-                    btn = btn.icon(gpui_component::Icon::default().data(svg.as_bytes()).with_size(icon_size));
+                    let mut icon = gpui_component::Icon::default().data(svg.as_bytes()).with_size(icon_size);
+                    if let Some(color) = n["iconColor"].as_str() { icon = icon.text_color(theme::color(cx, color, cx.theme().foreground)); }
+                    btn = btn.icon(icon);
                 }
                 // Button registers its own hover style; style::apply never adds hover styles (GPUI panics on a second one).
                 btn = style::apply(btn, &n["style"], cx);
@@ -1067,6 +1069,9 @@ impl Shell {
                     if let Some(h) = row_h { row = row.h(px(h)).flex_shrink_0().py_0().gap(px(6.0)); }
                     if self.control_style["rowDividers"].as_bool().unwrap_or(false) { row = row.border_b_1().border_color(cx.theme().border); }
                     if self.control_style["stripedRows"].as_bool().unwrap_or(false) && row_index % 2 == 1 { row = row.bg(cx.theme().muted.opacity(0.35)); }
+                    if let Some(background) = r["background"].as_str() {
+                        row = row.bg(theme::color(cx, background, cx.theme().transparent));
+                    }
                     if selected {
                         row = row.bg(cx.theme().list_active);
                     }
