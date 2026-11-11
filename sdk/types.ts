@@ -338,8 +338,8 @@ export type UiNode =
   | (Base & { type: "dropdown"; text: string; iconSvg?: string; open: boolean; action: string; disabled?: boolean; variant?: "primary" | "ghost" | "danger" | "default";
       menuWidth?: number; maxHeight?: number; children: UiNode[] })
   | (Base & { type: "label"; text: string; size?: "xs" | "sm" | "md" | "lg"; weight?: "normal" | "medium" | "semibold" | "bold"; /** "default" or any UiColor. */ color?: UiColor; mono?: boolean; wrap?: boolean; /** Let the user select and copy the text. */ selectable?: boolean })
-  | (Base & { type: "button"; text: string; /** Inline SVG drawing, bundled and hot reloaded with the module (see sdk/ui-icons.ts). */ iconSvg?: string; iconSize?: number; action: string; variant?: "primary" | "ghost" | "danger" | "default"; disabled?: boolean; value?: Json; small?: boolean;
-      /** Copied to the clipboard natively on click (no round trip); `action` may be "". */ copyText?: string; /** Secondary mouse gestures use the same value as action. */ middleClickAction?: string; contextAction?: string; contextMenu?: { text: string; action: string; value?: Json; disabled?: boolean }[] })
+  | (Base & { type: "button"; text: string; /** Inline SVG drawing, bundled and hot reloaded with the module (see sdk/ui-icons.ts). */ iconSvg?: string; iconSize?: number; /** Compact count overlay on the button. Empty or absent hides it. */ badge?: string; action: string; variant?: "primary" | "ghost" | "danger" | "default"; disabled?: boolean; value?: Json; small?: boolean;
+      /** Copied to the clipboard natively on click (no round trip); `action` may be "". */ copyText?: string; /** Secondary mouse gestures use the same value as action. */ doubleClickAction?: string; middleClickAction?: string; contextAction?: string; contextMenu?: { text: string; action: string; value?: Json; disabled?: boolean }[] })
   | (Base & { type: "textInput"; placeholder?: string; value?: string; submitAction?: string; changeAction?: string; /** Inline SVG shown before single-line input text. */ prefixSvg?: string; pasteImageAction?: string; /** Limits for pasted pictures. */ maxFiles?: number; maxBytes?: number; secret?: boolean; multiline?: boolean; /** Fill the available height instead of using a fixed row count. */ fillHeight?: boolean; rows?: number; rowHeight?: number; disabled?: boolean })
   | (Base & { type: "select"; options: { value: string; label: string; disabled?: boolean }[]; value: string | null; action: string; disabled?: boolean; placeholder?: string; label?: string; disabledReason?: string; /** Style of the dropdown button itself (`style` styles its wrapper). */ buttonStyle?: UiStyle })
   | (Base & { type: "choice"; text: string; description?: string; disabled?: boolean; selected?: boolean; action: string; value: string; /** Glyph shown when selected (default ✓). */ mark?: string })
@@ -387,6 +387,8 @@ export type UiNode =
        *  `additionalTextEdits` (e.g. imports) are applied without moving the caret. */
       completionResolveMethod?: string;
       /** LSP {uri, selection} fired only when a definition is activated. */ openLocationAction?: string;
+      /** Open Find with a literal case-insensitive query and reveal its first match. A new key repeats it. */
+      search?: { key: string; query: string };
       /** One-shot cursor movement; a new key repeats it. Positions use zero-based UTF-16. */ reveal?: { key: string; line: number; character: number } })
   | (Base & { type: "terminal"; pty: Handle | null; placeholder?: string })
   /** Native picture file dialog; fires `action` with attachments (or {error}). */

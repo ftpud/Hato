@@ -79,6 +79,18 @@ impl SearchSession {
         self.active
     }
 
+    /// Logical rows touched by the active match, even while the search field owns focus.
+    pub(crate) fn active_match_rows(&self, text: &Rope) -> Option<std::ops::RangeInclusive<usize>> {
+        if !self.is_active() { return None; }
+        let ranges = self.matcher.matched_ranges();
+        let range = ranges.get(self.matcher.current_match_index())?;
+        let start = text.offset_to_point(range.start).row;
+        // The end is exclusive: a match ending at a newline must not tint the next row.
+        let end = text.offset_to_point(range.end.saturating_sub(1).max(range.start)).row;
+        Some(start..=end)
+    }
+
+
     pub(crate) fn update_query(&mut self, query: impl Into<String>, case_insensitive: bool) {
         let query = query.into();
         if self.query == query && self.case_insensitive == case_insensitive {
@@ -193,6 +205,18 @@ impl<M: InputModeKind> InputBaseState<M> {
         self.search_session.matcher.update(&self.text);
         if query_changed && let Some(anchor) = self.search_session.anchor_offset {
             self.search_session.matcher.update_cursor_by_offset(anchor);
+        }
+        cx.notify();
+    }
+
+    /// Open the built-in Find panel for a supplied query, starting at its first match.
+    pub fn open_search_with_query(&mut self, query: impl Into<String>, cx: &mut Context<Self>) {
+        self.open_search(false, cx);
+        self.set_search_query(query, true, cx);
+        self.search_session.anchor_offset = None;
+        self.search_session.matcher.set_current_match_index(0);
+        if let Some(range) = self.search_session.matcher.matched_ranges().first().cloned() {
+            self.scroll_to_with_padding(range.start, None, ScrollPadding::SurroundingLines, cx);
         }
         cx.notify();
     }
@@ -513,6 +537,35 @@ mod tests {
         assert!(!session.open);
         session.close();
         assert!(!session.is_active());
+    }
+
+    #[test]
+    fn active_match_rows_follow_search_and_clear_on_close() {
+        let text = Rope::from("first\nα foo\nlast foo");
+        let mut session = SearchSession::default();
+        session.activate();
+        session.update_query("foo", true);
+        session.matcher.update(&text);
+        assert_eq!(session.active_match_rows(&text), Some(1..=1));
+        session.matcher.set_current_match_index(1);
+        assert_eq!(session.active_match_rows(&text), Some(2..=2));
+        session.update_query("absent", true);
+        session.matcher.update(&text);
+        assert_eq!(session.active_match_rows(&text), None);
+        session.update_query("foo", true);
+        session.matcher.update(&text);
+        session.close();
+        assert_eq!(session.active_match_rows(&text), None);
+    }
+
+    #[test]
+    fn active_match_rows_respect_exclusive_multiline_end() {
+        let text = Rope::from("foo\nbar\nlast");
+        let mut session = SearchSession::default();
+        session.activate();
+        session.update_query("foo\nbar\n", true);
+        session.matcher.update(&text);
+        assert_eq!(session.active_match_rows(&text), Some(0..=1));
     }
 
     #[test]

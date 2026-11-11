@@ -32,6 +32,13 @@ are in `sdk/types.ts`.
 schemas, and built-in UI manifests for examples. Panels describe their title, dock and activity
 button. Settings → Side panels lets the user hide or place each button at left top, left bottom,
 right top or right bottom; choices override plugin defaults and persist in `activity-sidebar.v1`.
+Panels can publish a transient numeric beacon from their owning module with
+`ctx.state.set("<module-id>.panelBadge.<panel-id>", count)`. Both activity sidebars
+watch these keys automatically, including after plugins are enabled or reloaded.
+Positive counts appear in a circle on the icon (`99+` above 99); zero clears it.
+Git publishes the number of changed files in the selected workspace and refreshes
+that count even while its panel is closed when automatic refresh is enabled.
+
 Settings → Sidebar order & spacers supports reordering each sidebar group and inserting/removing
 fixed-height gaps; choices persist in `sidebar-order.v1`. Settings supports a reusable `order`
 field (JSON array of allowed item IDs plus optional spacer IDs), validated before owner edits.

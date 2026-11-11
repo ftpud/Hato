@@ -78,6 +78,8 @@ pub struct Shell {
     /// Editable code viewers: change subscription and the latest (module, key, action, debounce)
     /// binding from the tree, keyed by document handle.
     editor_subs: HashMap<String, Subscription>,
+    editor_observers: HashMap<String, Subscription>,
+    editor_search: HashMap<String, String>,
     editor_bind: HashMap<String, (String, String, String, u64)>,
     editor_seq: HashMap<String, u64>,
     editor_syntax: HashMap<String, Value>,
@@ -148,6 +150,8 @@ impl Shell {
             inputs: HashMap::new(),
             editors: HashMap::new(),
             editor_subs: HashMap::new(),
+            editor_observers: HashMap::new(),
+            editor_search: HashMap::new(),
             editor_bind: HashMap::new(),
             editor_seq: HashMap::new(),
             editor_syntax: HashMap::new(),
@@ -638,7 +642,7 @@ impl Shell {
                     btn = btn.tooltip(t.to_string());
                 }
                 let copy = n["copyText"].as_str().map(str::to_owned);
-                let mut wrapper = div().id(sid(module, &format!("{path}/gestures")));
+                let mut wrapper = div().id(sid(module, &format!("{path}/gestures"))).relative();
                 if !b("disabled") {
                     for (field, mouse) in [("middleClickAction", MouseButton::Middle), ("contextAction", MouseButton::Right)] {
                         if field == "contextAction" && n["contextMenu"].as_array().map(|items| !items.is_empty()).unwrap_or(false) { continue; }
@@ -672,15 +676,19 @@ impl Shell {
                         menu
                     }).into_any_element();
                 }
-                let button = btn.on_click(move |_, _, cx| {
+                let double_action = s("doubleClickAction");
+                let button = btn.on_click(move |event, _, cx| {
                     if let Some(text) = &copy {
                         cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
                     }
+                    let action = if event.click_count() >= 2 && !double_action.is_empty() { &double_action } else { &action };
                     if !action.is_empty() {
-                        Self::fire(&k, &m, &inputs, &action, &key2, None, value.clone(), cx);
+                        Self::fire(&k, &m, &inputs, action, &key2, None, value.clone(), cx);
                     }
                 }).into_any_element();
-                if !s("middleClickAction").is_empty() || !s("contextAction").is_empty() { wrapper.child(button).into_any_element() }
+                if let Some(badge) = n["badge"].as_str().filter(|s| !s.is_empty()) {
+                    wrapper.child(button).child(div().absolute().top_0().right_0().min_w(px(16.0)).h(px(16.0)).px(px(3.0)).rounded_full().bg(cx.theme().primary).text_color(cx.theme().primary_foreground).text_size(px(10.0)).line_height(px(16.0)).text_center().child(badge.to_string())).into_any_element()
+                } else if !s("middleClickAction").is_empty() || !s("contextAction").is_empty() { wrapper.child(button).into_any_element() }
                 else { button }
             }
             "dropdown" => {
@@ -1147,6 +1155,9 @@ impl Shell {
                         });
                         entry.1 = Instant::now();
                         let st = entry.0.clone();
+                        // Input's floating overlays are composed by the parent, outside the
+                        // editor entity. Repaint it when asynchronous LSP results arrive.
+                        self.editor_observers.entry(h.clone()).or_insert_with(|| cx.observe(&st, |_, _, cx| cx.notify()));
                         let language = n["language"].as_str().unwrap_or(&doc.language).to_string();
                         let query = editor::register_highlights(&language, n["highlightQuery"].as_str());
                         // Semantic name refinements update in place; the highlighter reads them on paint.
@@ -1236,6 +1247,12 @@ impl Shell {
                                 self.editor_reveal.insert(h.clone(), reveal_key.to_string());
                             }
                         }
+                        if let (Some(search_key), Some(query)) = (n["search"]["key"].as_str(), n["search"]["query"].as_str()) {
+                            if self.editor_search.get(&h).map(String::as_str) != Some(search_key) {
+                                st.update(cx, |state, cx| state.open_search_with_query(query, cx));
+                                self.editor_search.insert(h.clone(), search_key.to_string());
+                            }
+                        }
                         let editable = b("editable");
                         let change = s("changeAction");
                         if editable && !change.is_empty() {
@@ -1311,6 +1328,8 @@ impl Shell {
                     for (k, _) in v.into_iter().take(16) {
                         self.editors.remove(&k);
                         self.editor_subs.remove(&k);
+                        self.editor_observers.remove(&k);
+                        self.editor_search.remove(&k);
                         self.editor_bind.remove(&k);
                         self.editor_seq.remove(&k);
                         self.editor_syntax.remove(&k);

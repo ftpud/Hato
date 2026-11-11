@@ -13,3 +13,7 @@ pointer jittered). `src/input/editor/lsp/completions.rs`: completion menu min wi
 max height options.
 
 Remove this local Cargo patch when upstream supports click-time requests.
+
+`src/input/editor/search.rs` and `src/input/base/element.rs`: highlight the logical
+rows occupied by the active Find match across the editor and gutter, independently
+of caret focus. Wrapped rows share the highlight; closing search clears it.

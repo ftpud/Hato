@@ -3258,6 +3258,14 @@ impl<M: InputModeKind> Element for TextElement<M> {
             editor_style.background
         };
 
+        // Search owns focus while Find is open; its active result still needs a
+        // full-row cue independent of the caret (including soft-wrapped rows).
+        let search_rows = {
+            let state = self.state.read(cx);
+            state.is_code_editor().then(|| state.search_session.active_match_rows(&state.text)).flatten()
+        };
+        let search_line_color = editor_style.selection.opacity(if disabled { 0.10 } else { 0.20 });
+
         // Paint active line
         let mut offset_y = px(0.);
         if let Some(line_numbers) = prepaint.line_numbers.as_ref() {
@@ -3280,7 +3288,13 @@ impl<M: InputModeKind> Element for TextElement<M> {
                         ));
                     }
                 }
+                if search_rows.as_ref().is_some_and(|rows| rows.contains(&buffer_line)) {
+                    window.paint_quad(fill(Bounds::new(p, size(bounds.size.width, height)), search_line_color));
+                }
                 offset_y += height;
+                if Some(buffer_line) == prepaint.current_row {
+                    offset_y += prepaint.ghost_lines_height;
+                }
             }
         }
 
@@ -3493,6 +3507,13 @@ impl<M: InputModeKind> Element for TextElement<M> {
                             bg_color,
                         ));
                     }
+                }
+
+                if search_rows.as_ref().is_some_and(|rows| rows.contains(&buffer_line)) {
+                    window.paint_quad(fill(
+                        Bounds::new(point(gutter_bounds.origin.x, p.y), size(gutter_bounds.size.width, height)),
+                        search_line_color,
+                    ));
                 }
 
                 for line in lines {

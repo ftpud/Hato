@@ -27,6 +27,8 @@ pub(super) fn render_markdown(
     cx: &mut App,
 ) -> TextView {
     TextView::markdown(id, markdown)
+        // Supplying empty actions hides the language caption while retaining syntax highlighting.
+        .code_block_actions(|_, _, _| div())
         .style(
             TextViewStyle::default()
                 .paragraph_gap(rems(0.5))
@@ -38,6 +40,7 @@ pub(super) fn render_markdown(
                 .code_block(
                     StyleRefinement::default()
                         .bg(cx.theme().transparent)
+                        .border_0()
                         .p_0()
                         .text_size(px(11.)),
                 ),

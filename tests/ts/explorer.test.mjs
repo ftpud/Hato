@@ -90,3 +90,26 @@ test('scoped search includes ancestors, caches listings and avoids symlink and .
   await searchFiles(ctx, desc, 'target', true);
   assert.equal(calls.length, 6);
 });
+
+test('opening a content-search result carries a fresh editor Find request', async () => {
+  const { default: mod } = await load('Hato-plugins/modules/ui/explorer/src/index.ts');
+  const selected = { id: 'ws', view: {} }, patches = [];
+  const ctx = { events: { on() {} }, state: { get: () => selected, watch() {} }, ui: { invalidate() {} }, modules: { async call(module, method, args) {
+    if (method === 'list') return { entries: [entry('main.ts')] };
+    if (method === 'grep') return { files: [{ relativePath: 'main.ts' }], matchCount: 2, fileCount: 1 };
+    if (method === 'view.patch') { patches.push(args.patch); return; }
+    if (method === 'search') return { entries: [], matchCount: 0 };
+    throw new Error(method);
+  } } };
+  await mod.activate(ctx);
+  await mod.onEvent(ctx, { action: 'toggleContent', inputs: {} });
+  await mod.onEvent(ctx, { action: 'filter', value: 'needle', inputs: {} });
+  await mod.onEvent(ctx, { action: 'submitFilter', inputs: {} });
+  await mod.onEvent(ctx, { action: 'open', rowKey: 'main.ts', inputs: {} });
+  const first = patches.find(p => p.previewPath === 'main.ts');
+  assert.equal(first.ui.viewerSearch.path, 'main.ts');
+  assert.equal(first.ui.viewerSearch.query, 'needle');
+  assert.ok(first.ui.viewerSearch.key);
+  await mod.onEvent(ctx, { action: 'open', rowKey: 'main.ts', inputs: {} });
+  assert.notEqual(patches.filter(p => p.previewPath === 'main.ts').at(-1).ui.viewerSearch.key, first.ui.viewerSearch.key);
+});

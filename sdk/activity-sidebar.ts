@@ -17,6 +17,20 @@ export function activitySidebar(id: string, side: "left" | "right"): AppModule {
   let grouping = true;
   let contributions: Contributions | null = null;
   let stop: (() => void) | null = null;
+  /** Panels publish positive counts at `<owning-module>.panelBadge.<panel-id>`.
+   * Counts are transient state; zero clears the beacon, and large counts show 99+. */
+  const badges: Record<string, unknown> = {};
+  const badgeStops = new Map<string, () => void>();
+  const syncBadges = (ctx: ModuleContext) => {
+    const panels = Object.values(contributions?.panels || {});
+    const wanted = new Set(panels.map(p => p.id));
+    for (const [id, stop] of badgeStops) if (!wanted.has(id)) { stop(); badgeStops.delete(id); delete badges[id]; }
+    for (const panel of panels) if (!badgeStops.has(panel.id)) {
+      const key = `${panel.module}.panelBadge.${panel.id}`;
+      badges[panel.id] = ctx.state.get(key);
+      badgeStops.set(panel.id, ctx.state.watch(key, value => { badges[panel.id] = value; ctx.ui.invalidate(); }));
+    }
+  };
   const buttons = () => contributions ? sidebarPanels(contributions, choices, side) : [];
   return {
     id, moduleApiVersion: 1,
@@ -33,21 +47,24 @@ export function activitySidebar(id: string, side: "left" | "right"): AppModule {
       visible = ctx.state.get("workspace-layout.panels") || {};
       ctx.state.watch("workspace-layout.panels", (value: any) => { visible = value || {}; ctx.ui.invalidate(); });
       try { contributions = await loadContributions(ctx); } catch (e) { ctx.log.warn("plugins.list failed", String(e)); }
-      stop = watchContributions(ctx, (c) => { contributions = c; ctx.ui.invalidate(); });
+      syncBadges(ctx);
+      stop = watchContributions(ctx, (c) => { contributions = c; syncBadges(ctx); ctx.ui.invalidate(); });
     },
-    deactivate() { stop?.(); },
+    deactivate() { stop?.(); for (const stop of badgeStops.values()) stop(); badgeStops.clear(); },
     render(): UiNode {
       return { type: "column", key: "activity-sidebar", grow: true, bg: "panel", padding: 3, gap: 4, borderSide: side === "left" ? "right" : "left", children: (() => {
         const panels = buttons();
         const top = contributions ? orderedSidebarItems(contributions, choices, order, `${side}-top`) : [];
         const bottom = contributions ? orderedSidebarItems(contributions, choices, order, `${side}-bottom`) : [];
         const button = (panel: typeof panels[number]): UiNode => {
+          const count = badges[panel.id];
+          const badge = typeof count === "number" && Number.isFinite(count) && count > 0 ? (count > 99 ? "99+" : String(Math.floor(count))) : undefined;
           const title = panel.activity?.title || panel.title;
           const iconSvg = panel.activity?.iconSvg || (panel.activity?.icon && (sidebarIcons as Record<string, string>)[panel.activity.icon]) || fallbackIcon;
           return {
-            type: "button", key: panel.id, text: "", iconSvg, iconSize: 22, width: 36, height: 36, style: sidebarButtonStyle(!!visible[panel.id]),
+            type: "button", key: panel.id, text: "", iconSvg, badge, iconSize: 22, width: 36, height: 36, style: sidebarButtonStyle(!!visible[panel.id]),
             variant: visible[panel.id] ? "primary" : "ghost", action: "toggle", value: panel.id,
-            tooltip: `${visible[panel.id] && !panel.pinned ? "Hide" : "Show"} ${title}`,
+            tooltip: `${visible[panel.id] && !panel.pinned ? "Hide" : "Show"} ${title}${badge ? ` · ${count}` : ""}`,
           } as UiNode;
         };
         const item = (id: string): UiNode => id.startsWith("@spacer:") ? { type: "column", key: id, height: 12, children: [] } : button(panels.find(p => p.id === id)!);

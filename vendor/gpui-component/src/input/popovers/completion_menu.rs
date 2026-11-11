@@ -21,7 +21,7 @@ struct Presentation {
     bold: bool,
     muted_from: Option<usize>,
 }
-/// Label runs: name (optionally bold), muted tail, and underlined query matches, as ordered,
+/// Label runs: name (optionally bold) and muted tail, split at query matches as ordered,
 /// non-overlapping highlight ranges.
 fn label_runs(
     label: &str,
@@ -42,11 +42,9 @@ fn label_runs(
         .filter(|w| w[0] < w[1])
         .map(|w| {
             let range = w[0]..w[1];
-            let matched = matches.iter().any(|m| m.start <= range.start && range.end <= m.end);
             let style = HighlightStyle {
                 color: (range.start >= split).then_some(muted),
                 font_weight: (bold && range.start < split).then_some(gpui::FontWeight::BOLD),
-                underline: matched.then_some(gpui::UnderlineStyle { thickness: px(1.), color: None, wavy: false }),
                 ..Default::default()
             };
             (range, style)
@@ -183,7 +181,7 @@ impl RenderOnce for CompletionMenuItem {
         let deprecated = item.deprecated.unwrap_or(false);
         let look = presentation(&item);
         let muted = cx.theme().muted_foreground;
-        // Matched characters are underlined rather than recolored, so labels keep the text color.
+        // Keep label colors and weight without underlining query matches.
         let matches = retained_highlight_ranges(
             &item.label,
             (self.highlight)(self.query.as_ref(), item.as_ref()),
@@ -601,7 +599,8 @@ mod tests {
         let runs = label_runs("get(int a)", true, Some(3), muted, &[0..2]);
         let ranges: Vec<_> = runs.iter().map(|(r, _)| r.clone()).collect();
         assert_eq!(ranges, vec![0..2, 2..3, 3..10]);
-        assert!(runs[0].1.underline.is_some() && runs[0].1.font_weight.is_some());
+        assert!(runs.iter().all(|(_, style)| style.underline.is_none()));
+        assert!(runs[0].1.font_weight.is_some());
         assert!(runs[1].1.underline.is_none() && runs[1].1.color.is_none());
         assert_eq!(runs[2].1.color, Some(muted));
         assert!(runs[2].1.font_weight.is_none());
