@@ -342,7 +342,7 @@ export type UiNode =
       /** Copied to the clipboard natively on click (no round trip); `action` may be "". */ copyText?: string; /** Secondary mouse gestures use the same value as action. */ middleClickAction?: string; contextAction?: string; contextMenu?: { text: string; action: string; value?: Json; disabled?: boolean }[] })
   | (Base & { type: "textInput"; placeholder?: string; value?: string; submitAction?: string; changeAction?: string; /** Inline SVG shown before single-line input text. */ prefixSvg?: string; pasteImageAction?: string; /** Limits for pasted pictures. */ maxFiles?: number; maxBytes?: number; secret?: boolean; multiline?: boolean; /** Fill the available height instead of using a fixed row count. */ fillHeight?: boolean; rows?: number; rowHeight?: number; disabled?: boolean })
   | (Base & { type: "select"; options: { value: string; label: string; disabled?: boolean }[]; value: string | null; action: string; disabled?: boolean; placeholder?: string; label?: string; disabledReason?: string; /** Style of the dropdown button itself (`style` styles its wrapper). */ buttonStyle?: UiStyle })
-  | (Base & { type: "choice"; text: string; description?: string; selected?: boolean; action: string; value: string; /** Glyph shown when selected (default ✓). */ mark?: string })
+  | (Base & { type: "choice"; text: string; description?: string; disabled?: boolean; selected?: boolean; action: string; value: string; /** Glyph shown when selected (default ✓). */ mark?: string })
   | (Base & { type: "switch"; label: string; checked: boolean; action: string; disabled?: boolean; /** Track color when on. */ accent?: UiColor })
   /** Click-outside-to-close overlay. Anchored from `top` (default 52), or upward from `bottom`
    *  (content height then, unless `heightFraction` is set). */
@@ -352,7 +352,7 @@ export type UiNode =
       /** Fixed row height (px); omit for content height. */ rowHeight?: number;
       /** Hover fill color token (default "hover") and its opacity 0–1 (default 1). */ hoverBackground?: UiColor; hoverOpacity?: number; /** Indent per depth level (px). */ indent?: number; rowGap?: number; iconSize?: number; expandedIconSvg?: string; collapsedIconSvg?: string })
   /** Native diff view of a unified patch (e.g. `git diff` output) held in a document handle. */
-  | (Base & { type: "diff"; document: Handle | null; mode?: "split" | "unified"; softWrap?: boolean; header?: boolean; placeholder?: string; emptyText?: string })
+  | (Base & { type: "diff"; document: Handle | null; /** Initially fold file patches; later user expansion is preserved. */ filesCollapsed?: boolean; /** Floating navigation between changed regions; labels supplied by the module. */ changeNavigation?: { previous: string; next: string }; mode?: "split" | "unified"; softWrap?: boolean; header?: boolean; placeholder?: string; emptyText?: string })
   | (Base & { type: "status"; text: string; level?: "info" | "warn" | "error" | "success" })
   | (Base & { type: "progress"; value?: number; indeterminate?: boolean; label?: string })
   /** Markdown from a document handle (scrolls) or inline `text`; `inline` renders without its own scroll area. */

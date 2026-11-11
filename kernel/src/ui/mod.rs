@@ -931,7 +931,7 @@ impl Shell {
                     .child(div().text_sm().font_weight(FontWeight::MEDIUM).overflow_hidden().whitespace_nowrap().text_ellipsis().child(s("text")));
                 if !s("description").is_empty() { content = content.child(div().text_xs().text_color(muted_c).child(s("description"))); }
                 let mark = n["mark"].as_str().unwrap_or("✓").to_string();
-                let btn = Button::new(sid(module, &path)).ghost().w_full().h_auto().px_3().py_2().rounded(px(7.0)).justify_start().text_color(text_c)
+                let btn = Button::new(sid(module, &path)).disabled(b("disabled")).ghost().w_full().h_auto().px_3().py_2().rounded(px(7.0)).justify_start().text_color(text_c)
                     .bg(if selected { sel_bg } else { base_bg }).border_1().border_color(if selected { border_c } else { base_bg })
                     .child(h_flex().gap_3().w_full().min_w_0().child(content)
                         .child(div().w(px(18.0)).flex_shrink_0().text_color(accent_c).child(if selected { mark } else { String::new() })));
@@ -1310,11 +1310,34 @@ impl Shell {
                     Some((h, doc)) => match DiffFile::parse(&doc.text) {
                         Ok(files) if files.is_empty() => div().p_3().text_sm().text_color(theme_muted).child(s("emptyText")).into_any_element(),
                         Ok(files) => {
-                            let entry = self.diffs.entry(h).or_insert_with(|| (cx.new(|cx| DiffState::new(files, cx).with_mode(mode)), Instant::now()));
+                            let entry = self.diffs.entry(h).or_insert_with(|| (cx.new(|cx| {
+                                let mut state = DiffState::new(files, cx).with_mode(mode);
+                                if b("filesCollapsed") {
+                                    let paths: Vec<_> = state.files().iter().map(|file| file.path().clone()).collect();
+                                    for path in paths { state.set_file_collapsed(path.as_str(), true, cx); }
+                                }
+                                state
+                            }), Instant::now()));
                             entry.1 = Instant::now();
                             let st = entry.0.clone();
                             if st.read(cx).mode() != mode { st.update(cx, |d, cx| d.set_mode(mode, cx)); }
-                            Diff::new(&st).soft_wrap(b("softWrap")).line_number(true).syntax_highlight(true).header_visible(n["header"].as_bool().unwrap_or(true)).size_full().into_any_element()
+                            let diff = Diff::new(&st).soft_wrap(b("softWrap")).line_number(true).syntax_highlight(true).header_visible(n["header"].as_bool().unwrap_or(true)).size_full();
+                            let mut surface = div().relative().size_full().min_w_0().min_h_0().child(diff);
+                            if let Some(nav) = n.get("changeNavigation").filter(|v| v.is_object()) {
+                                let prev = st.clone();
+                                let next = st.clone();
+                                surface = surface.child(
+                                    div().absolute().bottom(px(16.0)).right(px(20.0)).flex().gap_1().p_1()
+                                        .rounded(px(8.0)).bg(cx.theme().background).border_1().border_color(cx.theme().border).shadow_md()
+                                        .child(Button::new(sid(module, &format!("{path}/previous-change"))).label("⌃").small()
+                                            .tooltip(nav["previous"].as_str().unwrap_or_default().to_string())
+                                            .on_click(move |_, _, cx| { prev.update(cx, |d, cx| d.previous_change(cx)); }))
+                                        .child(Button::new(sid(module, &format!("{path}/next-change"))).label("⌄").small()
+                                            .tooltip(nav["next"].as_str().unwrap_or_default().to_string())
+                                            .on_click(move |_, _, cx| { next.update(cx, |d, cx| d.next_change(cx)); }))
+                                );
+                            }
+                            surface.into_any_element()
                         }
                         Err(e) => div().p_3().text_sm().text_color(cx.theme().danger).child(format!("Cannot parse diff: {}", e.message())).into_any_element(),
                     },

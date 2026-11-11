@@ -80,15 +80,17 @@ test('Panel sharing settings persist and file opens replace the active diff pane
   assert.deepEqual(mod.snapshot().panelSharing, shares);
 });
 
-test('default groups switch related panels in place and keep navigation, assistants and terminal separate', () => {
+test('captured defaults preserve separate Git and AI panes while shared panels switch in place', () => {
   const sharing = M.defaultPanelSharing();
   let layout = M.enforcePanelSharing(M.defaultLayout(), sharing);
-  for (const [initial, replacement] of [['viewer', 'workflows'], ['files', 'git'], ['ai', 'agents']]) {
+  for (const [initial, replacement] of [['viewer', 'workflows'], ['agents', 'remote']]) {
     const slot = M.locate(layout, initial);
     layout = M.showPanel(layout, replacement, sharing);
     assert.deepEqual(M.locate(layout, replacement), slot);
     assert.equal(M.visibleIn(layout, initial), false);
-    assert.equal(M.visibleIn(layout, 'terminal'), true);
+    assert.equal(M.visibleIn(layout, 'terminal'), false, 'terminal starts collapsed');
+    assert.equal(M.visibleIn(layout, 'ai'), true);
+    assert.equal(M.visibleIn(layout, 'git'), true);
   }
   for (const group of new Set(Object.values(sharing))) assert.equal(Object.keys(sharing).filter(id => sharing[id] === group && M.visibleIn(layout, id)).length, 1);
   assert.deepEqual(all(layout), Object.keys(M.PANELS).sort());

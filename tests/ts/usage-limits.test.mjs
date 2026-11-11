@@ -47,7 +47,7 @@ test("bar item contributions are validated and offered once on their default bar
   const removed = M.repair({ ...upgraded, bars: { ...upgraded.bars, bottom: { visible: true, items: ["machine"] } } });
   assert.deepEqual(removed.bars.bottom.items, ["machine"]);
   assert.equal(M.repair({ ...fresh, showCollapsedTray: false }).showCollapsedTray, false);
-  assert.equal(M.repair(old).showCollapsedTray, true);
+  assert.equal(M.repair(old).showCollapsedTray, false);
 });
 
 test("sidebar draws a rule between adjacent buttons of different shared spaces, not over spacers", async () => {

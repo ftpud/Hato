@@ -28,9 +28,9 @@ test("drop left/right creates a column; top/bottom stacks; sizes stay normalized
   assert.ok(Math.abs(sum(l.columns.map((c) => c.size)) - 1) < 1e-6);
   l = M.dropPanel(l, "files", "projects", "bottom");
   const pc = l.columns.find((c) => c.panels.includes("projects"));
-  assert.deepEqual(pc.panels, ["projects", "files"]);
+  assert.deepEqual(pc.panels, ["projects", "files", "ai"]);
   assert.ok(Math.abs(sum(pc.sizes) - 1) < 1e-6);
-  assert.equal(l.columns.length, 4, "the emptied files column is removed");
+  assert.equal(l.columns.length, 5, "the Git pane keeps the former files column occupied");
   assert.deepEqual(all(l), Object.keys(M.PANELS).sort());
 });
 
@@ -40,7 +40,7 @@ test("float / detach / hide / back to bottom keep a single location", () => {
   l = M.moveTo(l, "ai", "detached");
   assert.ok(l.detached.ai && !l.floating.ai);
   l = M.moveTo(l, "ai", "hidden");
-  assert.deepEqual(l.hidden, ["agents", "git-changes", "git", "mcps", "remote", "workflows", "ai"]); // git and remote are hidden by default
+  assert.deepEqual(l.hidden, [...M.defaultLayout().hidden, "ai"]);
   l = M.moveTo(l, "ai", "bottom");
   assert.deepEqual(l.bottom.panels, ["terminal", "ai"]);
   assert.deepEqual(all(l), Object.keys(M.PANELS).sort());
@@ -89,7 +89,8 @@ test("collapsed panes use full-name restore buttons without reserving columns or
   const built = await esbuild.build({ entryPoints: [path.join(root, 'Hato-plugins/modules/ui/workspace-layout/src/index.ts')], bundle: true, format: 'esm', write: false });
   const mod = (await import('data:text/javascript;base64,' + Buffer.from(built.outputFiles[0].text).toString('base64'))).default;
   const layout = M.defaultLayout();
-  layout.collapsed = { projects: true, files: true, viewer: true };
+  layout.showCollapsedTray = true;
+  layout.collapsed = { projects: true, ai: true, files: true, git: true, viewer: true };
   const originalSizes = layout.columns.map(c => c.size);
   const ctx = { host: { env: { info: () => ({ repoRoot: "/runtime", dataDir: "/data" }) }, plugins: pluginsHost() }, modules: { async call(_, method) { if (method === 'list') return []; if (method === 'updates') return { modules: [], available: [], errors: [] }; } }, state: { get() { return null; }, set() {}, watch() {} }, events: { on() { return () => {}; } }, ui: { invalidate() {} }, log: { warn() {} } };
   const walk = node => [node, ...(node.children || []).flatMap(walk)];
@@ -99,7 +100,7 @@ test("collapsed panes use full-name restore buttons without reserving columns or
   assert.deepEqual(cols.fixed, [0, 0, 0, null]);
   const restore = nodes.find(node => node.key === 'restore-buttons');
   assert.equal(restore.wrap, true);
-  assert.deepEqual(restore.children.filter(node => node.type === 'button').map(node => node.text), ['Projects', 'Files', 'Editor']);
+  assert.deepEqual(restore.children.filter(node => node.type === 'button').map(node => node.text), ['Projects', 'AI / ACP', 'Editor', 'Files', 'Git changes']);
   for (const id of ['projects', 'files', 'viewer']) assert.ok(!nodes.some(node => node.type === 'slot' && node.module === M.PANELS[id].slot));
   await mod.onEvent(ctx, { action: 'toggleCollapse', value: 'files', inputs: {} });
   assert.deepEqual(mod.methods.getLayout().columns.map(c => c.size), originalSizes);
@@ -109,13 +110,13 @@ test("collapsed panes use full-name restore buttons without reserving columns or
   await mod.methods.setLayout(ctx, { layout: { ...layout, collapsed: Object.fromEntries(Object.keys(M.PANELS).map(id => [id, true])) } });
   nodes = walk(mod.render());
   assert.ok(nodes.some(node => node.key === 'empty'));
-  assert.equal(nodes.find(node => node.key === 'restore-buttons').children.filter(node => node.type === 'button').length, 5);
+  assert.equal(nodes.find(node => node.key === 'restore-buttons').children.filter(node => node.type === 'button').length, layout.columns.flatMap(c => c.panels).length + layout.bottom.panels.length);
 });
 
 test('new default-hidden panels stay hidden in older saved layouts instead of docking', () => {
   const saved = { v: 1, columns: [{ panels: ['projects', 'files', 'viewer', 'ai'], size: 1, sizes: [0.25, 0.25, 0.25, 0.25] }], bottom: { panels: ['terminal'], sizes: [1], collapsed: false }, hidden: [] };
   const l = M.repair(saved);
-  assert.deepEqual(l.hidden, ['agents', 'git-changes', 'git', 'mcps', 'remote', 'workflows']);
+  assert.deepEqual([...l.hidden].sort(), ['agents', 'git-changes', 'git', 'mcps', 'remote', 'workflows', 'git-history', 'git-task-changes'].sort());
   assert.ok(!l.columns.some((c) => c.panels.includes('git')));
   const shown = M.dropPanel(l, 'git', 'files', 'bottom');
   assert.deepEqual(shown.columns[0].panels.slice(0, 3), ['projects', 'files', 'git']);
