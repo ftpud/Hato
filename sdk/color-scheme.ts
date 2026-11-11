@@ -13,7 +13,7 @@ export const colorScheme = {
     primaryHover: "#4d59e4",
     primaryActive: "#424fd5",
     primaryText: "#ffffff",
-    selection: "#eaf0ff",
+    selection: "#adc9ff",
     scrollbarThumb: "#c7d2e8",
     scrollbarThumbHover: "#a9b9d6",
     success: "#299875",
