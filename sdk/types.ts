@@ -109,6 +109,7 @@ export interface NativeHost {
     status(connection: Handle): Promise<{ alive: boolean; machineId: string; lastError: string | null }>;
     disconnect(connection: Handle): Promise<void>;
     forwardLoopback(connection: Handle, request: { listener: Handle }): Promise<{ handle: Handle; remotePort: number; localPort: number }>;
+    localForward(connection: Handle, request: { localPort: number; remoteHost: string; remotePort: number }): Promise<{ handle: Handle; localPort: number }>;
     cancelForward(handle: Handle): Promise<void>;
   };
   net: {

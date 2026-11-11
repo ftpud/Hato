@@ -190,6 +190,7 @@
         status: (connection) => call("ssh.status", { connection }),
         disconnect: (connection) => call("ssh.disconnect", { connection }),
         forwardLoopback: (connection, request) => call("ssh.forwardLoopback", Object.assign({ connection }, request)),
+        localForward: (connection, request) => call("ssh.localForward", Object.assign({ connection }, request)),
         cancelForward: (handle) => call("ssh.cancelForward", { handle }),
       },
       net: {

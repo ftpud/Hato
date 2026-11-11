@@ -39,6 +39,9 @@ impl Drop for Forward {
     fn drop(&mut self) { self.master.cancel_reverse(self.remote_port, self.local_port); }
 }
 
+pub struct LocalForward(pub tokio::task::JoinHandle<()>);
+impl Drop for LocalForward { fn drop(&mut self) { self.0.abort(); } }
+
 pub struct Document {
     pub workspace_key: String,
     pub path: String,
@@ -559,6 +562,18 @@ fn dispatch(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: &Value) -> H
             let h = k.handles.insert("forward", owner, format!("{}:127.0.0.1:{rport}->127.0.0.1:{}", c.master.profile.machine_id(), l.port), f);
             k.audit.record(owner, gen.gen_id, "ssh.forwardLoopback", &format!("{} remote 127.0.0.1:{rport} -> local 127.0.0.1:{}", c.master.profile.machine_id(), l.port), "ok", None);
             Ok(json!({"handle": h, "remotePort": rport, "localPort": l.port}))
+        }
+        "ssh.localForward" => {
+            gen.caps.require("ssh.forward")?;
+            let c: Arc<SshConnRef> = k.handles.get(arg_str(args, "connection")?, "ssh", owner)?;
+            let port = args["localPort"].as_u64().filter(|p| *p <= 65535).ok_or_else(|| HostError::invalid("invalid local port"))? as u16;
+            let target_port = args["remotePort"].as_u64().filter(|p| *p > 0 && *p <= 65535).ok_or_else(|| HostError::invalid("invalid remote port"))? as u16;
+            let host = arg_str(args, "remoteHost")?.trim();
+            if host.is_empty() || host.len() > 255 || host.chars().any(|c| c.is_control() || c.is_whitespace()) { return Err(HostError::invalid("invalid remote host")); }
+            let (task, actual) = c.master.local_forward(port, host.to_string(), target_port)?;
+            let h = k.handles.insert("local-forward", owner, format!("127.0.0.1:{actual}->{host}:{target_port}"), Arc::new(LocalForward(task)));
+            k.audit.record(owner, gen.gen_id, "ssh.localForward", &format!("{} 127.0.0.1:{actual} -> {host}:{target_port}", c.master.profile.machine_id()), "ok", None);
+            Ok(json!({"handle": h, "localPort": actual}))
         }
         "ssh.cancelForward" => {
             k.handles.remove(arg_str(args, "handle")?, owner)?;

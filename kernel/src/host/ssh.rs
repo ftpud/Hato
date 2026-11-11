@@ -376,6 +376,10 @@ impl SshMaster {
         Ok(s)
     }
 
+    pub fn local_forward(&self, port: u16, host: String, target_port: u16) -> HResult<(tokio::task::JoinHandle<()>, u16)> {
+        self.conn()?.local_forward(port, host, target_port)
+    }
+
     /// Remote loopback-only reverse forward: remote 127.0.0.1:<allocated> -> local 127.0.0.1:<local_port>.
     pub fn forward_reverse(&self, local_port: u16) -> HResult<u16> {
         self.conn()?.forward(local_port)

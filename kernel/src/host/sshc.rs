@@ -412,6 +412,28 @@ impl Conn {
         false
     }
 
+    pub fn local_forward(self: Arc<Self>, port: u16, host: String, target_port: u16) -> HResult<(tokio::task::JoinHandle<()>, u16)> {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", port)).map_err(|e| err("EFORWARD", e))?;
+        listener.set_nonblocking(true).map_err(|e| err("EFORWARD", e))?;
+        let actual = listener.local_addr().map_err(|e| err("EFORWARD", e))?.port();
+        let task = rt().spawn(async move {
+            let Ok(listener) = tokio::net::TcpListener::from_std(listener) else { return };
+            let mut connections = tokio::task::JoinSet::new();
+            while let Ok((mut socket, peer)) = listener.accept().await {
+                while connections.try_join_next().is_some() {}
+                let conn = self.clone();
+                let host = host.clone();
+                connections.spawn(async move {
+                    if let Ok(channel) = conn.handle.channel_open_direct_tcpip(host, target_port as u32, peer.ip().to_string(), peer.port() as u32).await {
+                        let mut stream = channel.into_stream();
+                        let _ = tokio::io::copy_bidirectional(&mut socket, &mut stream).await;
+                    }
+                });
+            }
+        });
+        Ok((task, actual))
+    }
+
     /// Remote 127.0.0.1:<allocated> -> local 127.0.0.1:`local_port`.
     pub fn forward(&self, local_port: u16) -> HResult<u16> {
         let port = block_on_timeout(CHANNEL_TIMEOUT, self.handle.tcpip_forward("127.0.0.1", 0))
