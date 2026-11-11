@@ -113,6 +113,10 @@ layout, SVGs, geometry and style as data. `style` supports theme tokens or hex c
 size, typography, justification, borders, positioning and shadows. A `theme` node selects mode,
 terminal palette and chrome. Use built-in UI modules for complete examples.
 
+The theme palette accepts `textSelection` for text-selection backgrounds independently
+of `selection` (list/button accents). If omitted, it falls back to `selection`.
+This token requires a host with independent text-selection color support.
+
 Native `window` nodes accept `titlebar: false`; a dedicated row with `windowDrag: true` supplies
 a drag handle without native titlebar chrome. Keep close/move controls in the UI module.
 

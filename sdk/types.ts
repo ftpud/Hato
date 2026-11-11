@@ -296,7 +296,7 @@ export interface CanvasEdge { key: string; from: string; to: string; fromSide?: 
 export type UiNode =
   /** Window-wide theme (normally from the root plugin). `mode` is the appearance preference;
    *  `terminal` overrides the 16 ANSI colors; `chrome` configures kernel chrome such as toasts. */
-  | (Base & { type: "theme"; controls?: { listRowHeight?: number; stripedRows?: boolean; rowDividers?: boolean }; palette: { light: Record<string, string>; dark: Record<string, string> }; mode?: "light" | "dark";
+  | (Base & { type: "theme"; controls?: { listRowHeight?: number; stripedRows?: boolean; rowDividers?: boolean }; /** Palette `textSelection` independently styles selected text; defaults to `selection`. */ palette: { light: Record<string, string>; dark: Record<string, string> }; mode?: "light" | "dark";
       /** Runtime application icon (macOS Dock and app switcher), including unbundled source launches. */ applicationIcon?: ImageAttachment;
       typography?: { fontFamily?: string; monoFontFamily?: string; fontSize?: number; monoFontSize?: number; fontWeight?: number };
       terminal?: { light?: string[]; dark?: string[] };

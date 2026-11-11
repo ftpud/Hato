@@ -214,7 +214,7 @@ pub fn apply(cx: &mut App, dark: bool) {
         c.tab_active_foreground = text;
         c.group_box = panel;
         c.group_box_foreground = text;
-        c.selection = selected;
+        c.selection = named("textSelection", selected);
         c.caret = violet;
         c.ring = violet;
         c.link = violet;
