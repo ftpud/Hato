@@ -3,10 +3,12 @@
 import type { UiStyle } from "./types";
 
 export const chatStyle = {
-  root: { position: "relative", background: "surface", color: "text", fontSize: 14, font: "ui", radius: 10, borderWidth: 1, borderColor: "border" },
+  // The hosting panel supplies the frame; a second border/radius here drew a card inside a card.
+  root: { position: "relative", background: "surface", color: "text", fontSize: 14, font: "ui" },
   toolbar: { background: "field", borderBottom: 1, borderColor: "border", wrap: true },
-  composer: { background: "surface", borderTop: 1, borderColor: "border" },
-  settings: { background: "surface", color: "muted" },
+  // The split divider above already draws the separating line.
+  composer: { background: "surface" },
+  settings: { background: "surface", color: "text" },
   picker: { background: "surface", color: "text", borderWidth: 1, borderColor: "border", radius: 12 },
   control: { height: 32, fontSize: 14, radius: 8, background: "surface", borderColor: "border", color: "text", paddingX: 12, gap: 8 },
   iconControl: { height: 32, width: 32, radius: 8, background: "surface", borderColor: "border", color: "text", padding: 0, noShrink: true },

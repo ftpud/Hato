@@ -38,6 +38,7 @@ test('Git panel reruns after changes arrive during an in-flight status request',
   let finish, calls=0;
   const ctx={moduleId:'git-panel',state:{get:k=>state[k],set(){},watch(){}},ui:{invalidate(){}},events:{on:(topic,fn)=>handlers[topic]=fn,emit(){}},modules:{call:async(m,f)=>{
     if(m==='persistence')return null;
+    if(f!=='status')return []; // the stash list loads alongside status
     calls++;
     if(calls===1)await new Promise(r=>finish=r);
     return {workspaceId:'w',repo:true,branch:'main',files:[]};

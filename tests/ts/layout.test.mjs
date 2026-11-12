@@ -148,14 +148,18 @@ test('anime appearance restores preferences and switches without changing panel 
     assert.equal(state.get('workspace-layout.settings').error, null);
   };
   assert.equal(state.get('workspace-layout.projectsBackgroundOpacity'), 0.24);
-  await edit('projectsBackground', 'off');
-  assert.equal(settings.get('appearance.projectsBackground'), 'off');
+  // Opacities are percent sliders now; legacy preset names (airy, visible) still load.
+  await edit('projectsBackground', '0');
+  assert.equal(settings.get('appearance.projectsBackground'), '0');
   assert.equal(state.get('workspace-layout.projectsBackgroundOpacity'), 0);
-  await edit('projectsBackground', 'subtle');
+  await edit('projectsBackground', '12');
   assert.equal(state.get('workspace-layout.projectsBackgroundOpacity'), 0.12);
-  await edit('panelOpacity', 'solid');
+  await edit('panelOpacity', '85');
   assert.equal(mod.render().children[0].palette.dark.panel, '#191c38d9');
-  assert.equal(settings.get('appearance.panelOpacity'), 'solid');
+  assert.equal(settings.get('appearance.panelOpacity'), '85');
+  events.get('settings.change')({ module: ctx.moduleId, section: 'appearance', key: 'panelOpacity', value: '5' });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.match(state.get('workspace-layout.settings').error, /20 to 100/);
   await edit('theme', 'classic');
   assert.equal(mod.render().backgroundImage, undefined);
   assert.equal(JSON.stringify(mod.methods.getLayout()), original);

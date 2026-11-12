@@ -42,16 +42,16 @@ test("Settings discovers live contributions, routes edits, closes and removes in
   const tree = mod.render(ctx);
   assert.equal(tree.type, "modal");
   // The first module-contributed category opens by default.
-  assert.ok(walk(tree).some((n) => n.type === "toggle"));
+  assert.ok(walk(tree).some((n) => n.type === "switch"));
   assert.ok(walk(tree).some(n => n.type === "choice" && n.text === "Example preferences"));
   mod.onEvent(ctx, { action: "selectCategory", value: JSON.stringify(["example", "general"]) });
-  const toggle = walk(mod.render(ctx)).find((n) => n.type === "toggle");
+  const toggle = walk(mod.render(ctx)).find((n) => n.type === "switch");
   assert.ok(!walk(mod.render(ctx)).some(n => n.key === "plugin-tabs"));
   assert.equal(mod.snapshot().selectedCategory, JSON.stringify(["example", "general"]));
   mod.onEvent(ctx, { action: "change", key: toggle.key, value: false });
   assert.deepEqual(emitted, [{ topic: "settings.change", payload: { module: "example", section: "general", key: "enabled", value: false } }]);
   active = false; await mod.methods.open(ctx);
-  assert.ok(!walk(mod.render(ctx)).some((n) => n.type === "toggle"));
+  assert.ok(!walk(mod.render(ctx)).some((n) => n.type === "switch"));
   assert.ok(walk(mod.render(ctx)).some(n => n.key === "plugin-tabs"));
   assert.deepEqual(stopped, ["example.settings"]);
   mod.onEvent(ctx, { action: "close" });
@@ -74,14 +74,15 @@ test("modules can publish multiple independent categories with identical section
   await mod.activate(ctx);
   await mod.methods.open(ctx, { module: 'two', section: 'general' });
   assert.deepEqual(walk(mod.render(ctx)).filter(n => n.type === 'choice').map(n => n.text), ['One general', 'One advanced', 'Two general', 'Plugins']);
-  const toggle = walk(mod.render(ctx)).find(n => n.type === 'toggle');
-  assert.equal(toggle.label, 'Two value');
+  const page = walk(mod.render(ctx)), toggle = page.find(n => n.type === 'switch');
+  // Switches sit beside a separate label in the field row.
+  assert.ok(page.some(n => n.type === 'label' && n.text === 'Two value'));
   mod.onEvent(ctx, { action: 'change', key: toggle.key, value: true });
   assert.equal(emitted[0].payload.module, 'two');
   mod.onEvent(ctx, { action: 'selectCategory', value: JSON.stringify(['one', 'advanced']) });
-  assert.equal(walk(mod.render(ctx)).find(n => n.type === 'toggle').label, 'Advanced value');
+  assert.ok(walk(mod.render(ctx)).some(n => n.type === 'label' && n.text === 'Advanced value'));
   delete values['one.settings'];
-  assert.equal(walk(mod.render(ctx)).find(n => n.type === 'toggle').label, 'Two value');
+  assert.ok(walk(mod.render(ctx)).some(n => n.type === 'label' && n.text === 'Two value'));
   mod.deactivate();
 });
 
@@ -175,4 +176,83 @@ test('settings action buttons route validated actions without treating them as p
   handlers['settings.action']({ module: 'language-service', section: 'java', key: 'install' });
   handlers['settings.change']({ module: 'language-service', section: 'java', key: 'install', value: 'forged' });
   await tick(); assert.equal(actions.length, 1); assert.deepEqual(changes, []);
+});
+
+test("range and color fields render native controls, validate values and route slider, picker and reset edits", async () => {
+  const { exportSettings } = await load("sdk/settings.ts");
+  const { rangeControl, colorControl, validControlValue } = await load("sdk/ui-controls.ts");
+  const range = { key: "size", label: "Size", type: "range", value: "", min: 8, max: 40, step: 1, unit: " px", allowDefault: true, defaultLabel: "Global" };
+  const color = { key: "tint", label: "Tint", type: "color", value: "#22c55e" };
+  assert.ok(validControlValue(range, "") && validControlValue(range, "12") && !validControlValue(range, "41") && !validControlValue(range, "x"));
+  assert.ok(validControlValue(color, "#AbCdEf") && !validControlValue(color, "") && !validControlValue(color, "red"));
+  const slider = walk(rangeControl("f", { ...range, value: "12" }, "sliderValue", "fieldValue", { field: "f" }));
+  assert.deepEqual((({ type, key, value, min, max, step, showValue, unit }) => ({ type, key, value, min, max, step, showValue, unit }))(slider.find(n => n.type === "slider")),
+    { type: "slider", key: "f", value: 12, min: 8, max: 40, step: 1, showValue: true, unit: " px" });
+  assert.deepEqual(slider.find(n => n.key === "default").value, { field: "f", value: "" });
+  assert.equal(walk(rangeControl("f", range, "a", "r")).find(n => n.type === "slider").value, null);
+  const picker = walk(colorControl("c", color, "colorValue", "fieldValue")).find(n => n.type === "colorPicker");
+  assert.equal(picker.value, "#22C55E"); assert.ok(picker.swatches.length > 5);
+  // exportSettings rejects out-of-range values before they reach the owner.
+  const handlers = {}, published = {}, changes = [];
+  const ctx = { moduleId: "m", events: { on: (t, fn) => handlers[t] = fn }, state: { set: (k, v) => published[k] = v }, ui: { invalidate() {} } };
+  exportSettings(ctx, () => [{ key: "s", title: "S", fields: [range, color] }], (_s, key, value) => { changes.push([key, value]); });
+  handlers["settings.change"]({ module: "m", section: "s", key: "size", value: "99" }); await new Promise(r => setTimeout(r, 0));
+  assert.match(published["m.settings"].error, /8 to 40/);
+  handlers["settings.change"]({ module: "m", section: "s", key: "tint", value: "#123456" }); await new Promise(r => setTimeout(r, 0));
+  assert.deepEqual(changes, [["tint", "#123456"]]);
+  // Settings forwards native slider releases, picker commits (alpha dropped) and resets.
+  const { default: mod } = await load("Hato-plugins/modules/ui/settings/src/index.ts");
+  const emitted = [];
+  const sctx = { moduleId: "settings", host: { modules: { list: async () => [{ id: "m", active: {} }] }, plugins: { list: async () => ({ plugins: [], root: null, rootOverride: null }) } },
+    state: { get: (k) => k === "m.settings" ? { sections: [{ key: "s", title: "S", fields: [range, color] }], error: null } : null, watch: () => () => {} },
+    events: { on() {}, emit: (topic, payload) => emitted.push(payload) }, ui: { invalidate() {} } };
+  await mod.activate(sctx); await mod.methods.open(sctx, { module: "m", section: "s" });
+  const nodes = walk(mod.render(sctx)), size = JSON.stringify(["m", "s", "size"]), tint = JSON.stringify(["m", "s", "tint"]);
+  const sl = nodes.find(n => n.type === "slider" && n.key === size), cp = nodes.find(n => n.type === "colorPicker" && n.key === tint);
+  mod.onEvent(sctx, { action: sl.action, key: sl.key, value: 14, inputs: {} });
+  mod.onEvent(sctx, { action: cp.action, key: cp.key, value: "#ABCDEF80", inputs: {} });
+  const reset = nodes.find(n => n.key === "default" && n.value?.field === size);
+  mod.onEvent(sctx, { action: reset.action, key: reset.key, value: reset.value, inputs: {} });
+  assert.deepEqual(emitted, [{ module: "m", section: "s", key: "size", value: "14" }, { module: "m", section: "s", key: "tint", value: "#ABCDEF" }, { module: "m", section: "s", key: "size", value: "" }]);
+  mod.deactivate();
+});
+
+test("first-run setup opens once on a fresh profile and applies empty, default and full plugin presets", async () => {
+  const fresh = async (stored = {}, projects = []) => {
+    const m = await load("Hato-plugins/modules/ui/settings/src/setup.ts");
+    const saved = new Map(Object.entries(stored)), disabled = [], enabled = [];
+    const plugins = ["acp", "ai", "git", "git-panel", "remote-runtime", "remote-panel", "claude-provider", "claude-usage", "codex-provider", "codex-usage", "copilot-provider"]
+      .map(id => ({ id, enabled: true, active: true, dependencies: [], pendingApprovals: [] }));
+    const ctx = { ui: { invalidate() {} },
+      modules: { call: async (_m, method, a) => method === "settings.get" ? saved.get(a.key) ?? null : method === "settings.set" ? void saved.set(a.key, a.value) : method === "projects.list" ? projects : null },
+      host: { plugins: { list: async () => ({ plugins }), disable: async (id) => { disabled.push(id); return { disabled: [id] }; }, enable: async (id) => { enabled.push(id); return { active: true }; } } } };
+    await m.initSetup(ctx, null);
+    return { m, ctx, saved, disabled, enabled };
+  };
+  // Existing users (projects or a setup record) are not interrupted.
+  assert.equal((await fresh({}, [{ id: "p" }])).m.setupOpen(), false);
+  assert.equal((await fresh({ "setup.v1": { profile: "default" } })).m.setupOpen(), false);
+  // Default: baseline + remote + chosen providers (Claude and Codex preselected, Copilot opt-in).
+  let s = await fresh();
+  assert.equal(s.m.setupOpen(), true);
+  const labels = () => walk(s.m.setupModal()).filter(n => n.key === "name").map(n => n.text);
+  await s.m.setupEvent(s.ctx, "setup.provider:copilot-acp", null, async () => {});
+  await s.m.setupEvent(s.ctx, "setup.provider:codex-acp", null, async () => {});
+  assert.equal(walk(s.m.setupModal()).find(n => n.key === "start").text, "Set up 5 plugins");
+  await s.m.setupEvent(s.ctx, "setup.start", null, async () => {});
+  // Some AI Chat modules are missing here, so a catalogue check precedes the downloads.
+  assert.deepEqual(labels(), ["Check the plugin catalogue", "AI Chat", "Git", "Remote workspaces", "Claude", "GitHub Copilot"]);
+  assert.equal(s.saved.get("setup.v1").profile, "default");
+  assert.ok(walk(s.m.setupModal()).some(n => n.type === "progress" && n.value === 1));
+  // Empty: turns the shipped AI chat and Git packages off; nothing is installed.
+  s = await fresh();
+  await s.m.setupEvent(s.ctx, "setup.profile", "empty", async () => {});
+  await s.m.setupEvent(s.ctx, "setup.start", null, async () => {});
+  assert.ok(s.disabled.includes("acp") && s.disabled.includes("git") && !s.disabled.includes("remote-runtime"));
+  // Full: every non-system package in the catalogue.
+  s = await fresh();
+  await s.m.setupEvent(s.ctx, "setup.profile", "full", async () => {});
+  const full = walk(s.m.setupModal()).find(n => n.key === "start").text;
+  const catalogue = JSON.parse((await import("node:fs")).readFileSync("Hato-plugins/plugins.catalogue.json", "utf8")).packages.filter(p => !p.core || ["core-acp", "git"].includes(p.id)).length;
+  assert.equal(full, `Set up ${catalogue} plugins`);
 });

@@ -4,6 +4,7 @@
 //! asynchronously through the UI bridge and are cached.
 pub mod interact;
 mod canvas;
+mod controls;
 mod editor;
 pub mod terminal_view;
 mod theme;
@@ -79,6 +80,8 @@ pub struct Shell {
     tree_end_fired: HashMap<(String, String), (usize, String)>,
     render_errors: HashMap<String, String>,
     inputs: HashMap<(String, String), InputSlot>,
+    sliders: HashMap<(String, String), controls::SliderSlot>,
+    colors: HashMap<(String, String), controls::ColorSlot>,
     editors: HashMap<String, (Entity<EditorState>, Instant)>,
     /// Editable code viewers: change subscription and the latest (module, key, action, debounce)
     /// binding from the tree, keyed by document handle.
@@ -155,6 +158,8 @@ impl Shell {
             tree_end_fired: HashMap::new(),
             render_errors: HashMap::new(),
             inputs: HashMap::new(),
+            sliders: HashMap::new(),
+            colors: HashMap::new(),
             editors: HashMap::new(),
             editor_subs: HashMap::new(),
             editor_views: HashMap::new(),
@@ -1515,6 +1520,8 @@ impl Shell {
                 };
                 el.into_any_element()
             }
+            "slider" => self.render_slider(module, key, n, window, cx),
+            "colorPicker" => self.render_color_picker(module, key, n, window, cx),
             "divider" => div().h(px(1.0)).w_full().bg(cx.theme().border).into_any_element(),
             "spacer" => div().flex_1().into_any_element(),
             "modal" => {

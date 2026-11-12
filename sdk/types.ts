@@ -348,6 +348,14 @@ export type UiNode =
   | (Base & { type: "select"; options: { value: string; label: string; disabled?: boolean }[]; value: string | null; action: string; disabled?: boolean; placeholder?: string; label?: string; disabledReason?: string; /** Style of the dropdown button itself (`style` styles its wrapper). */ buttonStyle?: UiStyle })
   | (Base & { type: "choice"; text: string; description?: string; disabled?: boolean; selected?: boolean; action: string; value: string; /** Glyph shown when selected (default ✓). */ mark?: string })
   | (Base & { type: "switch"; label: string; checked: boolean; action: string; disabled?: boolean; /** Track color when on. */ accent?: UiColor })
+  /** Native slider. `action` fires once on release with the value snapped to `step` (a number);
+   *  `changeAction` fires while dragging. `showValue` paints the live value plus `unit` beside the
+   *  track; while `value` is null the thumb sits at `min` and `emptyLabel` is shown. */
+  | (Base & { type: "slider"; value: number | null; min: number; max: number; step?: number; action: string; changeAction?: string; disabled?: boolean;
+      showValue?: boolean; unit?: string; emptyLabel?: string; /** Filled track color (default "primary"). */ accent?: UiColor })
+  /** Native color picker: a swatch button opening featured `swatches`, a hex field and HSLA sliders.
+   *  `action` fires with "#RRGGBB" (or "#RRGGBBAA" when translucent), or null when cleared. */
+  | (Base & { type: "colorPicker"; value: string | null; action: string; swatches?: string[]; label?: string; disabled?: boolean })
   /** Click-outside-to-close overlay. Anchored from `top` (default 52), or upward from `bottom`
    *  (content height then, unless `heightFraction` is set). */
   | (Base & { type: "popover"; children: UiNode[]; closeAction: string; top?: number; bottom?: number; left?: number; right?: number; /** Height as a fraction of the parent (0.1–1). */ heightFraction?: number; maxHeight?: number })
@@ -435,6 +443,10 @@ export type SettingField =
   | { key: string; label: string; description?: string; type: "text"; value: string; placeholder?: string }
   | { key: string; label: string; description?: string; type: "toggle"; value: boolean }
   | { key: string; label: string; description?: string; type: "select"; value: string; options: { value: string; label: string }[] }
-  | { key: string; label: string; description?: string; type: "order"; value: string; items: { id: string; label: string }[]; allowSpacers?: boolean };
+  | { key: string; label: string; description?: string; type: "order"; value: string; items: { id: string; label: string }[]; allowSpacers?: boolean }
+  /** `#rrggbb` (or "" for the default when `allowDefault`). Rendered as a native `colorPicker` (sdk/ui-controls.ts). */
+  | { key: string; label: string; description?: string; type: "color"; value: string; swatches?: string[]; allowDefault?: boolean }
+  /** A number in [min, max] as a string (or "" for the default when `allowDefault`). Rendered as a native `slider`. */
+  | { key: string; label: string; description?: string; type: "range"; value: string; min: number; max: number; step?: number; unit?: string; allowDefault?: boolean; defaultLabel?: string };
 export interface SettingsSection { key: string; title: string; group?: string; layout?: "table"; description?: string; fields: SettingField[] }
 export interface SettingsExport { sections: SettingsSection[]; error: string | null; resetLabel?: string }

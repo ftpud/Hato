@@ -1,4 +1,5 @@
 import { parseOrder } from "./settings-order";
+import { validControlValue } from "./ui-controls";
 import type { ModuleContext, SettingsExport, SettingsSection } from "./types";
 
 /** Publish settings and handle edits without giving the menu access to provider internals.
@@ -24,6 +25,9 @@ export function exportSettings(
         const field = section?.fields.find((f) => f.key === edit.key);
         if (!field || field.type === "action") throw new Error("Setting is no longer available");
         if (field.type === "order") parseOrder(edit.value, field.items.map(i => i.id), field.allowSpacers);
+        else if (field.type === "color" || field.type === "range") {
+          if (!validControlValue(field, edit.value)) throw new Error(field.type === "color" ? "Enter a color as #RRGGBB" : `Choose a value from ${field.min} to ${field.max}`);
+        }
         else if (field.type === "toggle" ? typeof edit.value !== "boolean" :
           typeof edit.value !== "string" || (field.type === "select" && !field.options.some((o) => o.value === edit.value))) {
           throw new Error("Invalid setting value");
