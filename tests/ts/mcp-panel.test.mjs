@@ -27,10 +27,16 @@ test('MCP panel adds, edits and removes a local server without a selected worksp
   await panel.activate(ctx);await new Promise(setImmediate);
   assert.ok(walk(panel.render()).some(n=>n.key==='empty'),'first run shows the empty state with quick-add presets');
   await event('toggleBuiltin');
-  assert.equal(walk(panel.render()).find(n=>n.key==='builtin').rows.length,3);
+  const builtin=walk(panel.render()).find(n=>n.key==='builtin');
+  assert.equal(builtin.rows.length,3);
+  assert.equal(builtin.height,144,'built-in rows have a viewport inside the scrolling panel');
+  assert.equal(builtin.style.noShrink,true);
+  await event('toggleBuiltin');
+  assert.ok(!walk(panel.render()).some(n=>n.key==='builtin'));
   await event('add');await event('kind',{}, {value:'local'});
   await event('save',{'f-name':'Test server','f-command':'npx','f-args':'-y\ntest\n','f-env':'TOKEN=value'});
   assert.equal(s.list.length,1);const id=s.list[0].id;
+  assert.equal(walk(panel.render()).find(n=>n.key==='servers').height,48,'configured servers also have a viewport');
   assert.deepEqual([s.list[0].transport,s.list[0].args,s.list[0].env],['stdio',['-y','test'],[{name:'TOKEN',value:'value'}]]);
   await event('select',{}, {rowKey:id});await event('edit');
   assert.equal(walk(panel.render()).find(n=>n.key==='f-command').value,'npx');
