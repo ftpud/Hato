@@ -1,9 +1,30 @@
 # Hato
 
-Hato is a native desktop workspace for projects, files, Git, terminals and AI agents, locally or
-over SSH. A small Rust core provides native controls and system access; TypeScript plugins define
-the application and can be updated without restarting it. Background agents run on a local or
-remote daemon and keep working when the desktop disconnects.
+Hato is an **experimental, plugin-driven native desktop workspace** for projects, files, Git,
+terminals and AI agents, locally or over SSH. It is a workspace you can reshape while it runs:
+application features and UI live in editable TypeScript plugins on top of a small Rust core.
+
+The project is evolving quickly. Expect rough edges and changing APIs as the architecture and
+workflows develop.
+
+## Built to be rewritten and extended
+
+- **Plugins define the application.** Projects, files, Git, terminals, AI workflows, panels and
+  layout are composed from service and UI plugins. The Rust core provides reusable native
+  controls, system access, resource management and permission enforcement.
+- **Hot-rewritable behavior and UI.** Edit, build and activate TypeScript plugins while Hato is
+  running, without rebuilding the native app or restarting it. Add or replace workflows, panels
+  and presentation through plugin contracts. Native core changes require a rebuild and relaunch.
+- **An internal MCP for evolving Hato.** Connected AI agents can inspect existing modules, patch
+  their source, build and stage changes, activate them, verify the result and roll back through
+  Hato's internal Model Context Protocol (MCP) server. Module maintenance mutations require native
+  user approval. New plugins can extend the application through manifests and runnable JavaScript
+  bundles installed in Settings → Plugins, where their permissions are approved before use.
+- **Agents that keep working.** Background agents run on a local or remote daemon and continue
+  when the desktop disconnects.
+
+See [plugins and hot reload](docs/PLUGINS.md), including the internal MCP self-configuration
+workflow, for the extension model and its current boundaries.
 
 <img width="1582" height="948" alt="image" src="https://github.com/user-attachments/assets/8ac7c1a6-00c5-4b30-8d70-f4d7a1c9fdac" />
 
