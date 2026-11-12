@@ -5,6 +5,9 @@ over SSH. A small Rust core provides native controls and system access; TypeScri
 the application and can be updated without restarting it. Background agents run on a local or
 remote daemon and keep working when the desktop disconnects.
 
+<img width="1582" height="948" alt="image" src="https://github.com/user-attachments/assets/8ac7c1a6-00c5-4b30-8d70-f4d7a1c9fdac" />
+
+
 ## Run from source
 
 The desktop is currently tested on macOS (Apple silicon and Intel). Install Xcode with the Metal
