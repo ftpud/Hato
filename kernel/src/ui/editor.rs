@@ -9,23 +9,32 @@ use crate::{kernel::Kernel, router::Reply};
 
 /// Keep editor notifications (including cursor blinking and async overlays) in
 /// their own view instead of invalidating every panel in the shell.
+/// A module-supplied editor context menu item, dispatched to the `codeViewer` wrapper that
+/// rendered the editor (it is on the focused element's path when the native menu closes).
+#[derive(Action, Clone, PartialEq, serde::Deserialize)]
+#[action(namespace = hato_editor, no_json)]
+pub struct EditorMenuAction { pub action: String, pub value: Value }
+
 pub struct EditorView {
     state: Entity<EditorState>,
     editable: bool,
     font: Value,
+    /// `codeViewer.contextMenu`: items appended after the built-in editor menu.
+    menu: Value,
     _subscription: Subscription,
 }
 
 impl EditorView {
     pub fn new(state: Entity<EditorState>, editable: bool, font: Value, cx: &mut Context<Self>) -> Self {
         let subscription = cx.observe(&state, |_, _, cx| cx.notify());
-        Self { state, editable, font, _subscription: subscription }
+        Self { state, editable, font, menu: Value::Null, _subscription: subscription }
     }
 
-    pub fn configure(&mut self, editable: bool, font: &Value, cx: &mut Context<Self>) {
-        if self.editable != editable || self.font != *font {
+    pub fn configure(&mut self, editable: bool, font: &Value, menu: &Value, cx: &mut Context<Self>) {
+        if self.editable != editable || self.font != *font || self.menu != *menu {
             self.editable = editable;
             self.font = font.clone();
+            self.menu = menu.clone();
             cx.notify();
         }
     }
@@ -33,8 +42,35 @@ impl EditorView {
 
 impl Render for EditorView {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        code_font(gpui_component::input::Editor::new(&self.state).readonly(!self.editable).h_full(), &self.font)
+        let editor = gpui_component::input::Editor::new(&self.state).readonly(!self.editable).h_full();
+        let items = self.menu.as_array().cloned().unwrap_or_default();
+        let editor = if items.is_empty() { editor } else {
+            let state = self.state.clone();
+            editor.context_menu_extend(move |mut menu, _, cx| {
+                let selected = !state.read(cx).selected_range().is_empty();
+                menu = menu.separator();
+                for item in &items {
+                    if item["separator"].as_bool() == Some(true) { menu = menu.separator(); continue; }
+                    let disabled = item["disabled"].as_bool().unwrap_or(false) || (item["requiresSelection"].as_bool() == Some(true) && !selected);
+                    let action = EditorMenuAction { action: item["action"].as_str().unwrap_or("").to_string(), value: item.get("value").cloned().unwrap_or(Value::Null) };
+                    menu = menu.menu_with_disabled(item["text"].as_str().unwrap_or("").to_string(), disabled, Box::new(action));
+                }
+                menu
+            })
+        };
+        code_font(editor, &self.font)
     }
+}
+
+/// Zero-based UTF-16 positions of the editor's selection (start == end at a caret).
+pub fn selection_positions(state: &EditorState) -> Value {
+    let text = state.value().to_string();
+    let range = state.selected_range();
+    let at = |offset: usize| {
+        let before = &text[..text.floor_char_boundary(offset.min(text.len()))];
+        json!({"line": before.bytes().filter(|b| *b == b'\n').count(), "character": before.rsplit('\n').next().unwrap_or("").encode_utf16().count()})
+    };
+    json!({"start": at(range.start), "end": at(range.end)})
 }
 
 pub struct ModuleDefinitions {
@@ -374,6 +410,26 @@ pub fn line_markers(spec: &Value, color: impl Fn(&str) -> Option<Hsla>) -> Vec<L
         let line = m["line"].as_u64()? as usize;
         let end_line = m["endLine"].as_u64().map(|e| e as usize).unwrap_or(line + 1).max(line);
         Some(LineMarker { line, end_line, color: m["color"].as_str().and_then(&color)?, value: m.get("value").cloned().unwrap_or(Value::Null) })
+    }).collect()
+}
+/// Module text painted after the end of a line (e.g. author and age of a declaration).
+pub struct LineAnnotation { pub line: usize, pub text: SharedString, pub color: Option<Hsla> }
+pub fn line_annotations(spec: &Value, color: impl Fn(&str) -> Option<Hsla>) -> Vec<LineAnnotation> {
+    spec.as_array().into_iter().flatten().take(5000).filter_map(|a| {
+        let text = a["text"].as_str().filter(|t| !t.is_empty())?;
+        let text: String = text.chars().filter(|c| *c != '\n' && *c != '\r').take(200).collect();
+        Some(LineAnnotation { line: a["line"].as_u64()? as usize, text: text.into(), color: a["color"].as_str().and_then(&color) })
+    }).collect()
+}
+/// Window-space top-left after each annotated line's last character, for laid-out lines only.
+/// With soft wrap this is the end of the line's last wrapped row.
+pub fn annotation_origins(state: &EditorState, annotations: &[LineAnnotation]) -> Vec<(Point<Pixels>, usize)> {
+    use gpui_component::input::RopeExt;
+    let text = state.text();
+    let rows = text.lines_len();
+    annotations.iter().enumerate().filter(|(_, a)| a.line < rows).filter_map(|(i, a)| {
+        let end = if a.line + 1 < rows { text.line_start_offset(a.line + 1).saturating_sub(1) } else { text.len() };
+        state.range_to_bounds(&(end..end)).map(|b| (b.origin, i))
     }).collect()
 }
 /// Window-space vertical extents of each marker for the current layout (visible lines only).

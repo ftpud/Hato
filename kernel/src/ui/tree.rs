@@ -14,6 +14,18 @@ impl Shell {
         let body = if row_h.is_some() {
             let (module, path, node) = (module.to_string(), path.to_string(), node.clone());
             uniform_list(sid(&module, &path), count, cx.processor(move |this, range: Range<usize>, _, cx| {
+                // Lazy paging: the last row became visible. Fire once per list length and first row
+                // so repaints (cursor blink, hover) do not repeat it while the module loads.
+                let end_action = node["endReachedAction"].as_str().unwrap_or("");
+                if !end_action.is_empty() && range.end >= count {
+                    let mark = (count, node["rows"][0]["key"].as_str().unwrap_or("").to_string());
+                    let slot = (module.clone(), path.clone());
+                    if this.tree_end_fired.get(&slot) != Some(&mark) {
+                        this.tree_end_fired.insert(slot, mark);
+                        let key = node["key"].as_str().unwrap_or("_");
+                        Self::fire(&this.kernel, &module, &this.module_inputs(&module), end_action, key, None, json!({"rows": count}), cx);
+                    }
+                }
                 this.tree_rows(&module, &node, &path, range, cx)
             })).flex_1().min_h_0().w_full().into_any_element()
         } else {

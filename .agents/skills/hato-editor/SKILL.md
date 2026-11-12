@@ -54,6 +54,15 @@ Read [AGENTS.md](../../../AGENTS.md) first; this is a short map of facts that ar
   `signatureMethod` (parameter-hint popup, drawn by `Shell::signature_popup`), and
   `completionResolveMethod` (auto-import: an accepted, unambiguous completion is resolved and its
   `additionalTextEdits` applied by `editor::apply_text_edits`).
+- `codeViewer.contextMenu`: module items appended to the editor's built-in right-click menu
+  (via the vendored `Editor::context_menu_extend`); a click fires the action with the selection
+  as zero-based UTF-16 `{start, end}`. `viewer` uses it for "View file/selection history"
+  (`viewer/src/history.ts`, `git.fileHistory`/`git.fileCommitDiff`), shown in a `window` node
+  whose commit `tree` pages lazily through `endReachedAction`.
+- `codeViewer.lineAnnotations`: dim text painted after a line's end (canvas over the editor,
+  positioned with `range_to_bounds`, no hitbox). `viewer` uses it for per-declaration authorship:
+  `declarations.ts` (lexical Java scanner, keyed by grammar) + `authorship.ts` (`git.blame` of the
+  buffer text via stdin, re-mapped onto later edits with `diffLines`).
 - Completion and hover presentation (IDEA-style: kind badges, receiver-own members bold and first,
   owner + multi-line signature + compact params) is shaped in `viewer/src/assist.ts`.
 - gpui-component keeps the **first** capture reported for a token (matches arrive by start

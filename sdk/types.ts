@@ -351,6 +351,8 @@ export type UiNode =
   | (Base & { type: "toggle"; label: string; checked: boolean; action: string; disabled?: boolean })
   | (Base & { type: "tree"; rows: TreeRow[]; selectAction: string; expandAction: string; /** Fired with the row key as the pointer enters a row, and without one when it leaves the list. */ hoverAction?: string; /** Fired with the row key on double click (after the first click's selectAction). */ activateAction?: string;
       /** Fixed row height (px); omit for content height. */ rowHeight?: number;
+      /** Lazy paging (fixed `rowHeight` trees only): fired with {rows} when the last row scrolls into view,
+       *  once per row count and first row. Omit it while loading or when nothing more exists. */ endReachedAction?: string;
       /** Hover fill color token (default "hover") and its opacity 0–1 (default 1). */ hoverBackground?: UiColor; hoverOpacity?: number; /** Indent per depth level (px). */ indent?: number; rowGap?: number; iconSize?: number; /** Non-square row icon box (px); overrides iconSize per axis. */ iconWidth?: number; iconHeight?: number; expandedIconSvg?: string; collapsedIconSvg?: string })
   /** Native diff view of a unified patch (e.g. `git diff` output) held in a document handle. */
   | (Base & { type: "diff"; document: Handle | null; /** Initially fold file patches; later user expansion is preserved. */ filesCollapsed?: boolean; /** Floating navigation between changed regions; labels supplied by the module. */ changeNavigation?: { previous: string; next: string }; mode?: "split" | "unified"; softWrap?: boolean; header?: boolean; placeholder?: string; emptyText?: string })
@@ -367,6 +369,10 @@ export type UiNode =
       /** Bars at the editor's left edge for zero-based lines `line..endLine` (exclusive; equal = a
        *  deletion point). Clicking one fires `lineMarkerAction` with {marker: value, y}. */
       lineMarkers?: { line: number; endLine?: number; color: UiColor; value?: Json }[]; lineMarkerAction?: string; lineMarkerWidth?: number;
+      /** Dim text painted after the end of zero-based `line` (e.g. author and age of a declaration); it
+       *  follows scrolling and soft wrap and takes no input. Code font at `lineAnnotationScale` (0.5–1.2,
+       *  default 0.9) of its size, `color` or the muted color at `lineAnnotationOpacity` (default 0.65). */
+      lineAnnotations?: { line: number; text: string; color?: UiColor }[]; lineAnnotationScale?: number; lineAnnotationOpacity?: number;
       /** Optional module-supplied lexical highlighter (for languages without a bundled grammar). */ syntaxRules?: SyntaxRule[];
       /** Code font; unset fields keep the theme's mono font. `weight` 100–900, `size` px, `lineHeight` × size. */
       font?: { family?: string; weight?: number; size?: number; lineHeight?: number };
@@ -390,7 +396,11 @@ export type UiNode =
       /** LSP {uri, selection} fired only when a definition is activated. */ openLocationAction?: string;
       /** Open Find with a literal case-insensitive query and reveal its first match. A new key repeats it. */
       search?: { key: string; query: string };
-      /** One-shot cursor movement; a new key repeats it. Positions use zero-based UTF-16. */ reveal?: { key: string; line: number; character: number } })
+      /** One-shot cursor movement; a new key repeats it. Positions use zero-based UTF-16. */ reveal?: { key: string; line: number; character: number };
+      /** Items appended to the editor's native right-click menu (after Cut/Copy/Paste). Choosing one fires
+       *  `action` with value {document, value, selection: {start, end}} (zero-based UTF-16; start == end at a
+       *  caret). `requiresSelection` disables the item while nothing is selected. */
+      contextMenu?: ({ text: string; action: string; value?: Json; disabled?: boolean; requiresSelection?: boolean } | { separator: true })[] })
   | (Base & { type: "terminal"; pty: Handle | null; placeholder?: string })
   /** Native picture file dialog; fires `action` with attachments (or {error}). */
   | (Base & { type: "imagePicker"; action: string; disabled?: boolean; text?: string; iconSvg?: string; iconSize?: number; dialogTitle?: string; maxFiles?: number; maxBytes?: number })

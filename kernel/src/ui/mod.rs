@@ -75,6 +75,8 @@ pub struct Shell {
     trees: HashMap<String, Arc<Value>>,
     /// Owned tree-node data reused until the module publishes its next UI snapshot.
     tree_nodes: HashMap<(String, String), Arc<Value>>,
+    /// Per tree: (row count, first row key) when `endReachedAction` last fired.
+    tree_end_fired: HashMap<(String, String), (usize, String)>,
     render_errors: HashMap<String, String>,
     inputs: HashMap<(String, String), InputSlot>,
     editors: HashMap<String, (Entity<EditorState>, Instant)>,
@@ -150,6 +152,7 @@ impl Shell {
             kernel,
             trees: HashMap::new(),
             tree_nodes: HashMap::new(),
+            tree_end_fired: HashMap::new(),
             render_errors: HashMap::new(),
             inputs: HashMap::new(),
             editors: HashMap::new(),
@@ -1205,13 +1208,50 @@ impl Shell {
                         let editor_el = self.editor_views.entry(h.clone()).or_insert_with(|| {
                             cx.new(|cx| editor::EditorView::new(st.clone(), editable, n["font"].clone(), cx))
                         }).clone();
-                        editor_el.update(cx, |view, cx| view.configure(editable, &n["font"], cx));
+                        editor_el.update(cx, |view, cx| view.configure(editable, &n["font"], &n["contextMenu"], cx));
                         let hints = self.editor_assist.get(&h).and_then(|a| a.signature.as_ref()).and_then(|(help, _)| self.signature_popup(help, &st, cx));
                         let dismiss_hints = { let h = h.clone(); cx.listener(move |this: &mut Shell, ev: &KeyDownEvent, _, cx| {
                             if ev.keystroke.key == "escape" { if let Some(a) = this.editor_assist.get_mut(&h) { a.seq += 1; a.signature_pending = false; if a.signature.take().is_some() { cx.notify(); } } }
                         }) };
                         let markers = editor::line_markers(&n["lineMarkers"], |c| Some(theme::color(cx, c, theme_muted)));
-                        if markers.is_empty() { div().relative().size_full().capture_key_down(dismiss_hints).child(editor_el).children(hints).into_any_element() } else {
+                        // Module context menu items fire their action with the selection at click time.
+                        let on_menu = {
+                            let (k, m, key2, menu_state, document) = (self.kernel.clone(), module.to_string(), key.to_string(), st.clone(), h.clone());
+                            let inputs = self.module_inputs(module);
+                            move |item: &editor::EditorMenuAction, _: &mut Window, cx: &mut App| {
+                                if item.action.is_empty() { return; }
+                                let selection = editor::selection_positions(menu_state.read(cx));
+                                Self::fire(&k, &m, &inputs, &item.action, &key2, None, json!({"document": document, "value": item.value, "selection": selection}), cx);
+                            }
+                        };
+                        let mut surface = div().relative().size_full().capture_key_down(dismiss_hints).on_action(on_menu).child(editor_el).children(hints);
+                        let annotations = editor::line_annotations(&n["lineAnnotations"], |c| Some(theme::color(cx, c, theme_muted)));
+                        if !annotations.is_empty() {
+                            // Painted over the editor (no hitbox, so input passes through), after the
+                            // line's text, in the code font at a smaller size and module-chosen tone.
+                            let font_size = n["font"]["size"].as_f64().filter(|v| v.is_finite()).map(|v| px(v.clamp(8.0, 40.0) as f32)).unwrap_or(cx.theme().mono_font_size);
+                            let scale = n["lineAnnotationScale"].as_f64().filter(|v| v.is_finite()).unwrap_or(0.9).clamp(0.5, 1.2) as f32;
+                            let family = n["font"]["family"].as_str().map(str::trim).filter(|f| !f.is_empty() && f.len() <= 128).map(|f| SharedString::from(f.to_owned())).unwrap_or(cx.theme().mono_font_family.clone());
+                            let base = theme_muted.opacity(n["lineAnnotationOpacity"].as_f64().filter(|v| v.is_finite()).unwrap_or(0.65).clamp(0.1, 1.0) as f32);
+                            let (paint_state, annotations) = (st.clone(), std::rc::Rc::new(annotations));
+                            surface = surface.child(div().absolute().top_0().left_0().size_full().child(canvas(|_, _, _| (), move |bounds, _, window, cx| {
+                                let state = paint_state.read(cx);
+                                let Some(line_height) = state.line_height() else { return };
+                                let origins = editor::annotation_origins(state, &annotations);
+                                let size = font_size * scale;
+                                let font = Font { family: family.clone(), ..Default::default() };
+                                window.with_content_mask(Some(ContentMask { bounds }), |window| {
+                                    for (origin, i) in origins {
+                                        if origin.y + line_height < bounds.top() || origin.y > bounds.bottom() || origin.x > bounds.right() { continue; }
+                                        let a = &annotations[i];
+                                        let run = TextRun { len: a.text.len(), font: font.clone(), color: a.color.unwrap_or(base), background_color: None, underline: None, strikethrough: None };
+                                        let shaped = window.text_system().shape_line(a.text.clone(), size, &[run], None);
+                                        let _ = shaped.paint(point(origin.x + font_size * 2.0, origin.y), line_height, TextAlign::Left, None, window, cx);
+                                    }
+                                });
+                            }).size_full()));
+                        }
+                        if markers.is_empty() { surface.into_any_element() } else {
                             // Marker strip over the gutter's left edge, positioned from the editor's
                             // own layout so it follows scrolling, folding and soft wrap.
                             let width = n["lineMarkerWidth"].as_f64().unwrap_or(3.0).clamp(1.0, 12.0) as f32;
@@ -1229,7 +1269,7 @@ impl Shell {
                             let action = s("lineMarkerAction");
                             let (k, m, key2, hit_state) = (self.kernel.clone(), module.to_string(), key.to_string(), st.clone());
                             let inputs = self.module_inputs(module);
-                            div().relative().size_full().capture_key_down(dismiss_hints).child(editor_el).children(hints)
+                            surface
                                 .child(div().id(sid(module, &format!("{path}/markers"))).absolute().left_0().top_0().bottom_0().w(px(width + 5.0))
                                     .when(!action.is_empty(), |d| d.cursor_pointer().on_mouse_down(MouseButton::Left, move |ev, window, cx| {
                                         let spans = editor::marker_spans(hit_state.read(cx), &markers);

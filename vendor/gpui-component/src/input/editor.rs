@@ -33,6 +33,9 @@ pub struct Editor {
     /// If set, this overrides the built-in context menu.
     context_menu_builder: Option<Rc<dyn Fn(NativeMenu, &mut Window, &mut App) -> NativeMenu>>,
 
+    /// Appends items to the built-in context menu.
+    context_menu_extend: Option<Rc<dyn Fn(NativeMenu, &mut Window, &mut App) -> NativeMenu>>,
+
     paste_handler: Option<Rc<dyn Fn(&gpui::ClipboardItem, &mut Window, &mut App) -> bool>>,
 }
 
@@ -51,6 +54,7 @@ impl Editor {
             role: RoleOverride::default(),
             aria_label: None,
             context_menu_builder: None,
+            context_menu_extend: None,
             paste_handler: None,
         }
     }
@@ -114,6 +118,15 @@ impl Editor {
         self
     }
 
+    /// Append items to the built-in context menu instead of replacing it.
+    pub fn context_menu_extend(
+        mut self,
+        f: impl Fn(NativeMenu, &mut Window, &mut App) -> NativeMenu + 'static,
+    ) -> Self {
+        self.context_menu_extend = Some(Rc::new(f));
+        self
+    }
+
     /// Intercept paste payloads (images, files) before the default text insertion.
     ///
     /// `true` consumes the paste so nothing is inserted, `false` falls through
@@ -167,6 +180,9 @@ impl RenderOnce for Editor {
             .when_some(self.aria_label, |this, label| this.aria_label(label))
             .when_some(self.context_menu_builder, |this, build| {
                 this.context_menu(move |menu, window, cx| build(menu, window, cx))
+            })
+            .when_some(self.context_menu_extend, |this, extend| {
+                this.context_menu_extend(move |menu, window, cx| extend(menu, window, cx))
             })
             .when_some(self.paste_handler, |this, handler| {
                 this.on_paste(move |item, window, cx| handler(item, window, cx))

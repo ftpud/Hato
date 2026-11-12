@@ -136,6 +136,9 @@ pub struct Input {
     /// If set, this overrides the built-in context menu.
     context_menu_builder: Option<Rc<dyn Fn(NativeMenu, &mut Window, &mut App) -> NativeMenu>>,
 
+    /// Appends items to the built-in context menu (ignored when a custom builder is set).
+    context_menu_extend: Option<Rc<dyn Fn(NativeMenu, &mut Window, &mut App) -> NativeMenu>>,
+
     /// An optional paste handler. If set, it is invoked with the clipboard item
     /// before the default text insertion. Return `true` if handled.
     paste_handler: Option<Rc<dyn Fn(&gpui::ClipboardItem, &mut Window, &mut App) -> bool>>,
@@ -243,6 +246,7 @@ impl Input {
             accessibility_id: None,
             aria_label: None,
             context_menu_builder: None,
+            context_menu_extend: None,
             paste_handler: None,
             token_renderer: None,
             token_click_listener: None,
@@ -371,6 +375,16 @@ impl Input {
         f: impl Fn(NativeMenu, &mut Window, &mut App) -> NativeMenu + 'static,
     ) -> Self {
         self.context_menu_builder = Some(Rc::new(f));
+        self
+    }
+
+    /// Extend the built-in context menu: the closure receives the default menu
+    /// (Cut, Copy, Paste, ...) and returns it with extra items appended.
+    pub fn context_menu_extend(
+        mut self,
+        f: impl Fn(NativeMenu, &mut Window, &mut App) -> NativeMenu + 'static,
+    ) -> Self {
+        self.context_menu_extend = Some(Rc::new(f));
         self
     }
 
@@ -591,6 +605,7 @@ impl RenderOnce for Input {
         state.set_readonly(self.readonly, cx);
         state.set_text_align(text_align, cx);
         let custom = self.context_menu_builder.clone();
+        let extend = self.context_menu_extend.clone();
         state.on_context_menu(
             Rc::new(move |_, capabilities, position, window, cx| {
                 let menu = if let Some(custom) = custom.as_ref() {
@@ -638,6 +653,10 @@ impl RenderOnce for Input {
                         t!("Input.Select All"),
                         Box::new(gpui_base::input::SelectAll),
                     )
+                };
+                let menu = match extend.as_ref() {
+                    Some(extend) if custom.is_none() => extend(menu, window, cx),
+                    _ => menu,
                 };
                 menu.show(position, window, cx);
             }),
