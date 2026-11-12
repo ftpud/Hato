@@ -203,7 +203,8 @@ test("range and color fields render native controls, validate values and route s
   // Settings forwards native slider releases, picker commits (alpha dropped) and resets.
   const { default: mod } = await load("Hato-plugins/modules/ui/settings/src/index.ts");
   const emitted = [];
-  const sctx = { moduleId: "settings", host: { modules: { list: async () => [{ id: "m", active: {} }] }, plugins: { list: async () => ({ plugins: [], root: null, rootOverride: null }) } },
+  let uiNodes = ["slider", "colorPicker"];
+  const sctx = { moduleId: "settings", host: { env: { info: () => ({ uiNodes }) }, modules: { list: async () => [{ id: "m", active: {} }] }, plugins: { list: async () => ({ plugins: [], root: null, rootOverride: null }) } },
     state: { get: (k) => k === "m.settings" ? { sections: [{ key: "s", title: "S", fields: [range, color] }], error: null } : null, watch: () => () => {} },
     events: { on() {}, emit: (topic, payload) => emitted.push(payload) }, ui: { invalidate() {} } };
   await mod.activate(sctx); await mod.methods.open(sctx, { module: "m", section: "s" });
@@ -214,6 +215,13 @@ test("range and color fields render native controls, validate values and route s
   const reset = nodes.find(n => n.key === "default" && n.value?.field === size);
   mod.onEvent(sctx, { action: reset.action, key: reset.key, value: reset.value, inputs: {} });
   assert.deepEqual(emitted, [{ module: "m", section: "s", key: "size", value: "14" }, { module: "m", section: "s", key: "tint", value: "#ABCDEF" }, { module: "m", section: "s", key: "size", value: "" }]);
+  // Older hosts don't report the native nodes: fields fall back to text inputs that submit on Enter.
+  uiNodes = undefined; emitted.length = 0;
+  const old = walk(mod.render(sctx));
+  assert.ok(!old.some(n => n.type === "slider" || n.type === "colorPicker"));
+  assert.equal(old.find(n => n.key === size).type, "textInput");
+  mod.onEvent(sctx, { action: "change", key: size, inputs: { [size]: " 20 " } });
+  assert.deepEqual(emitted, [{ module: "m", section: "s", key: "size", value: "20" }]);
   mod.deactivate();
 });
 

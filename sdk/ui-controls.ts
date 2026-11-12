@@ -17,11 +17,20 @@ export function validControlValue(field: Range | Color, value: unknown): boolean
   return Number.isFinite(n) && n >= field.min && n <= field.max;
 }
 
+/** True when the host renders `type` natively (older hosts don't report newer node types). */
+export const hostRenders = (info: { uiNodes?: string[] } | undefined, type: string) => !!info?.uiNodes?.includes(type);
+
+/** Older hosts: a plain text field submitting through `fallbackAction` (the field key is the node key). */
+const fallbackInput = (key: string, value: string, placeholder: string, fallbackAction: string, disabled: boolean): UiNode =>
+  ({ type: "textInput", key, value, placeholder, submitAction: fallbackAction, disabled });
+
 const resetButton = (action: string, value: Json, disabled: boolean, label: string): UiNode =>
   ({ type: "button", key: "default", text: "↺", action, value, small: true, variant: "ghost", disabled, tooltip: `Reset to ${label}`, style: { width: 24, padding: 0, noShrink: true } });
 
 /** Native slider with live value; `↺` (when `allowDefault`) fires `resetAction` with `{ ...payload, value: "" }`. */
-export function rangeControl(key: string, f: Omit<Range, "type" | "key" | "label">, action: string, resetAction: string, payload: Record<string, Json> = {}, disabled = false): UiNode {
+export function rangeControl(key: string, f: Omit<Range, "type" | "key" | "label">, action: string, resetAction: string, payload: Record<string, Json> = {}, disabled = false,
+  native = true, fallbackAction = "change"): UiNode {
+  if (!native) return fallbackInput(key, f.value, `${f.allowDefault ? `${f.defaultLabel || "Default"} · ` : ""}${f.min}–${f.max}${f.unit || ""}`, fallbackAction, disabled);
   const n = f.value === "" ? null : Number(f.value);
   const value = n === null || !Number.isFinite(n) ? null : n;
   return { type: "row", key: `${key}:range`, gap: 6, align: "center", children: [
@@ -32,7 +41,9 @@ export function rangeControl(key: string, f: Omit<Range, "type" | "key" | "label
 }
 
 /** Native color picker showing the hex value; `↺` (when `allowDefault`) clears it. */
-export function colorControl(key: string, f: Omit<Color, "type" | "key" | "label">, action: string, resetAction: string, payload: Record<string, Json> = {}, disabled = false): UiNode {
+export function colorControl(key: string, f: Omit<Color, "type" | "key" | "label">, action: string, resetAction: string, payload: Record<string, Json> = {}, disabled = false,
+  native = true, fallbackAction = "change"): UiNode {
+  if (!native) return fallbackInput(key, f.value, f.allowDefault ? "Default (#RRGGBB)" : "#RRGGBB", fallbackAction, disabled);
   const value = HEX.test(f.value) ? f.value.toUpperCase() : null;
   return { type: "row", key: `${key}:color`, gap: 6, align: "center", children: [
     { type: "colorPicker", key, value, action, swatches: (f.swatches?.length ? f.swatches : defaultSwatches).filter(c => HEX.test(c)),

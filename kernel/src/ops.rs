@@ -111,6 +111,8 @@ pub fn host_sync(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: Value) 
             "repoRoot": k.cfg.repo_root.to_string_lossy(),
             "uptimeMs": k.started.elapsed().as_millis() as u64,
             "headless": k.cfg.headless,
+            // Node types added after abiVersion 1, so modules can fall back on older hosts.
+            "uiNodes": ["slider", "colorPicker"],
         })),
         "state.get" => {
             let key = arg_str(&args, "key")?;

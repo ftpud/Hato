@@ -202,6 +202,8 @@ export interface NativeHost {
 export interface EnvInfo {
   abiVersion: 1; appName: string; platform: string; arch: string; home: string | null;
   dataDir: string; sharedDir: string; initialRoot: string | null; repoRoot: string; uptimeMs: number; headless: boolean;
+  /** UiNode types added after abiVersion 1 that this host renders (absent on older hosts). */
+  uiNodes?: string[];
 }
 
 export interface ModuleStatus {

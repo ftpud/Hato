@@ -77,7 +77,7 @@ test('scoped search includes ancestors, caches listings and avoids symlink and .
   const { searchFiles } = await load('Hato-plugins/modules/services/files/src/search.ts');
   const calls = [], grants = [];
   const entries = { '.': [entry('src', 'dir'), entry('.git', 'dir'), entry('linked', 'symlink')], src: [entry('src/nested', 'dir')], 'src/nested': [entry('src/nested/target.ts')] };
-  const ctx = { host: { capabilities: { async request(args) { grants.push(args); return { grant: 'scope' }; } }, fs: { async list(grant, path) { calls.push(path); assert.equal(grant, 'scope'); return { entries: entries[path] || [] }; } } } };
+  const ctx = { events: { emit() {} }, host: { capabilities: { async request(args) { grants.push(args); return { grant: 'scope' }; } }, fs: { async list(grant, path) { calls.push(path); assert.equal(grant, 'scope'); return { entries: entries[path] || [] }; } } } };
   const desc = { id: 'ws', location: 'local', machineId: 'local', rootAbsolutePath: '/workspace' };
   const result = await searchFiles(ctx, desc, 'TARGET.ts');
   assert.deepEqual(result.entries.map(item => item.relativePath).sort(), ['src', 'src/nested', 'src/nested/target.ts']);
