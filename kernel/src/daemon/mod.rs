@@ -7,6 +7,10 @@
 //!   run through ordinary SSH PTY/exec channels, so a dropped connection only ends the attach.
 //! * `ctl` sends one JSON request (stdin) and prints the reply; `bridge` forwards stdin lines to a
 //!   plugin method (so remote tools can reach plugins while the desktop is offline).
+//! * Socket ops `exec` / `pty.exec` run one command (or terminal) for as long as the connection
+//!   lasts. The desktop reaches the socket over forwarded SSH channels (`direct-streamlocal`), so
+//!   once a daemon is running, commands and terminals use no SSH sessions (`MaxSessions` does not
+//!   apply); see `SshMaster::exec`. Servers that forbid socket forwarding keep using sessions.
 //!
 //! SSH is the authentication boundary: the socket directory is 0700 and the daemon checks that
 //! the peer has its own uid. The daemon knows nothing about what plugins or processes mean.
@@ -34,6 +38,12 @@ pub const F_DETACHED: u8 = 5;
 /// Viewer → daemon: `u32` count of output frames written to its stdout/stderr. Unacknowledged
 /// frames are resent to the next viewer, so output is never lost when a viewer dies mid-write.
 pub const F_ACK: u8 = 6;
+/// Desktop → daemon (`exec`/`pty.exec`): close the program's stdin.
+pub const F_EOF: u8 = 7;
+/// Desktop → daemon (`exec`/`pty.exec`): signal name (`TERM`, `KILL`, `INT`, `HUP`) for the program's process group.
+pub const F_SIGNAL: u8 = 8;
+/// Operations advertised in `hello` beyond ABI 1, so a desktop routes through them only when present.
+pub const FEATURES: &[&str] = &["exec", "pty.exec"];
 const MAX_FRAME: usize = 16 * 1024 * 1024;
 
 pub fn write_frame(w: &mut impl Write, t: u8, data: &[u8]) -> io::Result<()> {
@@ -81,7 +91,44 @@ pub fn home_dir(arg: Option<&str>) -> PathBuf {
 }
 
 pub fn run_dir(home: &std::path::Path) -> PathBuf { home.join("run") }
-pub fn socket_path(home: &std::path::Path) -> PathBuf { run_dir(home).join("hatod.sock") }
+/// The daemon socket: `<home>/run/hatod.sock`, unless that exceeds the Unix socket path limit
+/// (about 104 bytes on macOS/BSD, 108 on Linux); then a per-home name in `short_socket_dir()`.
+pub fn socket_path(home: &std::path::Path) -> PathBuf {
+    let p = run_dir(home).join("hatod.sock");
+    if p.as_os_str().len() <= MAX_SOCKET_PATH {
+        return p;
+    }
+    short_socket_dir().join(format!("{}.sock", &crate::util::sha256_hex(home.to_string_lossy().as_bytes())[..16]))
+}
+const MAX_SOCKET_PATH: usize = 100;
+
+/// `/tmp/hato-<uid>`: short, and (unlike `$XDG_RUNTIME_DIR`) not removed when the last login
+/// session ends while the daemon keeps running.
+pub fn short_socket_dir() -> PathBuf {
+    #[cfg(unix)]
+    let uid = unsafe { libc::getuid() };
+    #[cfg(not(unix))]
+    let uid = 0;
+    PathBuf::from(format!("/tmp/hato-{uid}"))
+}
+
+/// Refuse a socket directory another user could have prepared: it must be a real directory
+/// (not a symlink) owned by this user with no group/other access. `create` makes it (0700) first.
+#[cfg(unix)]
+pub fn secure_socket_dir(dir: &std::path::Path, create: bool) -> io::Result<()> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+    if create {
+        match std::fs::DirBuilder::new().mode(0o700).create(dir) {
+            Err(e) if e.kind() != io::ErrorKind::AlreadyExists => return Err(e),
+            _ => {}
+        }
+    }
+    let m = std::fs::symlink_metadata(dir)?;
+    if !m.file_type().is_dir() || m.uid() != unsafe { libc::getuid() } || m.mode() & 0o077 != 0 {
+        return Err(io::Error::new(io::ErrorKind::PermissionDenied, format!("{} is not a private directory of this user", dir.display())));
+    }
+    Ok(())
+}
 
 /// Parse `--flag value` pairs and a trailing `-- argv…`.
 pub struct Args {
@@ -116,6 +163,8 @@ impl Args {
     }
     pub fn get(&self, k: &str) -> Option<&str> { self.flags.iter().rev().find(|(n, _)| n == k).map(|(_, v)| v.as_str()) }
     pub fn has(&self, k: &str) -> bool { self.bools.iter().any(|b| b == k) }
+    /// Every value of a repeated flag, in order.
+    pub fn all(&self, k: &str) -> Vec<String> { self.flags.iter().filter(|(n, _)| n == k).map(|(_, v)| v.clone()).collect() }
 }
 
 /// Entry point for `hato daemon <command> …`. Returns the process exit code.
@@ -141,7 +190,7 @@ pub fn main(args: &[String]) -> i32 {
         "pty-attach" => client::pty_attach(&home, &a),
         #[cfg(unix)]
         "proc-attach" => client::proc_attach(&home, &a),
-        "watch" => match a.get("path") { Some(path) => crate::host::watch::run(path, !a.has("non-recursive")), None => Err(anyhow::anyhow!("missing --path")) },
+        "watch" => match a.get("path") { Some(path) => crate::host::watch::run(path, !a.has("non-recursive"), &a.all("exclude")), None => Err(anyhow::anyhow!("missing --path")) },
         #[cfg(unix)]
         "bridge" => client::bridge(&home, &a),
         #[cfg(not(unix))]
@@ -180,6 +229,15 @@ mod tests {
         assert_eq!(read_frame(&mut r).unwrap(), None);
         let big = [F_OUT, 0xff, 0xff, 0xff, 0xff];
         assert!(read_frame(&mut &big[..]).is_err());
+    }
+    #[test]
+    fn long_homes_use_a_short_socket() {
+        let short = socket_path(std::path::Path::new("/home/u/.hato"));
+        assert_eq!(short, PathBuf::from("/home/u/.hato/run/hatod.sock"));
+        let deep = format!("/home/u/{}/.hato", "d".repeat(120));
+        let p = socket_path(std::path::Path::new(&deep));
+        assert!(p.starts_with(short_socket_dir()) && p.as_os_str().len() <= MAX_SOCKET_PATH, "{p:?}");
+        assert_eq!(p, socket_path(std::path::Path::new(&deep)), "stable for the same home");
     }
     #[test]
     fn args() {

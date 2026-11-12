@@ -16,7 +16,12 @@ impl std::fmt::Display for ExitCode {
 impl std::error::Error for ExitCode {}
 
 fn connect(home: &Path) -> anyhow::Result<UnixStream> {
-    UnixStream::connect(socket_path(home)).map_err(|e| anyhow::anyhow!("daemon not reachable at {}: {e}", socket_path(home).display()))
+    let sock = socket_path(home);
+    // A short socket in /tmp is used only from a private directory of this user.
+    if let Some(dir) = sock.parent().filter(|d| *d != run_dir(home).as_path()) {
+        secure_socket_dir(dir, false).map_err(|e| anyhow::anyhow!("daemon socket directory: {e}"))?;
+    }
+    UnixStream::connect(&sock).map_err(|e| anyhow::anyhow!("daemon not reachable at {}: {e}", socket_path(home).display()))
 }
 
 fn send_line(s: &mut UnixStream, v: &Value) -> io::Result<()> {

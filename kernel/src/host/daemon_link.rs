@@ -153,8 +153,9 @@ pub fn binary_for(data_dir: &std::path::Path, repo_root: &std::path::Path, os: &
         candidates[0].display())))
 }
 
+/// Installation and start-up run on SSH sessions: they cannot depend on the daemon they set up.
 fn run_ssh(master: &SshMaster, remote: &str, stdin: Option<&[u8]>, timeout: Duration) -> HResult<(i32, String, String)> {
-    master.exec(remote)?.collect(stdin, timeout)
+    master.exec_direct(remote)?.collect(stdin, timeout)
 }
 
 /// Upload the matching daemon binary if the machine lacks it. Returns (binary, daemon home).
@@ -200,6 +201,10 @@ pub fn ensure_ssh(table: &DaemonTable, master: &Arc<SshMaster>, data_dir: &std::
         return Err(HostError::new("EREMOTE", format!("starting the daemon failed: {}", err.trim())));
     }
     let status: Value = serde_json::from_str(out.trim()).map_err(|e| HostError::new("EREMOTE", format!("bad daemon status: {e}: {}", out.trim())))?;
+    // A daemon offering `exec` takes over commands and terminals (forwarded channels to its
+    // socket instead of SSH sessions). Older or stale daemons keep the session path.
+    let routes = status["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "exec") && f.iter().any(|x| x == "pty.exec"));
+    master.set_daemon_route(status["socket"].as_str().filter(|s| routes && s.starts_with('/')).map(str::to_owned));
     let info = DaemonInfo { bin, dir, machine_id, status };
     table.put(info.clone());
     Ok(info)

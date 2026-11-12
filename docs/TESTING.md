@@ -24,7 +24,10 @@ tests/integration/run-integration.sh tests/integration/m6m8-acp-local.js /tmp/ha
 `cargo test --no-default-features --test ssh_builtin` checks the built-in SSH client on its own: it starts a
 user-level `/usr/sbin/sshd` on a free loopback port with everything in a temp directory (skipped without
 `sshd`), then covers host key trust, key login, commands, SFTP, terminals, signals, session limits and
-reverse forwards. The suite below runs the whole app against such a server.
+reverse forwards. `cargo test --no-default-features --test ssh_daemon_route` does the same with `MaxSessions 1`
+and a real `hato daemon serve`: commands and terminals through the daemon socket over forwarded
+channels, concurrency on one connection, hang-up, and fallback when forwarding is refused or the
+socket is gone. The suite below runs the whole app against such a server.
 
 ```sh
 D=/tmp/hato-sshd; mkdir -p $D; cd $D

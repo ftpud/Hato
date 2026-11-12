@@ -52,6 +52,31 @@ pub struct Document {
 
 const MAX_READ: usize = 8 * 1024 * 1024;
 
+/// `fs.watch` `exclude`: directory names (`node_modules`, `*.egg-info`) or root-relative paths
+/// (`dist/`), passed to the watcher process as arguments. Bounded, and nothing a shell or the
+/// helper's flag parser could misread.
+fn watch_excludes(args: &Value) -> HResult<Vec<String>> {
+    let Some(list) = args.get("exclude").filter(|v| !v.is_null()) else { return Ok(vec![]) };
+    let list = list.as_array().ok_or_else(|| HostError::invalid("exclude must be a list of strings"))?;
+    if list.len() > 2000 {
+        return Err(HostError::invalid("at most 2000 exclusions"));
+    }
+    let mut out = Vec::with_capacity(list.len());
+    let mut total = 0;
+    for v in list {
+        let p = v.as_str().ok_or_else(|| HostError::invalid("exclude must be a list of strings"))?.trim();
+        if p.is_empty() || p.len() > 512 || p.starts_with('-') || p.chars().any(|c| c.is_control()) || p.split('/').any(|c| c == "..") {
+            return Err(HostError::invalid(format!("invalid exclusion {p:?}")));
+        }
+        total += p.len();
+        out.push(p.to_string());
+    }
+    if total > 256 * 1024 {
+        return Err(HostError::invalid("exclusions too long"));
+    }
+    Ok(out)
+}
+
 fn check_alive(gen: &Generation, mutating: bool) -> HResult<()> {
     let st = gen.status();
     match st {
@@ -297,6 +322,7 @@ fn dispatch(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: &Value) -> H
             } else { std::env::current_exe()?.to_string_lossy().into_owned() };
             let mut argv = vec!["daemon".into(), "watch".into(), "--path".into(), real.clone()];
             if args.get("recursive").and_then(Value::as_bool) == Some(false) { argv.push("--non-recursive".into()); }
+            for pattern in watch_excludes(args)? { argv.push("--exclude".into()); argv.push(pattern); }
             let p = process::spawn(SpawnSpec {
                 target: g.target.clone(), ssh, executable: bin, args: argv, cwd: g.root.clone(),
                 env: vec![], env_remove: vec![], login_shell: false, persist: None,

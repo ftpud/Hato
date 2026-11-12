@@ -41,6 +41,13 @@ fs.watch → hato daemon watch --path <validated-root>
         └── stdout: ready / changed lines → streams.listen → module invalidation
 ```
 
+`opts.exclude` skips directories (names at any depth with `*`/`?`, or root-relative paths with
+`/`): changes inside them are not reported, and on Linux they cost no inotify watches (kept
+directories are watched one by one; new ones are added as they appear). A `warning <text>` line
+reports incomplete watching (e.g. the watch limit); `sdk/file-watch.ts` passes it to `warning`
+instead of treating it as a change. The files service builds its list from defaults, Git-ignored
+folders and the "File watching" settings; git skips `.git/objects`.
+
 Treat chunks as invalidations; chunks can coalesce lines. `ready` also invalidates to cover edits
 during installation. Release the returned process handle to stop watching. EOF on helper stdin
 ends the remote helper when its viewer disappears. SSH watch requires `remote.daemon` and a
@@ -75,6 +82,15 @@ kernel does not choose which application workflow should run remotely.
 `daemon.request` permits a bounded operation set, including resource inspection/control, plugin
 push/control and `modules.call`. `remote.daemon.admin` permits cross-module resource inspection.
 Resource keys are otherwise scoped per module.
+
+Once `daemon ensure` has run for an SSH machine (any `fs.watch` there, or `daemon.ensure`), and the
+daemon advertises `features: ["exec", "pty.exec"]`, `SshMaster::exec`/`exec_pty` run commands and
+terminals through it on forwarded channels to its socket instead of SSH sessions, so the server's
+`MaxSessions` stops limiting concurrency. Each command/terminal is its own channel (SSH flow
+control per stream); dropping it hangs the program up. Forwarding refused, a missing socket or an
+older daemon clears the route (`ssh.status` → `daemonRoute`/`daemonRouteError`) and sessions are
+used; install/start-up always use sessions. Homes too long for a Unix socket path use a private
+`/tmp/hato-<uid>/` directory. WSL keeps `wsl.exe`.
 
 `pty.open` and `process.spawn` accept `persist: {key}` to attach through daemon-held resources.
 Persistent `process.run` is not supported. Attachment loss detaches a viewer while daemon-owned

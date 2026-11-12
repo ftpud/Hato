@@ -78,6 +78,8 @@ pub struct Daemon {
     connections: AtomicUsize,
     last_activity: Mutex<Instant>,
     started: Instant,
+    /// Process groups of running `exec`/`pty.exec` programs (killed when the daemon exits).
+    ephemeral: Mutex<std::collections::HashSet<i32>>,
 }
 
 fn valid_key(k: &str) -> bool {
@@ -114,7 +116,24 @@ fn set_mode(p: &Path, mode: u32) {
     let _ = std::fs::set_permissions(p, std::fs::Permissions::from_mode(mode));
 }
 
+/// Each routed command holds a few descriptors (socket, pipes or a PTY) for its lifetime; the
+/// usual soft limit of 1024 would cap concurrency near 200, so use the hard limit.
+fn raise_fd_limit() {
+    let mut l = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut l) } != 0 || l.rlim_cur >= l.rlim_max {
+        return;
+    }
+    // macOS rejects RLIM_INFINITY for open files; OPEN_MAX bounds it there.
+    #[cfg(target_os = "macos")]
+    let target = l.rlim_max.min(10240); // OPEN_MAX (sys/syslimits.h)
+    #[cfg(not(target_os = "macos"))]
+    let target = l.rlim_max;
+    let raised = libc::rlimit { rlim_cur: target, rlim_max: l.rlim_max };
+    unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &raised) };
+}
+
 pub fn serve(home: &Path, idle_secs: u64) -> anyhow::Result<()> {
+    raise_fd_limit();
     let run = run_dir(home);
     std::fs::create_dir_all(&run)?;
     set_mode(home, 0o700);
@@ -128,6 +147,9 @@ pub fn serve(home: &Path, idle_secs: u64) -> anyhow::Result<()> {
         }
     }
     let sock = socket_path(home);
+    if let Some(dir) = sock.parent().filter(|d| *d != run.as_path()) {
+        secure_socket_dir(dir, true)?;
+    }
     let _ = std::fs::remove_file(&sock);
     let listener = UnixListener::bind(&sock)?;
     set_mode(&sock, 0o600);
@@ -168,10 +190,16 @@ pub fn serve(home: &Path, idle_secs: u64) -> anyhow::Result<()> {
         connections: AtomicUsize::new(0),
         last_activity: Mutex::new(Instant::now()),
         started: Instant::now(),
+        ephemeral: Mutex::new(Default::default()),
     });
     let d2 = d.clone();
+    let touched = sock.clone();
     std::thread::Builder::new().name("idle".into()).spawn(move || loop {
         std::thread::sleep(Duration::from_secs(15));
+        // Fresh times keep age-based temp cleaners (systemd-tmpfiles) off a socket in /tmp.
+        if let Ok(c) = std::ffi::CString::new(touched.as_os_str().as_encoded_bytes()) {
+            unsafe { libc::utimensat(libc::AT_FDCWD, c.as_ptr(), std::ptr::null(), libc::AT_SYMLINK_NOFOLLOW) };
+        }
         if d2.idle_for() > Duration::from_secs(idle_secs) {
             log::info!("daemon idle for {idle_secs}s; exiting");
             d2.exit();
@@ -179,7 +207,16 @@ pub fn serve(home: &Path, idle_secs: u64) -> anyhow::Result<()> {
     })?;
     let me = unsafe { libc::getuid() };
     for stream in listener.incoming() {
-        let Ok(stream) = stream else { continue };
+        let stream = match stream {
+            Ok(s) => s,
+            // Out of descriptors (or similar): back off instead of spinning; the connection
+            // waits in the backlog and is accepted once a running command ends.
+            Err(e) => {
+                log::warn!("accept failed: {e}");
+                std::thread::sleep(Duration::from_millis(50));
+                continue;
+            }
+        };
         if peer_uid(&stream) != Some(me) {
             continue; // never serve another user, even if the socket were reachable
         }
@@ -221,6 +258,9 @@ impl Daemon {
                 let _ = c.kill();
             }
         }
+        for pgid in self.ephemeral.lock().iter() {
+            unsafe { libc::kill(-pgid, libc::SIGKILL) };
+        }
         self.kernel.shutdown();
         let _ = std::fs::remove_file(socket_path(&self.home));
         let _ = std::fs::remove_file(run_dir(&self.home).join("hatod.json"));
@@ -241,6 +281,8 @@ impl Daemon {
             "pty.attach" => self.pty_attach(&args, reader, w),
             "proc.attach" => self.proc_attach(&args, reader, w),
             "bridge" => self.bridge(&args, reader, w),
+            "exec" => self.exec(&args, reader, w),
+            "pty.exec" => self.pty_exec(&args, reader, w),
             "shutdown" => {
                 write_line(&mut w, &json!({"ok": true, "value": {"stopping": true}}))?;
                 let me = self.clone();
@@ -276,6 +318,7 @@ impl Daemon {
                 "version": VERSION, "abi": ABI, "pid": std::process::id(), "home": self.home,
                 "exe": std::env::current_exe().ok().map(|p| p.to_string_lossy().into_owned()), "uptimeMs": self.started.elapsed().as_millis() as u64,
                 "os": std::env::consts::OS, "arch": std::env::consts::ARCH, "resources": self.resources(), "plugins": self.kernel.plugins_json()["plugins"],
+                "features": FEATURES, "socket": absolute(&socket_path(&self.home)),
             })),
             "resources.list" => Ok(self.resources()),
             "pty.read" => {
@@ -585,6 +628,197 @@ impl Daemon {
             };
             write_line(&mut w, &out)?;
         }
+    }
+}
+
+fn absolute(p: &Path) -> String {
+    let p = if p.is_absolute() { p.to_path_buf() } else { std::env::current_dir().map(|d| d.join(p)).unwrap_or_else(|_| p.to_path_buf()) };
+    p.to_string_lossy().into_owned()
+}
+
+/// The user's login shell (what sshd runs commands with), then `$SHELL`, then `/bin/sh`.
+fn login_shell() -> String {
+    unsafe {
+        let pw = libc::getpwuid(libc::getuid());
+        if !pw.is_null() && !(*pw).pw_shell.is_null() {
+            if let Ok(s) = std::ffi::CStr::from_ptr((*pw).pw_shell).to_str() {
+                if !s.is_empty() { return s.to_string(); }
+            }
+        }
+    }
+    std::env::var("SHELL").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "/bin/sh".into())
+}
+
+fn signal_number(name: &[u8]) -> i32 {
+    match name {
+        b"KILL" => libc::SIGKILL, b"INT" => libc::SIGINT, b"HUP" => libc::SIGHUP, b"QUIT" => libc::SIGQUIT, _ => libc::SIGTERM,
+    }
+}
+
+type SharedSocket = Arc<Mutex<UnixStream>>;
+fn send_frame(w: &SharedSocket, t: u8, data: &[u8]) -> io::Result<()> { write_frame(&mut *w.lock(), t, data) }
+
+/// Ends a connection's program when the desktop goes away: HUP (as sshd does when a channel
+/// closes), then KILL if the group is still there two seconds later.
+fn hang_up(pgid: i32, finished: &Arc<AtomicBool>) {
+    if finished.load(Ordering::SeqCst) {
+        return;
+    }
+    unsafe { libc::kill(-pgid, libc::SIGHUP) };
+    let finished = finished.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_secs(2));
+        if !finished.load(Ordering::SeqCst) {
+            unsafe { libc::kill(-pgid, libc::SIGKILL) };
+        }
+    });
+}
+
+impl Daemon {
+    /// `exec`: run `sh` with the login shell in the home directory, like an SSH exec channel, for as
+    /// long as this connection lasts. Frames: out/err/exit to the desktop; in/eof/signal from it.
+    fn exec(&self, args: &Value, mut reader: BufReader<UnixStream>, mut w: UnixStream) -> io::Result<()> {
+        let Some(sh) = args["sh"].as_str() else { return write_line(&mut w, &err_json(&HostError::invalid("missing sh"))) };
+        let mut cmd = Command::new(login_shell());
+        cmd.arg("-c").arg(sh).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        if let Some(h) = dirs::home_dir() { cmd.current_dir(h); }
+        {
+            use std::os::unix::process::CommandExt;
+            cmd.process_group(0);
+        }
+        let mut child = match cmd.spawn() {
+            Ok(c) => c,
+            Err(e) => return write_line(&mut w, &err_json(&HostError::new("ENOEXEC", format!("cannot start process: {e}")))),
+        };
+        let pgid = child.id() as i32;
+        self.ephemeral.lock().insert(pgid);
+        let finished = Arc::new(AtomicBool::new(false));
+        let result = (|| {
+            write_line(&mut w, &json!({"ok": true, "value": {"pid": pgid}}))?;
+            let w: SharedSocket = Arc::new(Mutex::new(w));
+            let (out, err) = (child.stdout.take().unwrap(), child.stderr.take().unwrap());
+            let pump = |mut r: Box<dyn Read + Send>, t: u8, w: SharedSocket| std::thread::spawn(move || {
+                let mut buf = vec![0u8; 32 * 1024];
+                loop {
+                    match r.read(&mut buf) {
+                        Ok(0) => break,
+                        Ok(n) => if send_frame(&w, t, &buf[..n]).is_err() { break },
+                        Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                        Err(_) => break,
+                    }
+                }
+            });
+            let (t_out, t_err) = (pump(Box::new(out), F_OUT, w.clone()), pump(Box::new(err), F_ERR, w.clone()));
+            let mut stdin = child.stdin.take();
+            let fin = finished.clone();
+            std::thread::spawn(move || {
+                loop {
+                    match read_frame(&mut reader) {
+                        Ok(Some((F_IN, data))) => { if let Some(i) = stdin.as_mut() { if i.write_all(&data).and_then(|_| i.flush()).is_err() { stdin = None; } } }
+                        Ok(Some((F_EOF, _))) => stdin = None,
+                        Ok(Some((F_SIGNAL, name))) => { unsafe { libc::kill(-pgid, signal_number(&name)) }; }
+                        Ok(Some(_)) => {}
+                        Ok(None) | Err(_) => break,
+                    }
+                }
+                hang_up(pgid, &fin);
+            });
+            let status = child.wait();
+            finished.store(true, Ordering::SeqCst);
+            let _ = (t_out.join(), t_err.join());
+            let exit = match status {
+                Ok(s) => {
+                    use std::os::unix::process::ExitStatusExt;
+                    json!({"code": s.code(), "signal": s.signal()})
+                }
+                Err(_) => json!({"code": null, "signal": null}),
+            };
+            let r = send_frame(&w, F_EXIT, exit.to_string().as_bytes());
+            let _ = w.lock().shutdown(std::net::Shutdown::Both);
+            r
+        })();
+        finished.store(true, Ordering::SeqCst);
+        self.ephemeral.lock().remove(&pgid);
+        result
+    }
+
+    /// `pty.exec`: like `exec`, on a fresh pseudo-terminal (`columns`/`rows`, resized by frames).
+    fn pty_exec(&self, args: &Value, mut reader: BufReader<UnixStream>, mut w: UnixStream) -> io::Result<()> {
+        use portable_pty::{native_pty_system, CommandBuilder, PtySize};
+        let Some(sh) = args["sh"].as_str() else { return write_line(&mut w, &err_json(&HostError::invalid("missing sh"))) };
+        let cols = args["columns"].as_u64().unwrap_or(100).clamp(10, 1000) as u16;
+        let rows = args["rows"].as_u64().unwrap_or(30).clamp(3, 500) as u16;
+        let pair = match native_pty_system().openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 }) {
+            Ok(p) => p,
+            Err(e) => return write_line(&mut w, &err_json(&HostError::new("EPTY", format!("openpty: {e}")))),
+        };
+        let mut cb = CommandBuilder::new(login_shell());
+        cb.args(["-c", sh]);
+        if let Some(h) = dirs::home_dir() { cb.cwd(h); }
+        cb.env("TERM", "xterm-256color");
+        cb.env("COLORTERM", "truecolor");
+        let mut child = match pair.slave.spawn_command(cb) {
+            Ok(c) => c,
+            Err(e) => return write_line(&mut w, &err_json(&HostError::new("ENOEXEC", format!("cannot start terminal program: {e}")))),
+        };
+        drop(pair.slave);
+        // The PTY child leads its own session, so its pid is the process group to signal.
+        let pgid = child.process_id().map(|p| p as i32).unwrap_or(0);
+        if pgid > 0 { self.ephemeral.lock().insert(pgid); }
+        let finished = Arc::new(AtomicBool::new(false));
+        let result = (|| {
+            let (mut out, input) = match (pair.master.try_clone_reader(), pair.master.take_writer()) {
+                (Ok(r), Ok(wr)) => (r, wr),
+                _ => { let _ = child.kill(); return write_line(&mut w, &err_json(&HostError::new("EPTY", "cannot open terminal streams"))); }
+            };
+            write_line(&mut w, &json!({"ok": true, "value": {"pid": pgid}}))?;
+            let w: SharedSocket = Arc::new(Mutex::new(w));
+            let (done_tx, done_rx) = crossbeam_channel::bounded::<()>(1);
+            {
+                let w = w.clone();
+                std::thread::spawn(move || {
+                    let mut buf = vec![0u8; 32 * 1024];
+                    loop {
+                        match out.read(&mut buf) {
+                            Ok(0) => break,
+                            Ok(n) => if send_frame(&w, F_OUT, &buf[..n]).is_err() { break },
+                            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                            Err(_) => break,
+                        }
+                    }
+                    let _ = done_tx.send(());
+                });
+            }
+            let master = Arc::new(Mutex::new(pair.master));
+            let fin = finished.clone();
+            std::thread::spawn(move || {
+                let mut input = input;
+                loop {
+                    match read_frame(&mut reader) {
+                        Ok(Some((F_IN, data))) => { let _ = input.write_all(&data).and_then(|_| input.flush()); }
+                        Ok(Some((F_RESIZE, d))) if d.len() == 4 => {
+                            let _ = master.lock().resize(PtySize { cols: u16::from_be_bytes([d[0], d[1]]).clamp(10, 1000), rows: u16::from_be_bytes([d[2], d[3]]).clamp(3, 500), pixel_width: 0, pixel_height: 0 });
+                        }
+                        Ok(Some((F_SIGNAL, name))) if pgid > 0 => { unsafe { libc::kill(-pgid, signal_number(&name)) }; }
+                        Ok(Some(_)) => {}
+                        Ok(None) | Err(_) => break,
+                    }
+                }
+                if pgid > 0 { hang_up(pgid, &fin); }
+            });
+            let status = child.wait();
+            finished.store(true, Ordering::SeqCst);
+            // Output still buffered in the PTY drains first; a background job holding the
+            // terminal open must not keep the exit from being reported.
+            let _ = done_rx.recv_timeout(Duration::from_millis(500));
+            let code = status.map(|s| s.exit_code() as i64).ok();
+            let r = send_frame(&w, F_EXIT, json!({"code": code, "signal": null}).to_string().as_bytes());
+            let _ = w.lock().shutdown(std::net::Shutdown::Both);
+            r
+        })();
+        finished.store(true, Ordering::SeqCst);
+        if pgid > 0 { self.ephemeral.lock().remove(&pgid); }
+        result
     }
 }
 

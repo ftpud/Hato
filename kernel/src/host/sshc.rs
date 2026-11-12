@@ -16,6 +16,7 @@ use parking_lot::{Condvar, Mutex};
 use russh::client::{self, Handle};
 use russh::keys::{HashAlg, PrivateKeyWithHashAlg, PublicKey};
 use russh::{ChannelMsg, Sig};
+use serde_json::Value;
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::PathBuf;
@@ -547,6 +548,139 @@ impl Conn {
             handle: ProcHandle::Channel(ctl),
         })
     }
+}
+
+impl Conn {
+    /// A program run by the Hato daemon on this machine, over a forwarded channel to its Unix
+    /// socket (`direct-streamlocal`): no SSH session is used, so the server's `MaxSessions` does
+    /// not apply. `request` is the daemon's `exec`/`pty.exec` request. The reply is awaited here,
+    /// so any error comes back before the program started and the caller may fall back safely.
+    pub fn open_daemon(&self, socket: &str, request: &Value, pty: bool) -> HResult<Spawned> {
+        use crate::daemon::{F_EOF, F_ERR, F_EXIT, F_IN, F_OUT, F_RESIZE, F_SIGNAL};
+        let ch = block_on_timeout(CHANNEL_TIMEOUT, self.handle.channel_open_direct_streamlocal(socket.to_string()))
+            .map_err(|_| err("ETIMEDOUT", "opening a daemon channel timed out"))?
+            .map_err(|e| match e {
+                // Forwarding disabled (AllowStreamLocalForwarding/DisableForwarding) or no socket.
+                russh::Error::ChannelOpenFailure(_) => err("EFORWARD", format!("the server refused a channel to the daemon socket: {e}")),
+                e => err("ENOTCONN", format!("cannot open a daemon channel: {e}")),
+            })?;
+        let (mut rd, wr) = ch.split();
+        let line = format!("{request}\n");
+        // Handshake: the request line, then the daemon's one-line reply. Bytes after it are frames.
+        let handshake = block_on_timeout(CHANNEL_TIMEOUT, async {
+            wr.data_bytes(line.into_bytes()).await.map_err(|e| err("ENOTCONN", e))?;
+            let mut buf = Vec::new();
+            loop {
+                if let Some(nl) = buf.iter().position(|b| *b == b'\n') {
+                    let rest = buf.split_off(nl + 1);
+                    return Ok::<_, HostError>((buf, rest));
+                }
+                match rd.wait().await {
+                    Some(ChannelMsg::Data { data }) => buf.extend_from_slice(&data),
+                    Some(ChannelMsg::Eof) | Some(ChannelMsg::Close) | None => return Err(err("EFORWARD", "the daemon socket closed the connection")),
+                    _ => {}
+                }
+            }
+        });
+        let (reply, rest) = match handshake {
+            Ok(Ok(v)) => v,
+            Ok(Err(e)) => { block_on(async { let _ = wr.close().await; }); return Err(e); }
+            Err(_) => { block_on(async { let _ = wr.close().await; }); return Err(err("ETIMEDOUT", "the daemon did not answer")); }
+        };
+        let reply: Value = serde_json::from_slice(&reply).unwrap_or(Value::Null);
+        if reply["ok"] != true {
+            block_on(async { let _ = wr.close().await; });
+            let message = reply["error"]["message"].as_str().unwrap_or("daemon request failed");
+            let code = if message.contains("unknown daemon op") { "EUNSUPPORTED" } else { "EDAEMON" };
+            return Err(err(code, message));
+        }
+
+        let (out_tx, out_rx) = crossbeam_channel::unbounded::<Vec<u8>>();
+        let (err_tx, err_rx) = crossbeam_channel::unbounded::<Vec<u8>>();
+        let (ctl_tx, mut ctl_rx) = mpsc::unbounded_channel::<Ctl>();
+        let ctl = Arc::new(ChannelCtl { tx: ctl_tx.clone(), exit: Mutex::new(None), cv: Condvar::new() });
+        // Reader: frames → stdout/stderr pipes and the exit status.
+        let c2 = ctl.clone();
+        let shutdown = ctl_tx.clone();
+        let reader = rt().spawn(async move {
+            let mut rd = rd;
+            let mut buf = rest;
+            let (mut out_tx, mut err_tx) = (Some(out_tx), Some(err_tx));
+            'read: loop {
+                while buf.len() >= 5 {
+                    let len = u32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]) as usize;
+                    if buf.len() < 5 + len { break; }
+                    let t = buf[0];
+                    let data: Vec<u8> = buf[5..5 + len].to_vec();
+                    buf.drain(..5 + len);
+                    match t {
+                        F_OUT => { if let Some(tx) = &out_tx { let _ = tx.send(data); } }
+                        F_ERR => { let tx = if pty { &out_tx } else { &err_tx }; if let Some(tx) = tx { let _ = tx.send(data); } }
+                        F_EXIT => {
+                            let v: Value = serde_json::from_slice(&data).unwrap_or(Value::Null);
+                            out_tx = None; err_tx = None;
+                            c2.finish(ExitInfo { code: v["code"].as_i64().map(|c| c as i32), signal: v["signal"].as_i64().map(|s| s as i32) });
+                            break 'read;
+                        }
+                        _ => {}
+                    }
+                }
+                match rd.wait().await {
+                    Some(ChannelMsg::Data { data }) => buf.extend_from_slice(&data),
+                    Some(ChannelMsg::Eof) | Some(ChannelMsg::Close) | None => break,
+                    _ => {}
+                }
+            }
+            drop((out_tx, err_tx));
+            c2.finish(ExitInfo { code: None, signal: None });
+            let _ = shutdown.send(Ctl::Close);
+        });
+        // Writer: stdin, EOF, signals and resizes become frames; closing ends the connection,
+        // which makes the daemon hang up the program.
+        let c3 = ctl.clone();
+        let reader = reader.abort_handle();
+        rt().spawn(async move {
+            let frame = |t: u8, d: &[u8]| { let mut v = Vec::with_capacity(d.len() + 5); let _ = crate::daemon::write_frame(&mut v, t, d); v };
+            while let Some(m) = ctl_rx.recv().await {
+                let r = match m {
+                    Ctl::Data(d) => {
+                        let mut r = Ok(());
+                        for chunk in d.chunks(1 << 20) { r = wr.data_bytes(frame(F_IN, chunk)).await; if r.is_err() { break; } }
+                        r
+                    }
+                    Ctl::Eof => wr.data_bytes(frame(F_EOF, &[])).await,
+                    Ctl::Signal(s) => wr.data_bytes(frame(F_SIGNAL, sig_name(&s).as_bytes())).await,
+                    Ctl::Resize(c, r) => {
+                        let mut d = Vec::with_capacity(4);
+                        d.extend_from_slice(&(c.min(u16::MAX as u32) as u16).to_be_bytes());
+                        d.extend_from_slice(&(r.min(u16::MAX as u32) as u16).to_be_bytes());
+                        wr.data_bytes(frame(F_RESIZE, &d)).await
+                    }
+                    Ctl::Terminate(s) => {
+                        let _ = wr.data_bytes(frame(F_SIGNAL, sig_name(&s).as_bytes())).await;
+                        for _ in 0..40 {
+                            if c3.try_wait().is_some() { break; }
+                            tokio::time::sleep(Duration::from_millis(50)).await;
+                        }
+                        close(&wr, &c3, &reader).await;
+                        break;
+                    }
+                    Ctl::Close | Ctl::Shutdown => { close(&wr, &c3, &reader).await; break; }
+                };
+                if r.is_err() { break; }
+            }
+        });
+        Ok(Spawned {
+            stdin: Some(Box::new(ChanWriter { tx: ctl_tx })),
+            stdout: Some(Box::new(ChanReader { rx: out_rx, buf: Vec::new(), pos: 0 })),
+            stderr: Some(Box::new(ChanReader { rx: err_rx, buf: Vec::new(), pos: 0 })),
+            handle: ProcHandle::Channel(ctl),
+        })
+    }
+}
+
+fn sig_name(s: &Sig) -> &'static str {
+    match s { Sig::KILL => "KILL", Sig::INT => "INT", Sig::HUP => "HUP", Sig::QUIT => "QUIT", _ => "TERM" }
 }
 
 /// Close from this side. A server that never answers must not leave the channel's pipes open:

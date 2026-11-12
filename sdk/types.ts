@@ -76,7 +76,10 @@ export interface NativeHost {
   fs: {
     /** OS notifications as a process stream: stdout lines `ready` / `changed`.
      * Release with resources.release. SSH requires remote.daemon and a matching daemon build. */
-    watch(grant: Handle, path: string, opts?: { recursive?: boolean }): Promise<{ handle: Handle }>;
+    /** Change notifications (stdout lines `ready`, `changed`, `warning <text>`). `exclude` skips directories:
+     *  a name matches at any depth (`node_modules`, `*.egg-info`), a pattern with `/` is relative to `path`
+     *  (`dist/`). Changes inside them are not reported, and on Linux they use no inotify watches. */
+    watch(grant: Handle, path: string, opts?: { recursive?: boolean; exclude?: string[] }): Promise<{ handle: Handle }>;
     stat(grant: Handle, path: string): Promise<FileStat>;
     list(grant: Handle, path: string): Promise<{ path: string; entries: FileEntry[] }>;
     realpath(grant: Handle, path: string): Promise<string>;

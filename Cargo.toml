@@ -86,5 +86,9 @@ name = "ssh_builtin"
 path = "kernel/tests/ssh_builtin.rs"
 
 [[test]]
+name = "ssh_daemon_route"
+path = "kernel/tests/ssh_daemon_route.rs"
+
+[[test]]
 name = "plugin_runtime"
 path = "kernel/tests/plugin_runtime.rs"

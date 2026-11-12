@@ -93,6 +93,11 @@ pub struct SshMaster {
     trusted_key: Mutex<Option<String>>,
     /// WSL transport: `hato daemon forward` processes by the port they listen on.
     relays: Mutex<std::collections::HashMap<u16, Child>>,
+    /// Absolute path of the daemon socket on this machine once a daemon with `exec` is running:
+    /// commands and terminals then run through it on forwarded channels instead of SSH sessions.
+    daemon_socket: Mutex<Option<String>>,
+    /// Why the daemon route was last given up (forwarding refused, socket gone, older daemon).
+    daemon_route_error: Mutex<Option<String>>,
 }
 
 /// Runs `sftp-server` from the home directory (`realpath(".")` is how callers find the home).
@@ -118,6 +123,8 @@ impl SshMaster {
             last_error: Mutex::new(None),
             trusted_key: Mutex::new(None),
             relays: Default::default(),
+            daemon_socket: Mutex::new(None),
+            daemon_route_error: Mutex::new(None),
         })
     }
 
@@ -139,8 +146,17 @@ impl SshMaster {
         HostError::new("ENOTCONN", format!("Connection to {} is not available (reconnect required; no local fallback)", self.profile.machine_id()))
     }
 
-    /// Run `remote` through the user's shell on the machine, with piped stdio.
+    /// Run `remote` through the user's shell on the machine, with piped stdio: through the
+    /// daemon when it is reachable (no SSH session used), else on an SSH session channel.
     pub fn exec(&self, remote: &str) -> HResult<Spawned> {
+        if let Some(p) = self.via_daemon(json!({"op": "exec", "args": {"sh": remote}}), false) {
+            return Ok(p);
+        }
+        self.exec_direct(remote)
+    }
+
+    /// `exec` on an SSH session channel, never through the daemon (installing/starting it).
+    pub fn exec_direct(&self, remote: &str) -> HResult<Spawned> {
         if self.is_wsl() {
             self.ensure_alive()?;
             return Spawned::spawn(self.wsl_command(&["/bin/sh", "-c", remote]), "wsl.exe");
@@ -151,7 +167,42 @@ impl SshMaster {
     /// Run `remote` on a terminal of the machine (SSH transport; WSL uses a local ConPTY, see
     /// `wsl_pty_command`).
     pub fn exec_pty(&self, remote: &str, cols: u16, rows: u16) -> HResult<Spawned> {
+        if let Some(p) = self.via_daemon(json!({"op": "pty.exec", "args": {"sh": remote, "columns": cols, "rows": rows}}), true) {
+            return Ok(p);
+        }
         self.open_channel(ChannelRequest::Pty { command: remote.to_string(), cols, rows })
+    }
+
+    /// Use (`Some`) or stop using (`None`) the daemon socket for commands and terminals.
+    pub fn set_daemon_route(&self, socket: Option<String>) {
+        if self.is_wsl() {
+            return; // no SSH connection to forward over; WSL runs commands through wsl.exe
+        }
+        if socket.is_some() {
+            *self.daemon_route_error.lock() = None;
+        }
+        *self.daemon_socket.lock() = socket;
+    }
+
+    /// Start `request` through the daemon route; `None` means use an SSH session instead. Errors
+    /// arrive before the program started, so falling back never runs it twice.
+    fn via_daemon(&self, request: Value, pty: bool) -> Option<Spawned> {
+        let socket = self.daemon_socket.lock().clone()?;
+        let conn = self.conn().ok()?;
+        match conn.open_daemon(&socket, &request, pty) {
+            Ok(p) => Some(p),
+            Err(e) => {
+                // Refused forwarding, a vanished socket or an older daemon will not change by
+                // retrying: drop the route until the daemon is ensured again. Connection trouble
+                // (the session path fails then too) keeps it.
+                if matches!(e.code.as_str(), "EFORWARD" | "EUNSUPPORTED") {
+                    log::warn!("{}: daemon route unavailable, using SSH sessions: {}", self.profile.machine_id(), e.message);
+                    *self.daemon_socket.lock() = None;
+                    *self.daemon_route_error.lock() = Some(e.message);
+                }
+                None
+            }
+        }
     }
 
     /// A channel on the first connection with a free session; another connection when all are
@@ -422,6 +473,8 @@ impl SshMaster {
         json!({
             "machineId": self.profile.machine_id(), "host": self.profile.host, "port": self.profile.port, "user": self.profile.user,
             "alive": self.is_alive(), "lastError": self.last_error.lock().clone(),
+            "daemonRoute": self.daemon_socket.lock().clone(), "daemonRouteError": self.daemon_route_error.lock().clone(),
+            "connections": usize::from(self.conn().is_ok()) + self.extra.lock().iter().filter(|c| !c.is_closed()).count(),
         })
     }
 }
