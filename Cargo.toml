@@ -21,6 +21,8 @@ regex = { version = "1", optional = true }
 # Same version gpui-component links; used for incremental edits in module-themed highlighting.
 tree-sitter = { version = "=0.26.13", optional = true }
 gpui-component = { version = "=0.8.1", features = ["tree-sitter-languages"], optional = true }
+# Only for the `snapshot` feature: enables the platform's offscreen render_to_image.
+gpui-platform = { package = "gpui-pre-platform", version = "=0.3.10", optional = true }
 rquickjs = { version = "=0.14.0", features = ["std"] }
 rusqlite = { version = "=0.41.1", features = ["bundled", "limits"] }
 portable-pty = "=0.9.0"
@@ -59,6 +61,10 @@ objc2-foundation = { version = "=0.2.2", features = ["NSData", "NSThread"], opti
 # The desktop window. Build the headless remote daemon with `--no-default-features`.
 default = ["gui"]
 gui = ["dep:lsp-types", "dep:regex", "dep:tree-sitter", "dep:gpui-kit", "dep:gpui-component", "dep:image", "dep:objc2-app-kit", "dep:objc2-foundation"]
+
+# Development-only: `hato --snapshot out.png --snapshot-module ID` renders a panel offscreen to a PNG.
+# Kept out of `default` because gpui's test-support changes executor behavior.
+snapshot = ["gui", "gpui-component/test-support", "dep:gpui-platform", "gpui-platform/test-support"]
 
 [dev-dependencies]
 tempfile = "3"

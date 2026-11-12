@@ -38,6 +38,17 @@ fn main() {
         k.shutdown();
         std::process::exit(if ok { 0 } else { 1 });
     }
+    if cfg.snapshot.is_some() {
+        #[cfg(feature = "snapshot")]
+        {
+            std::process::exit(hato_kernel::ui::snapshot::run(cfg));
+        }
+        #[cfg(not(feature = "snapshot"))]
+        {
+            eprintln!("hato: --snapshot needs a development build: cargo build --features snapshot");
+            std::process::exit(2);
+        }
+    }
     #[cfg(feature = "gui")]
     hato_kernel::ui::run(cfg);
     #[cfg(not(feature = "gui"))]

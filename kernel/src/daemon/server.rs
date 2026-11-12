@@ -172,6 +172,7 @@ pub fn serve(home: &Path, idle_secs: u64) -> anyhow::Result<()> {
         dev_watch: false,
         headless: true,
         headless_script: None,
+        snapshot: None,
     };
     let kernel = Kernel::new(cfg, UiBridge::disconnected())?;
     // No one can click an approval here: requests are denied (and audited) instead of hanging.

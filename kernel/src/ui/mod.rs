@@ -12,6 +12,8 @@ mod images;
 mod style;
 mod transcript_scroll;
 mod tree;
+#[cfg(feature = "snapshot")]
+pub mod snapshot;
 
 use crate::bridge::{UiBridge, UiMsg};
 use crate::config::Config;
@@ -110,6 +112,8 @@ pub struct Shell {
     show_safe_mode: bool,
     submit_queue: Vec<(String, String, String)>,
     lay: interact::Layout,
+    /// Snapshot mode: render only this module's slot, filling the window.
+    only_module: Option<String>,
 }
 
 fn sid(module: &str, path: &str) -> SharedString { format!("{module}::{path}").into() }
@@ -183,6 +187,7 @@ impl Shell {
             show_safe_mode: false,
             submit_queue: Vec::new(),
             lay: Default::default(),
+            only_module: None,
         }
     }
 
@@ -1687,7 +1692,9 @@ impl Render for Shell {
         self.begin_frame();
         let root = self.kernel.root_module();
         let layout_ok = root.as_ref().map(|r| self.trees.contains_key(r) || self.kernel.router.active(r).is_some()).unwrap_or(false);
-        let body = if let (true, false, Some(root)) = (layout_ok, self.show_safe_mode, root) {
+        let body = if let Some(m) = self.only_module.clone() {
+            self.render_slot(&m, 0, window, cx)
+        } else if let (true, false, Some(root)) = (layout_ok, self.show_safe_mode, root) {
             self.render_slot(&root, 0, window, cx)
         } else {
             v_flex().size_full().child(TitleBar::new().child("Hato")).child(self.render_safe_mode(cx)).into_any_element()

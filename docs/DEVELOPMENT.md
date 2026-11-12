@@ -153,3 +153,21 @@ at opt-level 2. They are retained as background, not benchmarks for the current 
   blanket verification claim.
 
 Plugin authoring and runtime APIs: [PLUGINS.md](PLUGINS.md).
+
+## Offscreen panel snapshots (development only)
+
+Render a panel with the real native renderer to a PNG, without showing or focusing a window:
+
+```sh
+cargo build --features snapshot            # not part of default/release builds
+target/debug/hato --root . --data-dir /tmp/hato-snap/data \
+  --snapshot out.png --snapshot-module explorer --snapshot-size 360x600
+target/debug/hato --snapshot mock.png --snapshot-tree mock.json --snapshot-size 400x200
+```
+
+- `--snapshot-module ID` fills the window with that UI module's slot (omit it for the full root layout).
+- `--snapshot-tree FILE.json` renders a hand-written node tree (same shape modules return), so elements can be designed without a module.
+- `--snapshot-setup SCRIPT.js` runs a driver script (same runner and `test.*` ops as `--headless-script`) after boot and before capture, to select a project or seed state. `tools/snapshot/select-root-project.js` selects the `--root` project so workspace panels (Git, Files…) show content; `HATO_SNAP_PROJECT` picks another.
+- `--snapshot-delay MS` (default 800) is extra settle time; `--snapshot-timeout MS` (default 20000) bounds the wait for the first tree. Exit code 1 means the tree never arrived.
+- Output is at the display scale factor (2x on Retina). Use a throwaway `--data-dir` to avoid touching real state.
+- Modules boot normally, so services run; state comes from the data dir and `--root`. No input is simulated.

@@ -18,6 +18,26 @@ pub struct Config {
     pub headless: bool,
     /// Optional script for headless runs.
     pub headless_script: Option<PathBuf>,
+    /// Development-only: render a panel to a PNG without showing a window (feature `snapshot`).
+    pub snapshot: Option<SnapshotSpec>,
+}
+
+/// Options for `--snapshot`. Pure data; the renderer lives in `ui::snapshot`.
+#[derive(Clone, Debug)]
+pub struct SnapshotSpec {
+    pub out: PathBuf,
+    /// UI module whose tree fills the window; `None` renders the normal root layout.
+    pub module: Option<String>,
+    /// Render this JSON node tree instead of a module (design mock-ups, no module needed).
+    pub tree: Option<PathBuf>,
+    /// Driver script run after boot and before the frame is captured (selects a project, seeds state…).
+    pub setup: Option<PathBuf>,
+    pub width: f32,
+    pub height: f32,
+    /// Extra settle time after the module published its tree.
+    pub delay_ms: u64,
+    /// Maximum time to wait for the module's first tree.
+    pub timeout_ms: u64,
 }
 
 impl Config {
@@ -29,6 +49,8 @@ impl Config {
         let mut dev_watch = false;
         let mut headless = false;
         let mut headless_script = None;
+        let mut snap = SnapshotSpec { out: PathBuf::new(), module: None, tree: None, setup: None, width: 1000.0, height: 700.0, delay_ms: 800, timeout_ms: 20_000 };
+        let mut want_snap = false;
         let mut i = 1;
         while i < args.len() {
             let a = &args[i];
@@ -47,8 +69,24 @@ impl Config {
                     headless = true;
                     headless_script = Some(PathBuf::from(next()?))
                 }
+                "--snapshot" => {
+                    want_snap = true;
+                    let v = next()?;
+                    snap.out = std::env::current_dir()?.join(v);
+                }
+                "--snapshot-module" => snap.module = Some(next()?),
+                "--snapshot-setup" => snap.setup = Some(std::env::current_dir()?.join(next()?)),
+                "--snapshot-tree" => snap.tree = Some(std::env::current_dir()?.join(next()?)),
+                "--snapshot-size" => {
+                    let v = next()?;
+                    let (w, h) = v.split_once('x').ok_or_else(|| anyhow::anyhow!("--snapshot-size expects WIDTHxHEIGHT"))?;
+                    snap.width = w.parse()?;
+                    snap.height = h.parse()?;
+                }
+                "--snapshot-delay" => snap.delay_ms = next()?.parse()?,
+                "--snapshot-timeout" => snap.timeout_ms = next()?.parse()?,
                 "--help" | "-h" => {
-                    println!("hato [--root PATH] [--data-dir PATH] [--repo-root PATH] [--safe-mode] [--dev-watch] [--headless] [--headless-script FILE]");
+                    println!("hato [--root PATH] [--data-dir PATH] [--repo-root PATH] [--safe-mode] [--dev-watch] [--headless] [--headless-script FILE]\n     dev builds (--features snapshot): --snapshot OUT.png [--snapshot-module ID | --snapshot-tree FILE.json] [--snapshot-setup SCRIPT.js] [--snapshot-size WxH] [--snapshot-delay MS] [--snapshot-timeout MS]");
                     std::process::exit(0);
                 }
                 other => anyhow::bail!("unknown argument {other}"),
@@ -74,7 +112,7 @@ impl Config {
             Some(r) => Some(PathBuf::from(canonical_string(&r)?)),
             None => None,
         };
-        let cfg = Config { repo_root, data_dir, initial_root, safe_mode, dev_watch, headless, headless_script };
+        let cfg = Config { repo_root, data_dir, initial_root, safe_mode, dev_watch, headless, headless_script, snapshot: want_snap.then_some(snap) };
         for d in ["sqlite", "artifacts", "logs", "ssh", "shared", "plugins"] {
             std::fs::create_dir_all(cfg.data_dir.join(d))?;
         }

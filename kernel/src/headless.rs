@@ -48,7 +48,7 @@ pub fn run(k: &Arc<Kernel>, script: &std::path::Path) -> anyhow::Result<bool> {
 /// `test.*` host ops for the driver module (only reachable when module id is `__driver` and the
 /// kernel runs headless).
 pub fn driver_op(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: &Value) -> HResult<Value> {
-    if gen.module_id != "__driver" || !k.cfg.headless {
+    if gen.module_id != "__driver" || !(k.cfg.headless || k.cfg.snapshot.is_some()) {
         return Err(HostError::denied("test ops unavailable"));
     }
     match op {
