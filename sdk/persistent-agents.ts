@@ -25,7 +25,7 @@ export interface AgentSpec {
 }
 export interface AgentSession extends AgentSpec {
   status: "starting" | "ready" | "busy" | "waiting" | "stopped" | "interrupted" | "error";
-  contextSent?: boolean; sessionId: string | null; createdAt: string; updatedAt: string; error: string | null;
+  handoffPending?: boolean; contextSent?: boolean; sessionId: string | null; createdAt: string; updatedAt: string; error: string | null;
   configOptions: any[]; models: any; revision: number;
   /** Legacy ACP session modes, last reported context usage and prompt capabilities of the connected provider. */
   modes?: any; usage?: { used: number; size: number } | null; promptImages?: boolean;

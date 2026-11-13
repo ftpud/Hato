@@ -105,3 +105,23 @@ test('tool updates persist one row per call, including repeated starts and conte
   assert.equal(updates.at(-1).args[4], 42);
   await mod.methods.stop(ctx, { id: 'chat' });
 });
+
+test('provider switches transfer bounded original dialogue once', async () => {
+  const mod = (await load('Hato-plugins/modules/services/agent-runner/src/index.ts')).default;
+  const { ctx, requests, listeners } = harness();
+  const baseQuery = ctx.host.db.query;
+  ctx.host.db.query = async (db, sql, args) => sql.startsWith('SELECT role,text FROM messages') ? [{ role: 'assistant', text: 'The parser is ready' }, { role: 'user', text: 'Build a release tool' }] : baseQuery(db, sql, args);
+  await mod.activate(ctx);
+  await mod.methods.create(ctx, { spec: spec({ profile: { id: 'old', name: 'Old', executable: 'test', args: [] } }) });
+  await mod.methods.update(ctx, { id: 'chat', patch: { name: 'New', profile: { id: 'new', name: 'New', executable: 'test', args: [] }, skills: [], mcps: [], agentFile: null } }, { caller: 'daemon-client' });
+  await mod.methods.send(ctx, { id: 'chat', text: 'Continue' });
+  const first = requests.filter(r => r.method === 'session/prompt').at(-1);
+  assert.match(first.params.prompt[0].text, /Conversation handoff/);
+  assert.match(first.params.prompt[0].text, /parser is ready/);
+  listeners.get('process')(JSON.stringify({ jsonrpc: '2.0', id: first.id, result: { stopReason: 'end_turn' } }) + '\n');
+  await new Promise(setImmediate);
+  await mod.methods.send(ctx, { id: 'chat', text: 'Next' });
+  const second = requests.filter(r => r.method === 'session/prompt').at(-1);
+  assert.equal(second.params.prompt[0].text, 'Next');
+  await mod.methods.stop(ctx, { id: 'chat' });
+});

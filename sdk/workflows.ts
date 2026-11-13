@@ -78,6 +78,8 @@ export interface WorkflowBlockState {
   /** Background agent session (agent-runner id) for ai/chatbox blocks. */ sessionId?: string;
   selectedRoute?: string; question?: string; pauseId?: string; waitingUntil?: string;
   permissionId?: string; chat?: WorkflowChatMessage[];
+  /** Last referenced excerpts delivered to this chatbox session. */
+  referenceContext?: { sessionId: string; values: Record<string, string> };
   /** Live session projection supplied by the desktop gateway; does not change run status. */
   agentMessages?: ChatMessage[];
   agentHistoryBefore?: number | null;
