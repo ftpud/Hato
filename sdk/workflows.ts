@@ -76,6 +76,8 @@ export interface WorkflowBlockState {
   startedAt?: string; completedAt?: string; runs: number;
   input?: string; prompt?: string; output?: string; error?: string;
   /** Background agent session (agent-runner id) for ai/chatbox blocks. */ sessionId?: string;
+  /** The block prompt last delivered to its session; a hot-updated prompt is re-sent once. */ appliedPrompt?: string;
+  /** Signature of the session-level configuration (provider, model, MCP servers) the session runs with. */ sessionConfig?: string;
   selectedRoute?: string; question?: string; pauseId?: string; waitingUntil?: string;
   permissionId?: string; chat?: WorkflowChatMessage[];
   /** Last referenced excerpts delivered to this chatbox session. */
@@ -126,8 +128,16 @@ export const WORKFLOW_BLOCKS: { type: WorkflowBlockType; label: string; summary:
   { type: "meeting", label: "Meeting", summary: "A shared, attributed discussion between connected agents.", fields: ["description"], tool: true },
   { type: "terminal_control", label: "Terminal Control", summary: "Gives connected agents the workspace terminal tools (list, read, write).", fields: [], tool: true },
   { type: "task_controls", label: "Task controls", summary: "Gives connected agents the Git task tools (list, create, start agent).", fields: [], tool: true },
-  { type: "mcp", label: "MCP server", summary: "Attaches a configured MCP server to connected agents.", fields: ["mcp"], tool: true },
+  { type: "mcp", label: "MCP server", summary: "Attaches a configured or built-in Hato MCP server to connected agents.", fields: ["mcp"], tool: true },
 ];
+/** Hato's built-in MCP servers an MCP block can attach besides user-configured ones. Workspace tools
+ *  run beside the agent (background agents, terminals, Git tasks); desktop tools reach the open Hato
+ *  desktop (application and module tools). Endpoints are issued per session, never stored. */
+export const INTERNAL_MCP_SERVERS: AgentMcp[] = [
+  { id: "internal-remote-mcp", name: "Hato · workspace tools (agents, terminals, tasks)", command: "", args: [], env: [] },
+  { id: "internal-local-mcp", name: "Hato · desktop tools (desktop must be open)", command: "", args: [], env: [] },
+];
+export const isInternalMcp = (id?: string) => INTERNAL_MCP_SERVERS.some(m => m.id === id);
 export const blockInfo = (type: string) => WORKFLOW_BLOCKS.find(b => b.type === type);
 const AGENT_TYPES = new Set(["ai", "chatbox"]);
 export const isAgentBlock = (b: { type: string }) => AGENT_TYPES.has(b.type);
