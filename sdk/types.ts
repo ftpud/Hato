@@ -316,7 +316,10 @@ export type UiNode =
         /** Fixed artwork width in px, preserving its aspect ratio independently of container height. Otherwise cover-fit. */ width?: number;
         /** Fixed offsets from the container's top-left in px; override centering on each axis. */ left?: number; top?: number;
         /** Horizontal shift as a fraction of the container width, clamped to -1–1. Negative moves left. */ offsetX?: number };
-      align?: "start" | "center" | "end" | "stretch"; wrap?: boolean; scroll?: boolean })
+      align?: "start" | "center" | "end" | "stretch"; wrap?: boolean; scroll?: boolean;
+      /** With `scroll`, a fixed per-child height (px, excluding `gap`) that renders only the children in
+       *  view. Use for long uniform lists; taller children are clipped. Children must not contain
+       *  `modal`, `floating` or `window` nodes. */ itemHeight?: number })
   | (Base & { type: "split"; direction: "horizontal" | "vertical"; sizes?: number[]; children: UiNode[];
       /** Fixed size in px per child (null = flexible). */ fixed?: (number | null)[]; minSize?: number; resizable?: boolean;
       /** Fired once when a divider drag ends: value {sizes}. */ resizeAction?: string;
@@ -337,7 +340,7 @@ export type UiNode =
   | (Base & { type: "floating"; x: number; y: number; width: number; height: number; title?: string; moveAction?: string; children: UiNode[] })
   /** A real OS window rendering `children`; closing it fires closeAction {width,height}. */
   | (Base & { type: "window"; /** Set false to omit native titlebar chrome. */ titlebar?: boolean; title?: string; width?: number; height?: number; closeAction?: string; children: UiNode[] })
-  | (Base & { type: "scroll"; children: UiNode[] })
+  | (Base & { type: "scroll"; children: UiNode[]; /** See row/column `itemHeight`. */ itemHeight?: number })
   | (Base & { type: "tabs"; tabs: { key: string; label: string }[]; active: string; action: string; children: UiNode[] })
   | (Base & { type: "slot"; module: string })
   /** Button-anchored popup rendered outside clipped toolbars/panels. Escape/outside click send action=false. */

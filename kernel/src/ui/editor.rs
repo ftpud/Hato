@@ -499,8 +499,10 @@ impl InputHighlighter for LexicalHighlighter {
 impl LexicalHighlighter {
     fn lexical_styles(&self, range: &Range<usize>, resolver: &dyn HighlightStyleResolver) -> Vec<(Range<usize>, HighlightStyle)> {
         let mut result = Vec::new(); let mut cursor = range.start;
-        for (span, i) in &self.spans {
-            if span.end <= range.start { continue; }
+        // Spans are ordered and disjoint: seek to the visible range instead of scanning from the
+        // top of the document on every paint.
+        let first = self.spans.partition_point(|(span, _)| span.end <= range.start);
+        for (span, i) in &self.spans[first..] {
             if span.start >= range.end { break; }
             let start = span.start.max(range.start); let end = span.end.min(range.end);
             if cursor < start { result.push((cursor..start, HighlightStyle::default())); }

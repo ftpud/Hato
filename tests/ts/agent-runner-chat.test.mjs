@@ -33,6 +33,25 @@ function harness() {
 }
 const spec = extra => ({ id: 'chat', name: 'Chat', workspaceId: 'ws', root: '/workspace', profile: { name: 'Fixture', executable: 'test', args: [] }, model: '', agentFile: null, skills: [], mcps: [], workspaceMcp: false, ...extra });
 
+test('reconnect replaces a live Claude process and applies the latest subscription preference', async () => {
+  const mod = (await load('Hato-plugins/modules/services/agent-runner/src/index.ts')).default;
+  const { ctx } = harness();
+  const launches = [], released = [];
+  ctx.host.process.spawn = async (_grant, options) => { launches.push(options); return { handle: 'process' }; };
+  ctx.host.resources.release = async handle => { released.push(handle); };
+  await mod.activate(ctx);
+  await mod.methods.create(ctx, { spec: spec({ profile: { provider: 'claude', executable: 'test', args: [] }, claudeSubscription: false }) });
+  assert.deepEqual(launches[0].envRemove, []);
+  await mod.methods.reconnect(ctx, { id: 'chat', claudeSubscription: true });
+  assert.equal(launches.length, 2);
+  assert.deepEqual(released, ['process']);
+  assert.deepEqual(launches[1].envRemove, ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN']);
+  assert.equal((await mod.methods.list())[0].claudeSubscription, true);
+  await mod.methods.reconnect(ctx, { id: 'chat', claudeSubscription: false });
+  assert.deepEqual(launches[2].envRemove, []);
+  await mod.methods.stop(ctx, { id: 'chat' });
+});
+
 test('background chats keep provider options, approval policy and pictures like desktop chats', async () => {
   const mod = (await load('Hato-plugins/modules/services/agent-runner/src/index.ts')).default;
   const { ctx, listeners, requests, dbWrites } = harness();

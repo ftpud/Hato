@@ -9,6 +9,7 @@ mod editor;
 pub mod terminal_view;
 mod theme;
 mod images;
+mod lazy_list;
 mod style;
 mod transcript_scroll;
 mod tree;
@@ -76,7 +77,7 @@ struct EditorAssist {
 pub struct Shell {
     kernel: Arc<Kernel>,
     trees: HashMap<String, Arc<Value>>,
-    /// Owned tree-node data reused until the module publishes its next UI snapshot.
+    /// Owned tree / lazy-list node data reused until the module publishes its next UI snapshot.
     tree_nodes: HashMap<(String, String), Arc<Value>>,
     /// Per tree: (row count, first row key) when `endReachedAction` last fired.
     tree_end_fired: HashMap<(String, String), (usize, String)>,
@@ -545,6 +546,12 @@ impl Shell {
                 if ty == "column" {
                     d = d.min_h_0();
                 }
+                if b("scroll") {
+                    if let Some(h) = n["itemHeight"].as_f64() {
+                        let list = self.lazy_list(module, n, &path, depth, h, cx);
+                        return d.child(list).into_any_element();
+                    }
+                }
                 let kids = self.children(module, n, &path, depth, window, cx);
                 if b("scroll") {
                     let gap = n.get("gap").and_then(|g| g.as_f64()).unwrap_or(0.0) as f32;
@@ -554,8 +561,12 @@ impl Shell {
                 }
             }
             "scroll" => {
-                let kids = self.children(module, n, &path, depth, window, cx);
                 let d = self.apply_base(v_flex(), n, cx).min_h_0().min_w_0().overflow_hidden();
+                if let Some(h) = n["itemHeight"].as_f64() {
+                    let list = self.lazy_list(module, n, &path, depth, h, cx);
+                    return d.child(list).into_any_element();
+                }
+                let kids = self.children(module, n, &path, depth, window, cx);
                 d.child(div().id(sid(module, &path)).flex_1().min_h_0().w_full().overflow_y_scroll().child(v_flex().w_full().children(kids))).into_any_element()
             }
             "titleBar" => {
@@ -1319,6 +1330,13 @@ impl Shell {
                 let doc_h = n.get("document").and_then(|d| d.as_str()).map(|s| s.to_string());
                 let mode = if n["mode"].as_str() == Some("split") { DiffMode::Split } else { DiffMode::Unified };
                 let body = match doc_h.and_then(|h| self.kernel.handles.get_kernel::<Document>(&h, "document").map(|d| (h, d))) {
+                    // Documents are immutable per handle: parse once, not on every frame.
+                    Some((h, _)) if self.diffs.contains_key(&h) => {
+                        let entry = self.diffs.get_mut(&h).unwrap();
+                        entry.1 = Instant::now();
+                        let st = entry.0.clone();
+                        self.diff_surface(module, n, &path, st, mode, cx)
+                    }
                     Some((h, doc)) => match DiffFile::parse(&doc.text) {
                         Ok(files) if files.is_empty() => div().p_3().text_sm().text_color(theme_muted).child(s("emptyText")).into_any_element(),
                         Ok(files) => {
@@ -1332,24 +1350,7 @@ impl Shell {
                             }), Instant::now()));
                             entry.1 = Instant::now();
                             let st = entry.0.clone();
-                            if st.read(cx).mode() != mode { st.update(cx, |d, cx| d.set_mode(mode, cx)); }
-                            let diff = Diff::new(&st).soft_wrap(b("softWrap")).line_number(true).syntax_highlight(true).header_visible(n["header"].as_bool().unwrap_or(true)).size_full();
-                            let mut surface = div().relative().size_full().min_w_0().min_h_0().child(diff);
-                            if let Some(nav) = n.get("changeNavigation").filter(|v| v.is_object()) {
-                                let prev = st.clone();
-                                let next = st.clone();
-                                surface = surface.child(
-                                    div().absolute().bottom(px(16.0)).right(px(20.0)).flex().gap_1().p_1()
-                                        .rounded(px(8.0)).bg(cx.theme().background).border_1().border_color(cx.theme().border).shadow_md()
-                                        .child(Button::new(sid(module, &format!("{path}/previous-change"))).label("⌃").small()
-                                            .tooltip(nav["previous"].as_str().unwrap_or_default().to_string())
-                                            .on_click(move |_, _, cx| { prev.update(cx, |d, cx| d.previous_change(cx)); }))
-                                        .child(Button::new(sid(module, &format!("{path}/next-change"))).label("⌄").small()
-                                            .tooltip(nav["next"].as_str().unwrap_or_default().to_string())
-                                            .on_click(move |_, _, cx| { next.update(cx, |d, cx| d.next_change(cx)); }))
-                                );
-                            }
-                            surface.into_any_element()
+                            self.diff_surface(module, n, &path, st, mode, cx)
                         }
                         Err(e) => div().p_3().text_sm().text_color(cx.theme().danger).child(format!("Cannot parse diff: {}", e.message())).into_any_element(),
                     },
@@ -1535,6 +1536,27 @@ impl Shell {
             }
             other => div().text_xs().text_color(cx.theme().danger).child(format!("unknown node type '{other}'")).into_any_element(),
         }
+    }
+
+    fn diff_surface(&self, module: &str, n: &Value, path: &str, st: Entity<DiffState>, mode: DiffMode, cx: &mut Context<Self>) -> AnyElement {
+        if st.read(cx).mode() != mode { st.update(cx, |d, cx| d.set_mode(mode, cx)); }
+        let diff = Diff::new(&st).soft_wrap(n["softWrap"].as_bool().unwrap_or(false)).line_number(true).syntax_highlight(true).header_visible(n["header"].as_bool().unwrap_or(true)).size_full();
+        let mut surface = div().relative().size_full().min_w_0().min_h_0().child(diff);
+        if let Some(nav) = n.get("changeNavigation").filter(|v| v.is_object()) {
+            let prev = st.clone();
+            let next = st.clone();
+            surface = surface.child(
+                div().absolute().bottom(px(16.0)).right(px(20.0)).flex().gap_1().p_1()
+                    .rounded(px(8.0)).bg(cx.theme().background).border_1().border_color(cx.theme().border).shadow_md()
+                    .child(Button::new(sid(module, &format!("{path}/previous-change"))).label("⌃").small()
+                        .tooltip(nav["previous"].as_str().unwrap_or_default().to_string())
+                        .on_click(move |_, _, cx| { prev.update(cx, |d, cx| d.previous_change(cx)); }))
+                    .child(Button::new(sid(module, &format!("{path}/next-change"))).label("⌄").small()
+                        .tooltip(nav["next"].as_str().unwrap_or_default().to_string())
+                        .on_click(move |_, _, cx| { next.update(cx, |d, cx| d.next_change(cx)); }))
+            );
+        }
+        surface.into_any_element()
     }
 
     fn measured_message(element: AnyElement, key: &str, positions: std::rc::Rc<std::cell::RefCell<HashMap<String, f32>>>) -> Div {

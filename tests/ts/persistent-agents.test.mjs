@@ -140,7 +140,7 @@ test('existing chatbox binds background session and routes prompts without using
   const edit=requests.find(r=>r.method==='update');
   assert.deepEqual(edit.args.mcps,['internal-local-mcp']);
   assert.equal(edit.args.profileId,'fixture');
-  assert.equal(calls.length,before);
+  assert.ok(calls.slice(before).every(([module,method])=>module==='acp'&&method==='authSettings'));
   await mod.onEvent(ctx,{action:'backToChats',inputs:{}});
   assert.ok(!walk(mod.render()).some(n=>n.key==='background-session'));
   assert.ok(published.some(([k,v])=>k==='ai.session'&&v.kind==='chat'));

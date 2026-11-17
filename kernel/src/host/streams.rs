@@ -130,6 +130,7 @@ impl ByteStream {
         g.unacked = 0;
         g.sub = Some(sub);
         Self::pump_locked(&mut g);
+        self.space.notify_all();
         Ok(())
     }
 
@@ -159,6 +160,7 @@ impl ByteStream {
             }
         }
         Self::pump_locked(&mut g);
+        self.space.notify_all();
     }
 
     pub fn ack(&self, sub_id: &str, n: usize) {
@@ -166,6 +168,9 @@ impl ByteStream {
         if g.sub.as_ref().map(|s| s.sub_id == sub_id).unwrap_or(false) {
             g.unacked = g.unacked.saturating_sub(n);
             Self::pump_locked(&mut g);
+            // Delivery frees buffer space. Wake a producer that reached BUFFER_CAP;
+            // otherwise it cannot push more bytes even after the consumer catches up.
+            self.space.notify_all();
         }
     }
 
@@ -238,6 +243,38 @@ pub fn notify_space(s: &ByteStream) { s.space.notify_all(); }
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn draining_a_full_buffer_wakes_the_blocked_producer() {
+        use std::time::Duration;
+        let s = ByteStream::new("large-output", false);
+        let (tx, rx) = crossbeam_channel::unbounded();
+        s.subscribe(Subscriber { sub_id: "a".into(), module_id: "m".into(), gen_id: 1,
+            encoding: Encoding::Utf8, hwm: CHUNK, tx, paused: false }).unwrap();
+        // One delivered chunk consumes the credit; the rest fills the buffer.
+        s.push(&vec![b'x'; BUFFER_CAP + CHUNK]);
+        let producer = s.clone();
+        let writer = std::thread::spawn(move || {
+            producer.push(b"end");
+            producer.finish(None);
+        });
+        // Give the writer time to enter the full-buffer wait before returning credit.
+        std::thread::sleep(Duration::from_millis(50));
+        let mut total = 0;
+        let mut ended = false;
+        while let Ok(msg) = rx.recv_timeout(Duration::from_secs(2)) {
+            if let WorkerMsg::Stream { nbytes, eof, .. } = msg {
+                total += nbytes;
+                s.ack("a", nbytes);
+                if eof { ended = true; break; }
+            }
+        }
+        // Always release the writer, including when this regression fails.
+        s.finish(None);
+        writer.join().unwrap();
+        assert!(ended, "producer remained asleep after the buffer was drained");
+        assert_eq!(total, BUFFER_CAP + CHUNK + 3);
+    }
+
     #[test]
     fn delivers_with_backpressure_and_handover() {
         let s = ByteStream::new("t", false);
