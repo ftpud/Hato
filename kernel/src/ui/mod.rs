@@ -210,6 +210,25 @@ impl Shell {
                     t.update(cx, |_, cx| cx.notify());
                 }
             }
+            UiMsg::TransferPath(save_name, tx) => {
+                let directory = dirs::download_dir().filter(|path| path.is_dir()).or_else(dirs::home_dir);
+                let rx = match save_name {
+                    Some(name) => cx.prompt_for_new_path(directory.as_deref().unwrap_or(std::path::Path::new(".")), Some(&name)),
+                    None => {
+                        let rx = cx.prompt_for_paths(PathPromptOptions { files: true, directories: false, multiple: false, prompt: Some("Choose File".into()) });
+                        cx.spawn(async move |_, _| {
+                            let result = rx.await.map_err(|e| e.to_string()).and_then(|r| r.map_err(|e| e.to_string()))
+                                .map(|paths| paths.and_then(|paths| paths.into_iter().next()));
+                            let _ = tx.send(result);
+                        }).detach();
+                        return;
+                    }
+                };
+                cx.spawn(async move |_, _| {
+                    let result = rx.await.map_err(|e| e.to_string()).and_then(|r| r.map_err(|e| e.to_string()));
+                    let _ = tx.send(result);
+                }).detach();
+            }
             UiMsg::PickFolder(tx) => {
                 let rx = cx.prompt_for_paths(PathPromptOptions { files: false, directories: true, multiple: false, prompt: Some("Choose Folder".into()) });
                 cx.spawn(async move |_, _| {

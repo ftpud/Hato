@@ -85,6 +85,10 @@ export interface NativeHost {
     realpath(grant: Handle, path: string): Promise<string>;
     read(grant: Handle, path: string, limitBytes?: number): Promise<FileRead>;
     writeAtomic(grant: Handle, path: string, text: string, opts?: { reason?: string; mode?: number }): Promise<{ path: string; bytes: number }>;
+    /** Pick a local file and copy it into a scoped directory without replacing existing files. */
+    importFile(grant: Handle, directory: string): Promise<{ bytes: number } | null>;
+    /** Save a scoped file to a user-selected local path. */
+    exportFile(grant: Handle, path: string): Promise<{ bytes: number } | null>;
     mkdir(grant: Handle, path: string): Promise<{ path: string }>;
   };
   process: {

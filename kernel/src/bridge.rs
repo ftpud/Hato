@@ -16,6 +16,7 @@ pub enum UiMsg {
     /// Terminal content changed for a PTY handle.
     TerminalDirty(String),
     /// A native folder picker was requested; reply via the channel.
+    TransferPath(Option<String>, crossbeam_channel::Sender<Result<Option<std::path::PathBuf>, String>>),
     PickFolder(crossbeam_channel::Sender<Option<String>>),
     Toast { level: String, text: String },
     /// Open an http(s) URL in the system browser.

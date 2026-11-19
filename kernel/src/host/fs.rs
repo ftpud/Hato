@@ -153,6 +153,22 @@ pub fn write_atomic(be: &FsBackend, path: &str, data: &[u8], mode: u32) -> HResu
     }
 }
 
+pub fn write_transfer(be: &FsBackend, path: &str, data: &[u8], replace: bool) -> HResult<()> {
+    match be {
+        FsBackend::Local => {
+            use std::io::Write;
+            let parent = Path::new(path).parent().ok_or_else(|| HostError::invalid("missing parent directory"))?;
+            let mut file = tempfile::NamedTempFile::new_in(parent)?;
+            file.write_all(data)?;
+            file.as_file().sync_all()?;
+            if replace { file.persist(path) } else { file.persist_noclobber(path) }
+                .map_err(|e| HostError::from(e.error))?;
+            Ok(())
+        }
+        FsBackend::Remote(ssh) => ssh.sftp()?.write_atomic_with_replace(path, data, 0o644, replace),
+    }
+}
+
 pub fn mkdir_p(be: &FsBackend, root: &str, path: &str) -> HResult<()> {
     match be {
         FsBackend::Local => Ok(std::fs::create_dir_all(path)?),

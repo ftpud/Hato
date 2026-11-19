@@ -40,6 +40,7 @@ base64 = "0.22"
 image = { version = "=0.25.10", default-features = false, features = ["png", "tiff", "bmp"], optional = true }
 similar = "2.7"
 dirs = "6"
+tempfile = "3"
 log = { version = "0.4", features = ["std"] }
 libc = "0.2"
 notify = { version = "=8.2.1", default-features = false, features = ["macos_fsevent"] }
@@ -65,9 +66,6 @@ gui = ["dep:lsp-types", "dep:regex", "dep:tree-sitter", "dep:gpui-kit", "dep:gpu
 # Development-only: `hato --snapshot out.png --snapshot-module ID` renders a panel offscreen to a PNG.
 # Kept out of `default` because gpui's test-support changes executor behavior.
 snapshot = ["gui", "gpui-component/test-support", "dep:gpui-platform", "gpui-platform/test-support"]
-
-[dev-dependencies]
-tempfile = "3"
 
 # Local patch: lets Linux cross-builds use prebuilt shaders (see vendor/gpui-pre-windows/build.rs).
 [patch.crates-io]

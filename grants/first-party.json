@@ -15,7 +15,7 @@
     "workspace":    { "kind": "service", "capabilities": ["events.publish"], "calls": ["persistence", "projects", "git-tasks"] },
     "projects":     { "kind": "service", "capabilities": ["fs.scope", "process.scope", "ssh.connect", "ui.dialog"], "calls": ["persistence", "workspace", "git-tasks"] },
     "git-tasks":    { "kind": "service", "capabilities": ["fs.scope", "process.scope", "ssh.connect"], "calls": ["persistence", "projects", "workspace"] },
-    "files":        { "kind": "service", "capabilities": ["fs.scope", "process.scope", "ssh.connect", "ui.document", "remote.daemon"], "calls": ["workspace", "persistence"] },
+    "files":        { "kind": "service", "capabilities": ["fs.scope", "process.scope", "ssh.connect", "ui.document", "remote.daemon", "ui.dialog"], "calls": ["workspace", "persistence"] },
     "git":          { "kind": "service", "capabilities": ["process.scope", "ssh.connect", "ui.document", "fs.scope", "remote.daemon"], "calls": ["workspace", "persistence"] },
     "terminals":    { "kind": "service", "capabilities": ["pty.scope", "ssh.connect", "remote.daemon"], "calls": ["workspace", "persistence"] },
     "remote-runtime": { "kind": "service", "capabilities": ["remote.daemon", "remote.daemon.admin", "ssh.connect", "ssh.forward"], "calls": ["workspace", "persistence"] },

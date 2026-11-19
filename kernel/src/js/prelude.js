@@ -163,6 +163,8 @@
         watch: (grant, path, opts) => call("fs.watch", { grant, path, ...opts }),
         list: (grant, path) => call("fs.list", { grant, path }),
         realpath: (grant, path) => call("fs.realpath", { grant, path }),
+        importFile: (grant, path) => call("fs.importFile", { grant, path }),
+        exportFile: (grant, path) => call("fs.exportFile", { grant, path }),
         read: (grant, path, limitBytes) => call("fs.read", { grant, path, limitBytes }),
         writeAtomic: (grant, path, text, opts) => call("fs.writeAtomic", { grant, path, text, reason: opts && opts.reason, mode: opts && opts.mode }),
         mkdir: (grant, path) => call("fs.mkdir", { grant, path }),

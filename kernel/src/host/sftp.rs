@@ -308,15 +308,21 @@ impl Sftp {
 
     /// Write via temp file + rename (posix-rename extension when available).
     pub fn write_atomic(&self, path: &str, data: &[u8], mode: u32) -> HResult<()> {
-        let tmp = format!("{path}.hato-tmp-{}", crate::util::random_hex(4));
-        let (rt, body) = self.request(FXP_OPEN, |b| { b.str(&tmp).u32(0x2 | 0x8 | 0x10).u32(ATTR_PERMISSIONS).u32(mode); })?;
+        self.write_atomic_with_replace(path, data, mode, true)
+    }
+
+    pub fn write_atomic_with_replace(&self, path: &str, data: &[u8], mode: u32, replace: bool) -> HResult<()> {
+        let (parent, _) = path.rsplit_once('/').ok_or_else(|| HostError::invalid("missing parent directory"))?;
+        let tmp = format!("{parent}/.hato-tmp-{}", crate::util::random_hex(8));
+        let (rt, body) = self.request(FXP_OPEN, |b| { b.str(&tmp).u32(0x2 | 0x8 | 0x10 | 0x20).u32(ATTR_PERMISSIONS).u32(mode); })?;
         let handle = Self::status_or(rt, &body, FXP_HANDLE, |rd| Ok(rd.bytes()?.to_vec()))?;
         let mut off = 0usize;
         while off < data.len() {
             let n = (data.len() - off).min(32 * 1024);
             let chunk = &data[off..off + n];
-            let (rt, body) = self.request(FXP_WRITE, |b| { b.bytes(&handle).u64(off as u64).bytes(chunk); })?;
-            if let Err(e) = Self::expect_status(rt, &body) {
+            let written = self.request(FXP_WRITE, |b| { b.bytes(&handle).u64(off as u64).bytes(chunk); })
+                .and_then(|(rt, body)| Self::expect_status(rt, &body));
+            if let Err(e) = written {
                 self.close(&handle);
                 let _ = self.request(FXP_REMOVE, |b| { b.str(&tmp); });
                 return Err(e);
@@ -325,13 +331,15 @@ impl Sftp {
         }
         self.close(&handle);
         let _ = self.request(FXP_SETSTAT, |b| { b.str(&tmp).u32(ATTR_PERMISSIONS).u32(mode); });
-        let r = if self.extensions.iter().any(|e| e == "posix-rename@openssh.com") {
-            let (rt, body) = self.request(FXP_EXTENDED, |b| { b.str("posix-rename@openssh.com").str(&tmp).str(path); })?;
-            Self::expect_status(rt, &body)
+        let r = if replace && self.extensions.iter().any(|e| e == "posix-rename@openssh.com") {
+            self.request(FXP_EXTENDED, |b| { b.str("posix-rename@openssh.com").str(&tmp).str(path); })
+                .and_then(|(rt, body)| Self::expect_status(rt, &body))
         } else {
-            let _ = self.request(FXP_REMOVE, |b| { b.str(path); });
-            let (rt, body) = self.request(FXP_RENAME, |b| { b.str(&tmp).str(path); })?;
-            Self::expect_status(rt, &body)
+            if replace {
+                let _ = self.request(FXP_REMOVE, |b| { b.str(path); });
+            }
+            self.request(FXP_RENAME, |b| { b.str(&tmp).str(path); })
+                .and_then(|(rt, body)| Self::expect_status(rt, &body))
         };
         if r.is_err() {
             let _ = self.request(FXP_REMOVE, |b| { b.str(&tmp); });

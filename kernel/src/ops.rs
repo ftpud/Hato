@@ -367,6 +367,69 @@ fn dispatch(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: &Value) -> H
                 }
             }
         }
+        "fs.importFile" | "fs.exportFile" => {
+            gen.caps.require("ui.dialog")?;
+            let g = grant(k, gen, args)?;
+            let upload = op == "fs.importFile";
+            if g.kind != ScopeKind::Fs || (upload && !g.write) {
+                return Err(HostError::denied("transfer requires a filesystem grant with the appropriate access"));
+            }
+            if !k.ui.connected() {
+                return Err(HostError::new("ENOTSUP", "no window (headless)"));
+            }
+            let be = hfs::backend(&g, ssh_for(k, &g.target))?;
+            let path = arg_str(args, "path")?;
+            let workspace_path = hfs::resolve(&g, &be, path, true)?;
+            if g.target == Target::Local && protected(k, &workspace_path) {
+                return Err(HostError::denied("path is inside kernel-protected application state"));
+            }
+            let kind = if upload { "dir" } else { "file" };
+            if hfs::stat(&be, &workspace_path)?["kind"] != kind {
+                return Err(HostError::invalid(format!("expected a {kind}")));
+            }
+            let save_name = if upload { None } else { Some(path.rsplit('/').next().unwrap_or(path).to_owned()) };
+            let (tx, rx) = crossbeam_channel::bounded(1);
+            k.ui.send(UiMsg::TransferPath(save_name, tx));
+            let selection = rx.recv_timeout(Duration::from_secs(600))
+                .map_err(|e| HostError::new("EDIALOG", e.to_string()))?
+                .map_err(|e| HostError::new("EDIALOG", e))?;
+            let Some(local_path) = selection else { return Ok(Value::Null) };
+            let _ = grant(k, gen, args)?;
+            let local = hfs::FsBackend::Local;
+            let name = local_path.file_name().and_then(|n| n.to_str())
+                .ok_or_else(|| HostError::invalid("unsupported file name"))?;
+            let (source, source_backend, destination, destination_backend) = if upload {
+                if name.contains(['/', '\\']) {
+                    return Err(HostError::invalid("unsupported file name"));
+                }
+                let source = canonical_string(&local_path)?;
+                let relative = format!("{path}/{name}");
+                let destination = hfs::resolve(&g, &be, &relative, false)?;
+                (source, &local, destination, &be)
+            } else {
+                let parent = local_path.parent().ok_or_else(|| HostError::invalid("missing parent directory"))?;
+                let destination = format!("{}/{name}", canonical_string(parent)?.trim_end_matches('/'));
+                (hfs::resolve(&g, &be, path, true)?, &be, destination, &local)
+            };
+            if (matches!(source_backend, hfs::FsBackend::Local) && protected(k, &source))
+                || (matches!(destination_backend, hfs::FsBackend::Local) && protected(k, &destination)) {
+                return Err(HostError::denied("path is inside kernel-protected application state"));
+            }
+            if hfs::stat(source_backend, &source)?["kind"] != "file" {
+                return Err(HostError::invalid("expected a regular file"));
+            }
+            if matches!(source_backend, hfs::FsBackend::Local) && matches!(destination_backend, hfs::FsBackend::Local)
+                && canonical_string(std::path::Path::new(&destination)).ok().as_deref() == Some(source.as_str()) {
+                return Err(HostError::invalid("source and destination are the same file"));
+            }
+            let (data, truncated) = hfs::read(source_backend, &source, MAX_READ)?;
+            if truncated {
+                return Err(HostError::new("E2BIG", "file transfers are limited to 8 MiB"));
+            }
+            hfs::write_transfer(destination_backend, &destination, &data, !upload)?;
+            k.audit.record(owner, gen.gen_id, op, &workspace_path, "ok", None);
+            Ok(json!({"bytes": data.len()}))
+        }
         "fs.writeAtomic" | "fs.mkdir" => {
             let g = grant(k, gen, args)?;
             if !g.write || !matches!(g.kind, ScopeKind::Fs | ScopeKind::Source) {
