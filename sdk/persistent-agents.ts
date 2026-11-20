@@ -11,6 +11,9 @@ export interface AgentMcp { enabled?: boolean; id: string; name: string; transpo
 export interface AgentSpec {
   id: string; name: string; workspaceId: string; workspaceName: string; root: string; machineId: string;
   profile: AgentProfile; model: string; reasoning?: string; agentFile: string | null; skills: string[]; mcps: AgentMcp[];
+  /** Text of selected Library entries (`library:<id>` refs in agentFile/skills); they are not workspace files.
+   *  Views expose only `inlineDigest` (ref → digest). */
+  inline?: Record<string, string>; inlineDigest?: Record<string, string>;
   claudeSubscription: boolean; workspaceMcp?: boolean; daemon?: {bin:string;dir:string};
   /** Approve the agent's tool permissions (allow-once) without asking, also while the desktop is closed. */
   autopilot?: boolean;
@@ -25,7 +28,9 @@ export interface AgentSpec {
 }
 export interface AgentSession extends AgentSpec {
   status: "starting" | "ready" | "busy" | "waiting" | "stopped" | "interrupted" | "error";
-  handoffPending?: boolean; contextSent?: boolean; sessionId: string | null; createdAt: string; updatedAt: string; error: string | null;
+  handoffPending?: boolean; contextSent?: boolean;
+  /** Fingerprints of the instruction/skill texts already sent in this provider conversation (path → digest). */
+  sentDigests?: Record<string, string>; sessionId: string | null; createdAt: string; updatedAt: string; error: string | null;
   configOptions: any[]; models: any; revision: number;
   /** Legacy ACP session modes, last reported context usage and prompt capabilities of the connected provider. */
   modes?: any; usage?: { used: number; size: number } | null; promptImages?: boolean;
