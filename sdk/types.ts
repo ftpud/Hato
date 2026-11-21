@@ -303,6 +303,7 @@ export interface CanvasEdge { key: string; from: string; to: string; fromSide?: 
   /** Optional Bezier handle length in canvas pixels; compact graphs can use shorter curves. */ curveOffset?: number;
   color?: UiColor; width?: number; dashed?: boolean; arrow?: boolean; label?: string;
   /** A spark travels along the connection (e.g. data in flight). */ active?: boolean; sparkColor?: UiColor }
+export type MenuItem = { separator: true } | { text: string; action: string; value?: Json; disabled?: boolean; checked?: boolean } | { text: string; children: MenuItem[] };
 export type UiNode =
   /** Window-wide theme (normally from the root plugin). `mode` is the appearance preference;
    *  `terminal` overrides the 16 ANSI colors; `chrome` configures kernel chrome such as toasts. */
@@ -346,14 +347,15 @@ export type UiNode =
   | (Base & { type: "window"; /** Set false to omit native titlebar chrome. */ titlebar?: boolean; title?: string; width?: number; height?: number; closeAction?: string; children: UiNode[] })
   | (Base & { type: "scroll"; children: UiNode[]; /** See row/column `itemHeight`. */ itemHeight?: number })
   | (Base & { type: "tabs"; tabs: { key: string; label: string }[]; active: string; action: string; children: UiNode[] })
+  | (Base & { type: "tabStrip"; tabs: { key: string; label: string; tooltip?: string; contextMenu?: MenuItem[]; draggable?: boolean }[]; active: string; action: string; doubleClickAction?: string; reorderAction?: string })
   | (Base & { type: "slot"; module: string })
   /** Button-anchored popup rendered outside clipped toolbars/panels. Escape/outside click send action=false. */
   | (Base & { type: "dropdown"; text: string; iconSvg?: string; open: boolean; action: string; disabled?: boolean; variant?: "primary" | "ghost" | "danger" | "default";
       menuWidth?: number; maxHeight?: number; children: UiNode[] })
   | (Base & { type: "label"; text: string; size?: "xs" | "sm" | "md" | "lg"; weight?: "normal" | "medium" | "semibold" | "bold"; /** "default" or any UiColor. */ color?: UiColor; mono?: boolean; wrap?: boolean; /** Let the user select and copy the text. */ selectable?: boolean })
   | (Base & { type: "button"; text: string; /** Inline SVG drawing, bundled and hot reloaded with the module (see sdk/ui-icons.ts). */ iconSvg?: string; iconSize?: number; iconColor?: UiColor; /** Compact count overlay on the button. Empty or absent hides it. */ badge?: string; action: string; variant?: "primary" | "ghost" | "danger" | "default"; disabled?: boolean; value?: Json; small?: boolean;
-      /** Copied to the clipboard natively on click (no round trip); `action` may be "". */ copyText?: string; /** Secondary mouse gestures use the same value as action. */ doubleClickAction?: string; middleClickAction?: string; contextAction?: string; contextMenu?: { text: string; action: string; value?: Json; disabled?: boolean }[] })
-  | (Base & { type: "textInput"; placeholder?: string; value?: string; submitAction?: string; changeAction?: string; /** Inline SVG shown before single-line input text. */ prefixSvg?: string; pasteImageAction?: string; /** Limits for pasted pictures. */ maxFiles?: number; maxBytes?: number; secret?: boolean; multiline?: boolean; /** Fill the available height instead of using a fixed row count. */ fillHeight?: boolean; rows?: number; rowHeight?: number; disabled?: boolean })
+      /** Copied to the clipboard natively on click (no round trip); `action` may be "". */ copyText?: string; /** Secondary mouse gestures use the same value as action. */ doubleClickAction?: string; middleClickAction?: string; contextAction?: string; contextMenu?: MenuItem[] })
+  | (Base & { type: "textInput"; placeholder?: string; value?: string; submitAction?: string; changeAction?: string; cancelAction?: string; autoFocus?: boolean; /** Inline SVG shown before single-line input text. */ prefixSvg?: string; pasteImageAction?: string; /** Limits for pasted pictures. */ maxFiles?: number; maxBytes?: number; secret?: boolean; multiline?: boolean; /** Fill the available height instead of using a fixed row count. */ fillHeight?: boolean; rows?: number; rowHeight?: number; disabled?: boolean })
   | (Base & { type: "select"; options: { value: string; label: string; disabled?: boolean }[]; value: string | null; action: string; disabled?: boolean; placeholder?: string; label?: string; disabledReason?: string; /** Style of the dropdown button itself (`style` styles its wrapper). */ buttonStyle?: UiStyle })
   | (Base & { type: "choice"; text: string; description?: string; disabled?: boolean; selected?: boolean; action: string; value: string; /** Glyph shown when selected (default ✓). */ mark?: string })
   | (Base & { type: "switch"; label: string; checked: boolean; action: string; disabled?: boolean; /** Track color when on. */ accent?: UiColor })
@@ -369,7 +371,7 @@ export type UiNode =
    *  (content height then, unless `heightFraction` is set). */
   | (Base & { type: "popover"; children: UiNode[]; closeAction: string; top?: number; bottom?: number; left?: number; right?: number; /** Height as a fraction of the parent (0.1–1). */ heightFraction?: number; maxHeight?: number })
   | (Base & { type: "toggle"; label: string; checked: boolean; action: string; disabled?: boolean })
-  | (Base & { type: "tree"; rows: TreeRow[]; selectAction: string; expandAction: string; /** Fired with the row key as the pointer enters a row, and without one when it leaves the list. */ hoverAction?: string; /** Fired with the row key on double click (after the first click's selectAction). */ activateAction?: string;
+  | (Base & { type: "tree"; rows: TreeRow[]; selectAction: string; expandAction: string; /** Fired with the row key as the pointer enters a row, and without one when it leaves the list. */ hoverAction?: string; /** Double click or Enter activates the row. Also enables arrow-key selection. */ activateAction?: string;
       /** Fixed row height (px); omit for content height. */ rowHeight?: number;
       /** Lazy paging (fixed `rowHeight` trees only): fired with {rows} when the last row scrolls into view,
        *  once per row count and first row. Omit it while loading or when nothing more exists. */ endReachedAction?: string;
@@ -389,6 +391,9 @@ export type UiNode =
       /** Bars at the editor's left edge for zero-based lines `line..endLine` (exclusive; equal = a
        *  deletion point). Clicking one fires `lineMarkerAction` with {marker: value, y}. */
       lineMarkers?: { line: number; endLine?: number; color: UiColor; value?: Json }[]; lineMarkerAction?: string; lineMarkerWidth?: number;
+      /** Icons in a separate gutter lane. The click action receives { marker, y }. */
+      gutterMarkers?: { line: number; iconSvg: string; color?: UiColor; value?: Json }[];
+      gutterMarkerAction?: string; gutterTooltip?: string;
       /** Dim text painted after the end of zero-based `line` (e.g. author and age of a declaration); it
        *  follows scrolling and soft wrap and takes no input. Code font at `lineAnnotationScale` (0.5–1.2,
        *  default 0.9) of its size, `color` or the muted color at `lineAnnotationOpacity` (default 0.65). */
@@ -431,6 +436,7 @@ export type UiNode =
    *  scroll state (e.g. per conversation). See sdk/chat-transcript.ts. */
   | (Base & { type: "transcript"; children: UiNode[]; scrollbarMode?: "always" | "hover" | "scrolling"; scrollKey?: string; followKey?: string; hasOlder?: boolean; loadingOlder?: boolean; loadOlderAction?: string; bottomAction?: string; preserveScrollOnChange?: boolean; scrollReset?: number })
   | (Base & { type: "approvalPanel" })
+  | (Base & { type: "securityPreferences" })
   | (Base & { type: "divider" })
   | (Base & { type: "spacer" })
   | (Base & { type: "modal"; title: string; children: UiNode[]; closeAction?: string; /** Card width (px). */ width?: number });
@@ -438,10 +444,10 @@ export type UiNode =
 /** Ordered lexical rules; earliest match wins, then declaration order. Rust regex syntax. */
 export interface SyntaxRule { pattern: string; capture: string }
 
-export interface TreeRow { /** Optional plugin-supplied row tint; selection/hover take precedence. */ background?: UiColor; /** Native hover tooltip for the row. */ tooltip?: string; description?: string; /** Shows an animated activity indicator after the label. */ busy?: boolean; iconSvg?: string; iconColor?: UiColor; connector?: "branch" | "last"; key: string; label: string; depth: number; expandable: boolean; expanded: boolean; selected: boolean; /** Shown as-is after the label. */ badge?: string;
+export interface TreeRow { /** Optional plugin-supplied row tint; selection/hover take precedence. */ background?: UiColor; /** Native hover tooltip for the row. */ tooltip?: string; description?: string; /** Shows an animated activity indicator after the label. */ busy?: boolean; iconSvg?: string; iconColor?: UiColor; connector?: "branch" | "last"; /** An empty key renders a noninteractive group heading. */ key: string; label: string; depth: number; expandable: boolean; expanded: boolean; selected: boolean; /** Shown as-is after the label. */ badge?: string;
   /** Colored short texts before `badge` (e.g. "+12" success, "−3" danger). */ badges?: { text: string; color?: UiColor }[];
   /** Native right-click menu; items fire `action` with this row's key as rowKey and `value`. */
-  contextMenu?: ({ text: string; action: string; value?: Json; disabled?: boolean } | { separator: true })[];
+  contextMenu?: MenuItem[];
   detail?: string; weight?: "medium" | "semibold" | "bold"; /** Module-side classification (not rendered). */ icon?: string }
 export interface ImageAttachment { name: string; mimeType: string; data: string }
 export interface ChatMessage { images?: ImageAttachment[]; key: string; role: "user" | "assistant" | "thought" | "tool" | "system" | "error" | "plan"; text: string; title?: string; status?: string }

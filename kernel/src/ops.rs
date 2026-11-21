@@ -112,7 +112,7 @@ pub fn host_sync(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: Value) 
             "uptimeMs": k.started.elapsed().as_millis() as u64,
             "headless": k.cfg.headless,
             // Node types added after abiVersion 1, so modules can fall back on older hosts.
-            "uiNodes": ["slider", "colorPicker"],
+            "uiNodes": ["slider", "colorPicker", "tabStrip", "securityPreferences"],
         })),
         "state.get" => {
             let key = arg_str(&args, "key")?;
@@ -980,6 +980,7 @@ fn dispatch(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: &Value) -> H
             let timeout = args.get("timeoutMs").and_then(|t| t.as_u64()).unwrap_or(600_000).min(3_600_000);
             let operation = arg_opt_str(args, "operation").unwrap_or("agent-permission");
             match k.approvals.request(owner, gen.gen_id, &format!("module:{operation}"), &title.chars().take(200).collect::<String>(), &detail.chars().take(20000).collect::<String>(), true, options, Duration::from_millis(timeout)) {
+                Decision::Automatic(o) => Ok(json!({"optionId": o, "automatic": true})),
                 Decision::Option(o) => {
                     k.audit.record(owner, gen.gen_id, "approvals.request", title, &format!("chose {o}"), Some("native-user"));
                     Ok(json!({"optionId": o}))

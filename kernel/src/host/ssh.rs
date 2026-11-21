@@ -311,7 +311,7 @@ impl SshMaster {
                         "The SSH host {host}:{port} is not in your known_hosts file ({}).\n\nServer key fingerprint:\n{algorithm} {fingerprint}\n\nApproving adds this key to known_hosts. Changed keys are always rejected.",
                         sshc::known_hosts_path().display());
                     match approvals.request(module, generation, "ssh.trustHostKey", &format!("Trust new SSH host {host}?"), &detail, false, Approvals::allow_deny(), Duration::from_secs(300)) {
-                        Decision::Option(o) if o == "allow" => *self.trusted_key.lock() = Some(fingerprint),
+                        Decision::Option(o) | Decision::Automatic(o) if o == "allow" => *self.trusted_key.lock() = Some(fingerprint),
                         _ => return self.fail("EHOSTKEY", format!("host key of {host}:{port} not trusted ({algorithm} {fingerprint})")),
                     }
                 }

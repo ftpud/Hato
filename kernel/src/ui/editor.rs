@@ -395,6 +395,26 @@ pub fn position_json(text: &str, offset: usize) -> Value { module_position(&Rope
 /// Module line markers painted in a strip at the editor's left edge (e.g. Git change bars).
 /// `line..end_line` (zero-based, exclusive); an empty range is a deletion point between lines.
 pub struct LineMarker { pub line: usize, pub end_line: usize, pub color: Hsla, pub value: Value }
+pub struct GutterMarker { pub line: usize, pub svg: String, pub asset: SharedString, pub color: Hsla, pub value: Value }
+
+pub fn gutter_markers(spec: &Value, color: impl Fn(&str) -> Hsla) -> Vec<GutterMarker> {
+    spec.as_array().into_iter().flatten().take(1000).filter_map(|m| {
+        let line = m["line"].as_u64()? as usize;
+        let svg = m["iconSvg"].as_str().filter(|svg| !svg.is_empty() && svg.len() <= 4096)?.to_owned();
+        let asset = format!("gutter-{}", crate::util::sha256_hex(svg.as_bytes())).into();
+        Some(GutterMarker { line, svg, asset, color: color(m["color"].as_str().unwrap_or("muted")), value: m["value"].clone() })
+    }).collect()
+}
+
+pub fn gutter_origins(state: &EditorState, markers: &[GutterMarker]) -> Vec<(Pixels, usize)> {
+    use gpui_component::input::RopeExt;
+    let text = state.text();
+    let Some(rows) = state.visible_row_range() else { return vec![]; };
+    markers.iter().enumerate().filter(|(_, m)| rows.contains(&m.line)).filter_map(|(i, marker)| {
+        let start = text.line_start_offset(marker.line);
+        state.range_to_bounds(&(start..start)).map(|bounds| (bounds.top(), i))
+    }).collect()
+}
 /// Module-chosen code font (`codeViewer.font`): family, weight 100–900, size in px, and line
 /// height as a multiple of the size. Unset fields keep the editor's theme defaults.
 pub fn code_font(mut editor: gpui_component::input::Editor, font: &Value) -> gpui_component::input::Editor {
@@ -428,10 +448,52 @@ pub fn annotation_origins(state: &EditorState, annotations: &[LineAnnotation]) -
     let text = state.text();
     let rows = text.lines_len();
     annotations.iter().enumerate().filter(|(_, a)| a.line < rows).filter_map(|(i, a)| {
-        let end = if a.line + 1 < rows { text.line_start_offset(a.line + 1).saturating_sub(1) } else { text.len() };
+        let end = text.line_end_offset(a.line);
         state.range_to_bounds(&(end..end)).map(|b| (b.origin, i))
     }).collect()
 }
+
+#[cfg(all(test, feature = "snapshot"))]
+mod annotation_tests {
+    use super::{annotation_origins, EditorState, LineAnnotation};
+    use gpui_kit as gpui;
+    use gpui::{div, point, px, size, AppContext, Context, Entity, IntoElement, ParentElement,
+        Render, Styled, TestAppContext, VisualTestContext, Window};
+
+    struct EditorHarness(Entity<EditorState>);
+    impl Render for EditorHarness {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().size_full().child(self.0.clone())
+        }
+    }
+
+    #[gpui_kit::test]
+    fn annotations_follow_scroll_and_exclude_rows_above_viewport(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let text = (0..40).map(|line| format!("    void method{line}() {{}}"))
+            .collect::<Vec<_>>().join("\n");
+        let mut state = None;
+        let window = cx.open_window(size(px(480.), px(240.)), |window, cx| {
+            let editor = cx.new(|cx| EditorState::new(window, cx).default_value(text));
+            state = Some(editor.clone());
+            EditorHarness(editor)
+        });
+        let state = state.unwrap();
+        let annotations = [0, 4].map(|line| LineAnnotation { line, text: "Author".into(), color: None });
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+            let before = annotation_origins(state.read(cx), &annotations);
+            assert_eq!(before.len(), 2);
+            let scroll = state.read(cx).line_height().unwrap() * 2;
+            state.update(cx, |editor, cx| editor.set_scroll_offset(point(px(0.), -scroll), cx));
+            window.draw(cx).clear(cx);
+            let after = annotation_origins(state.read(cx), &annotations);
+            assert_eq!(after, vec![(before[1].0 - point(px(0.), scroll), 1)]);
+        });
+    }
+}
+
 /// Window-space vertical extents of each marker for the current layout (visible lines only).
 pub fn marker_spans(state: &EditorState, markers: &[LineMarker]) -> Vec<(Pixels, Pixels, usize)> {
     use gpui_component::input::RopeExt;

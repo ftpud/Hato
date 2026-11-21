@@ -1209,7 +1209,11 @@ impl<M: InputModeKind> InputBaseState<M> {
         let mut y_offset = last_layout.visible_top;
         for (vi, line) in last_layout.lines.iter().enumerate() {
             let prev_lines_offset = last_layout.visible_line_byte_offsets[vi];
-            let local_offset = offset.saturating_sub(prev_lines_offset);
+            // Later laid-out lines cannot contain this offset. In particular, a folded or
+            // scrolled-off line must not resolve to column zero of the next visible line.
+            let Some(local_offset) = offset.checked_sub(prev_lines_offset) else {
+                break;
+            };
             if let Some(pos) = line.position_for_index(local_offset, last_layout, false) {
                 let sub_line_index = (pos.y / line_height) as usize;
                 let adjusted_pos = point(pos.x + last_layout.line_number_width, pos.y + y_offset);

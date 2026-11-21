@@ -13,6 +13,8 @@ mod lazy_list;
 mod style;
 mod transcript_scroll;
 mod tree;
+mod tab_strip;
+mod security;
 #[cfg(feature = "snapshot")]
 pub mod snapshot;
 
@@ -81,6 +83,8 @@ pub struct Shell {
     tree_nodes: HashMap<(String, String), Arc<Value>>,
     /// Per tree: (row count, first row key) when `endReachedAction` last fired.
     tree_end_fired: HashMap<(String, String), (usize, String)>,
+    tree_navigation: HashMap<(String, String), tree::TreeNavigation>,
+    tab_strips: HashMap<(String, String), tab_strip::TabStrip>,
     render_errors: HashMap<String, String>,
     inputs: HashMap<(String, String), InputSlot>,
     sliders: HashMap<(String, String), controls::SliderSlot>,
@@ -107,6 +111,7 @@ pub struct Shell {
     control_style: Value,
     in_title_bar: bool,
     approval_scroll: ScrollHandle,
+    security_confirm: Option<FocusHandle>,
     /// The masked field of the current secret prompt, by request id. Never part of `inputs`, which
     /// modules receive with their events.
     approval_secret: Option<(String, Entity<InputState>, Subscription)>,
@@ -161,6 +166,8 @@ impl Shell {
             trees: HashMap::new(),
             tree_nodes: HashMap::new(),
             tree_end_fired: HashMap::new(),
+            tree_navigation: HashMap::new(),
+            tab_strips: HashMap::new(),
             render_errors: HashMap::new(),
             inputs: HashMap::new(),
             sliders: HashMap::new(),
@@ -185,6 +192,7 @@ impl Shell {
             in_title_bar: false,
             approval_secret: None,
             approval_scroll: ScrollHandle::new(),
+            security_confirm: None,
             show_safe_mode: false,
             submit_queue: Vec::new(),
             lay: Default::default(),
@@ -609,6 +617,7 @@ impl Shell {
                 self.note_window(module, &path, key, n);
                 div().into_any_element()
             }
+            "tabStrip" => self.tab_strip(module, n, &path, cx),
             "tabs" => {
                 let active = s("active");
                 let action = s("action");
@@ -853,6 +862,7 @@ impl Shell {
                     } else {
                         let secret = b("secret");
                         let st = cx.new(|cx| InputState::new(window, cx).placeholder(placeholder).masked(secret).default_value(value.clone().unwrap_or_default()));
+                        if b("autoFocus") && !b("disabled") { window.focus(&st.read(cx).focus_handle(cx), cx); }
                         let sub = cx.subscribe_in(&st, window, move |this: &mut Shell, _st, ev: &InputEvent, _w, cx| {
                             if let (InputEvent::Change, Some(a)) = (ev, change.as_ref()) {
                                 let text = _st.read(cx).value().to_string();
@@ -898,7 +908,8 @@ impl Shell {
                     AnyInput::Area(e) => {
                         let bg = n["style"]["background"].as_str().map(|c| theme::color(cx, c, cx.theme().background)).unwrap_or(cx.theme().background);
                         let row_h = n["rowHeight"].as_f64().unwrap_or(20.0).clamp(12.0, 48.0) as f32;
-                        Textarea::new(e).text_sm().font_family(cx.theme().font_family.clone()).bg(bg).disabled(b("disabled"))
+                        let family = if n["style"]["font"].as_str() == Some("mono") { cx.theme().mono_font_family.clone() } else { cx.theme().font_family.clone() };
+                        Textarea::new(e).text_sm().font_family(family).bg(bg).disabled(b("disabled"))
                             .h(px(n.get("rows").and_then(|r| r.as_f64()).unwrap_or(3.0).clamp(1.0, 40.0) as f32 * row_h + 12.0)).when(b("fillHeight"), |area| area.h_full()).into_any_element()
                     }
                 };
@@ -907,6 +918,7 @@ impl Shell {
                 let inputs = self.module_inputs(module);
                 let key2 = key.to_string();
                 let paste = n.get("pasteImageAction").and_then(|v| v.as_str()).map(str::to_owned);
+                let cancel = n["cancelAction"].as_str().filter(|a| !a.is_empty()).map(str::to_owned);
                 let paste_limits = images::Limits::from_node(n);
                 let (k2, m2, inputs2, key3, paste2) = (k.clone(), m.clone(), inputs.clone(), key2.clone(), paste.clone());
                 // Single-line fields ignore Up/Down upstream; follow the macOS convention of jumping
@@ -938,6 +950,13 @@ impl Shell {
                         cx.defer(move |cx| e.update(cx, |st, cx| { let end = st.value().len(); if empty && st.cursor() == before && before != end { st.set_selected_range(end..end, cx) } }));
                     }))
                     .capture_key_down(move |ev, window, cx| {
+                        if ev.keystroke.key == "escape" {
+                            if let Some(action) = &cancel {
+                                Self::fire(&k, &m, &inputs, action, &key2, None, Value::Null, cx);
+                                cx.stop_propagation(); window.prevent_default();
+                                return;
+                            }
+                        }
                         if (ev.keystroke.modifiers.control || ev.keystroke.modifiers.platform) && ev.keystroke.key == "v" {
                             if let Some(action) = &paste {
                                 if let Some(value) = cx.read_from_clipboard().and_then(|c| images::clipboard(c, paste_limits)) {
@@ -1264,7 +1283,43 @@ impl Shell {
                                 Self::fire(&k, &m, &inputs, &item.action, &key2, None, json!({"document": document, "value": item.value, "selection": selection}), cx);
                             }
                         };
-                        let mut surface = div().relative().size_full().capture_key_down(dismiss_hints).on_action(on_menu).child(editor_el).children(hints);
+                        let gutter = editor::gutter_markers(&n["gutterMarkers"], |c| theme::color(cx, c, theme_muted));
+                        let editor_content = div().size_full().when(!gutter.is_empty(), |d| d.pl(px(23.0))).child(editor_el);
+                        let mut surface = div().relative().size_full().capture_key_down(dismiss_hints).on_action(on_menu).child(editor_content).children(hints);
+                        if !gutter.is_empty() {
+                            let gutter = std::rc::Rc::new(gutter);
+                            let (paint_state, icons) = (st.clone(), gutter.clone());
+                            let strip = canvas(|_, _, _| (), move |bounds, _, window, cx| {
+                                let state = paint_state.read(cx);
+                                let Some(height) = state.line_height() else { return; };
+                                let side = height.min(px(13.0));
+                                window.with_content_mask(Some(ContentMask { bounds }), |window| {
+                                    for (top, i) in editor::gutter_origins(state, &icons) {
+                                        let icon = &icons[i];
+                                        let at = point(bounds.left() + (bounds.size.width - side) / 2., top + (height - side) / 2.);
+                                        let _ = window.paint_svg(Bounds::new(at, size(side, side)), icon.asset.clone(),
+                                            Some(icon.svg.as_bytes()), TransformationMatrix::unit(), icon.color, cx);
+                                    }
+                                });
+                            }).size_full();
+                            let action = s("gutterMarkerAction");
+                            let (k, m, key, hit_state) = (self.kernel.clone(), module.to_string(), key.to_string(), st.clone());
+                            let inputs = self.module_inputs(module);
+                            let lane = div().id(sid(module, &format!("{path}/gutter"))).absolute().left(px(7.0)).top_0().bottom_0().w(px(16.0))
+                                .when_some(n["gutterTooltip"].as_str().map(str::to_owned), |d, tooltip| d.tooltip(move |window, cx| gpui_component::tooltip::Tooltip::new(tooltip.clone()).build(window, cx)))
+                                .when(!action.is_empty(), |d| d.cursor_pointer().on_mouse_down(MouseButton::Left, move |ev, window, cx| {
+                                    let state = hit_state.read(cx);
+                                    let Some(height) = state.line_height() else { return; };
+                                    if let Some((top, i)) = editor::gutter_origins(state, &gutter).into_iter()
+                                        .find(|(top, _)| ev.position.y >= *top && ev.position.y < *top + height) {
+                                        let y = f32::from(top - state.input_bounds().origin.y);
+                                        let value = json!({"marker": gutter[i].value, "y": y});
+                                        window.prevent_default(); cx.stop_propagation();
+                                        Self::fire(&k, &m, &inputs, &action, &key, None, value, cx);
+                                    }
+                                })).child(strip);
+                            surface = surface.child(lane);
+                        }
                         let annotations = editor::line_annotations(&n["lineAnnotations"], |c| Some(theme::color(cx, c, theme_muted)));
                         if !annotations.is_empty() {
                             // Painted over the editor (no hitbox, so input passes through), after the
@@ -1310,7 +1365,7 @@ impl Shell {
                             let (k, m, key2, hit_state) = (self.kernel.clone(), module.to_string(), key.to_string(), st.clone());
                             let inputs = self.module_inputs(module);
                             surface
-                                .child(div().id(sid(module, &format!("{path}/markers"))).absolute().left_0().top_0().bottom_0().w(px(width + 5.0))
+                                .child(div().id(sid(module, &format!("{path}/markers"))).absolute().left_0().top_0().bottom_0().w(px(width + 3.0))
                                     .when(!action.is_empty(), |d| d.cursor_pointer().on_mouse_down(MouseButton::Left, move |ev, window, cx| {
                                         let spans = editor::marker_spans(hit_state.read(cx), &markers);
                                         let hit = spans.iter().find(|(t, b, _)| ev.position.y >= *t - px(2.0) && ev.position.y <= *b + px(2.0));
@@ -1545,6 +1600,7 @@ impl Shell {
                 };
                 el.into_any_element()
             }
+            "securityPreferences" if module == "settings" => self.security_preferences(cx),
             "slider" => self.render_slider(module, key, n, window, cx),
             "colorPicker" => self.render_color_picker(module, key, n, window, cx),
             "divider" => div().h(px(1.0)).w_full().bg(cx.theme().border).into_any_element(),
@@ -1750,6 +1806,8 @@ impl Render for Shell {
         let modals = std::mem::take(&mut self.modals);
         let modal_els: Vec<AnyElement> = modals.iter().map(|(m, p, n)| self.render_modal(m, p, n, window, cx)).collect();
         let approvals = self.render_approvals(window, cx);
+        let security_indicator = self.auto_approve_indicator(cx);
+        let security_confirmation = self.security_confirmation(cx);
         let chrome = theme::chrome(cx);
         let toast_w = chrome["toasts"]["width"].as_f64().unwrap_or(420.0).clamp(160.0, 1200.0) as f32;
         let mut toasts = v_flex().absolute().gap_1().w(px(toast_w));
@@ -1765,11 +1823,13 @@ impl Render for Shell {
         }
         let _ = &self.submit_queue;
         div().size_full().relative().flex().flex_col().overflow_hidden().bg(cx.theme().background).text_color(cx.theme().foreground).font_family(cx.theme().font_family.clone()).font_weight(theme::font_weight(cx))
+            .children(security_indicator)
             .child(div().flex_1().min_h_0().min_w_0().overflow_hidden().flex().flex_col().child(body))
             .children(float_els)
             .children(modal_els)
             .child(toasts)
             .children(approvals)
+            .children(security_confirmation)
             .children(drag_layer)
     }
 }

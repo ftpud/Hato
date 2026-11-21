@@ -1,7 +1,14 @@
 //! Lazy rendering for module-supplied tree rows. Only fixed-height rows can use
 //! GPUI's uniform list; content-sized trees retain their ordinary flex layout.
 use super::*;
-use std::ops::Range;
+use std::{cell::RefCell, ops::Range, rc::Rc};
+
+#[derive(Clone)]
+pub(super) struct TreeNavigation {
+    focus: FocusHandle,
+    scroll: UniformListScrollHandle,
+    cursor: Rc<RefCell<Option<String>>>,
+}
 
 impl Shell {
     pub(super) fn tree(&mut self, module: &str, n: &Value, path: &str, cx: &mut Context<Self>) -> AnyElement {
@@ -11,6 +18,13 @@ impl Shell {
             .or_insert_with(|| Arc::new(n.clone())).clone();
         let count = node["rows"].as_array().map_or(0, Vec::len);
         let row_h = node["rowHeight"].as_f64().or_else(|| self.control_style["listRowHeight"].as_f64());
+        let navigation = node["activateAction"].as_str().filter(|action| !action.is_empty()).map(|_| {
+            self.tree_navigation.entry((module.to_string(), path.to_string())).or_insert_with(|| TreeNavigation {
+                focus: cx.focus_handle().tab_stop(true),
+                scroll: UniformListScrollHandle::default(),
+                cursor: Rc::default(),
+            }).clone()
+        });
         let body = if row_h.is_some() {
             let (module, path, node) = (module.to_string(), path.to_string(), node.clone());
             uniform_list(sid(&module, &path), count, cx.processor(move |this, range: Range<usize>, _, cx| {
@@ -27,14 +41,45 @@ impl Shell {
                     }
                 }
                 this.tree_rows(&module, &node, &path, range, cx)
-            })).flex_1().min_h_0().w_full().into_any_element()
+            })).when_some(navigation.as_ref(), |list, nav| list.track_scroll(&nav.scroll)).flex_1().min_h_0().w_full().into_any_element()
         } else {
             let gap = node["rowGap"].as_f64().unwrap_or(1.0).clamp(0.0, 16.0) as f32;
             let rows = self.tree_rows(module, &node, path, 0..count.min(5000), cx);
             div().id(sid(module, path)).flex_1().min_h_0().w_full().overflow_y_scroll()
                 .child(v_flex().w_full().min_w_0().gap(px(gap)).children(rows)).into_any_element()
         };
-        let tree = self.apply_base(v_flex(), n, cx).min_h_0().min_w_0().overflow_hidden().child(body);
+        let mut tree = self.apply_base(v_flex(), n, cx).min_h_0().min_w_0().overflow_hidden().child(body);
+        if let Some(nav) = navigation {
+            let (k, m, inputs) = (self.kernel.clone(), module.to_string(), self.module_inputs(module));
+            let rows = node.clone();
+            tree = tree.track_focus(&nav.focus).capture_key_down(cx.listener(move |_, ev: &KeyDownEvent, window, cx| {
+                if !nav.focus.is_focused(window) { return; }
+                let mods = ev.keystroke.modifiers;
+                if mods.control || mods.alt || mods.platform || mods.shift { return; }
+                let pressed = ev.keystroke.key.as_str();
+                if !matches!(pressed, "up" | "down" | "enter") { return; }
+                let key = |row: &Value| row["key"].as_str().filter(|key| !key.is_empty()).map(str::to_owned);
+                let Some(items) = rows["rows"].as_array() else { return; };
+                let current = nav.cursor.borrow().clone();
+                let exact = current.as_ref().and_then(|current| items.iter().position(|row| key(row).as_ref() == Some(current)));
+                let selected = exact.or_else(|| items.iter().position(|row| key(row).is_some() && row["selected"].as_bool() == Some(true)));
+                let target = match pressed {
+                    "up" => (0..selected.unwrap_or(items.len())).rev().find(|i| key(&items[*i]).is_some()),
+                    "down" => (selected.map_or(0, |i| i + 1)..items.len()).find(|i| key(&items[*i]).is_some()),
+                    _ => selected,
+                };
+                let Some(index) = target else { return; };
+                let Some(row_key) = key(&items[index]) else { return; };
+                let action = if pressed == "enter" { "activateAction" } else { "selectAction" };
+                let Some(action) = rows[action].as_str().filter(|a| !a.is_empty()) else { return; };
+                *nav.cursor.borrow_mut() = Some(row_key.clone());
+                nav.scroll.scroll_to_item(index, ScrollStrategy::Nearest);
+                window.prevent_default();
+                cx.stop_propagation();
+                Self::fire(&k, &m, &inputs, action, rows["key"].as_str().unwrap_or("_"), Some(row_key), Value::Null, cx);
+                cx.notify();
+            }));
+        }
         let hover_action = node["hoverAction"].as_str().unwrap_or("").to_string();
         if hover_action.is_empty() { return tree.into_any_element(); }
         // Rows report the row entered; leaving the whole list reports no row, so moving between
@@ -55,6 +100,7 @@ impl Shell {
         let act_action = s("activateAction");
         let hover_action = s("hoverAction");
         let inputs = self.module_inputs(module);
+        let navigation = self.tree_navigation.get(&(module.to_string(), path.to_string()));
         // Geometry is module data; defaults match a compact list.
         let row_h = n["rowHeight"].as_f64().or_else(|| self.control_style["listRowHeight"].as_f64()).map(|h| h.clamp(12.0, 96.0) as f32);
         let indent = n["indent"].as_f64().unwrap_or(14.0).clamp(0.0, 64.0) as f32;
@@ -70,6 +116,12 @@ impl Shell {
         for row_index in range {
             let r = &rows[row_index];
             let rk = r["key"].as_str().unwrap_or("").to_string();
+            if rk.is_empty() {
+                let heading = div().w_full().pl_2().text_xs().text_color(theme_muted).font_weight(FontWeight::SEMIBOLD)
+                    .child(r["label"].as_str().unwrap_or("").to_string());
+                list.push(div().w_full().when_some(row_h, |d, h| d.h(px(h + row_gap))).flex().items_center().child(heading).into_any_element());
+                continue;
+            }
             let depth_ = r["depth"].as_u64().unwrap_or(0) as f32;
             let selected = r["selected"].as_bool().unwrap_or(false);
             let expandable = r["expandable"].as_bool().unwrap_or(false);
@@ -97,9 +149,18 @@ impl Shell {
             let key2 = key.to_string();
             let rk2 = rk.clone();
             let act = act_action.clone();
+            let nav = navigation.cloned();
+            let mouse_key = rk.clone();
             let mut row = h_flex().id(sid(module, &format!("{path}/row/{rk}"))).w_full().min_w_0().overflow_hidden().pl(px(4.0 + depth_ * indent)).pr_1().py(px(3.0)).gap_1().rounded(px(4.0)).cursor_pointer()
                 .hover(move |s| s.bg(hover_bg))
-                .on_mouse_down(MouseButton::Left, |_, window, cx| { window.prevent_default(); cx.stop_propagation(); })
+                .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                    window.prevent_default();
+                    if let Some(nav) = &nav {
+                        window.focus(&nav.focus, cx);
+                        *nav.cursor.borrow_mut() = Some(mouse_key.clone());
+                    }
+                    cx.stop_propagation();
+                })
                 .on_click(move |ev, _, cx| {
                     // A double click fires the first click as a selection, then the activation.
                     let action = if ev.click_count() >= 2 && !act.is_empty() { &act } else { &a };
@@ -153,19 +214,9 @@ impl Shell {
             let menu_items = r["contextMenu"].as_array().cloned().unwrap_or_default();
             let item = if menu_items.is_empty() { row.into_any_element() } else {
                 // Per-row native context menu; items fire with the row key, like selection.
-                let (k, m, inputs, key2, rk2) = (self.kernel.clone(), module.to_string(), inputs.clone(), key.to_string(), rk.clone());
-                div().id(sid(module, &format!("{path}/menu/{rk}"))).w_full().min_w_0().child(row).context_menu(move |mut menu, _, _| {
-                    for item in &menu_items {
-                        if item["separator"].as_bool().unwrap_or(false) { menu = menu.separator(); continue; }
-                        let (k, m, inputs, key, rk) = (k.clone(), m.clone(), inputs.clone(), key2.clone(), rk2.clone());
-                        let action = item["action"].as_str().unwrap_or("").to_string();
-                        let value = item.get("value").cloned().unwrap_or(Value::Null);
-                        menu = menu.item(PopupMenuItem::new(item["text"].as_str().unwrap_or("").to_string()).disabled(item["disabled"].as_bool().unwrap_or(false)).on_click(move |_, _, cx| {
-                            Self::fire(&k, &m, &inputs, &action, &key, Some(rk.clone()), value.clone(), cx);
-                        }));
-                    }
-                    menu
-                }).into_any_element()
+                let dispatch = tab_strip::MenuDispatch { kernel: self.kernel.clone(), module: module.to_string(), inputs: inputs.clone(), key: key.to_string(), row: Some(rk.clone()) };
+                div().id(sid(module, &format!("{path}/menu/{rk}"))).w_full().min_w_0().child(row)
+                    .context_menu(move |menu, window, cx| dispatch.build(menu, &menu_items, window, cx)).into_any_element()
             };
             list.push(if let Some(h) = row_h {
                 div().w_full().min_w_0().h(px(h + row_gap)).child(item).into_any_element()

@@ -1,0 +1,77 @@
+//! Trusted security preferences and confirmation. Module nodes can only refer to this surface.
+use super::*;
+
+const LABEL: &str = "Automatically approve all security requests";
+const DESCRIPTION: &str =
+    "Hato will grant module and agent permission requests without asking. Anyone or anything that can run code in Hato gets full access.";
+
+impl Shell {
+    pub(super) fn security_preferences(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let enabled = self.kernel.approvals.auto_approve_enabled();
+        let warning = cx.theme().warning;
+        let control = gpui_component::switch::Switch::new("trusted-security-auto-approve")
+            .checked(enabled).color(warning).tooltip(LABEL)
+            .on_change(cx.listener(|this, enabled: &bool, window, cx| {
+                if *enabled {
+                    let cancel = cx.focus_handle().tab_stop(true);
+                    window.focus(&cancel, cx);
+                    this.security_confirm = Some(cancel);
+                } else {
+                    this.kernel.approvals.set_auto_approve_from_native_ui(false);
+                }
+                cx.notify();
+            }));
+        h_flex().gap_4().items_center().p_3().rounded(px(8.0)).border_1().border_color(cx.theme().border)
+            .child(v_flex().flex_1().min_w_0().gap_1()
+                .child(h_flex().gap_2().flex_wrap()
+                    .child(div().text_sm().font_weight(FontWeight::MEDIUM).child(LABEL))
+                    .child(div().px_2().rounded(px(4.0)).text_xs().text_color(warning).bg(warning.opacity(0.2)).child("Not recommended")))
+                .child(div().text_xs().text_color(cx.theme().muted_foreground).child(DESCRIPTION)))
+            .child(control)
+            .into_any_element()
+    }
+
+    pub(super) fn auto_approve_indicator(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.kernel.approvals.auto_approve_enabled() { return None; }
+        let kernel = self.kernel.clone();
+        let warning = cx.theme().warning;
+        let shield = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 4l16 16M5 8v4c0 4 3 7 7 9a19 19 0 0 0 4-3M9 4l3-1 7 3v6c0 1-.2 2-.5 3"/></svg>"#;
+        Some(h_flex().flex_none().px_2().justify_end().bg(warning.opacity(0.12)).border_b_1().border_color(warning.opacity(0.4))
+            .child(Button::new("trusted-security-indicator").small().ghost().text_color(warning)
+                .icon(gpui_component::Icon::default().data(shield).text_color(warning))
+                .label("Auto-approve").tooltip("Auto-approve ON · Open Settings → Security")
+                .on_click(move |_, _, _| kernel.router.emit("settings.open", &json!({"category": "security"}))))
+            .into_any_element())
+    }
+
+    pub(super) fn security_confirmation(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let cancel_focus = self.security_confirm.clone()?;
+        Some(div().absolute().top_0().left_0().size_full().occlude().bg(black().opacity(0.5)).flex().items_center().justify_center()
+            .capture_key_down(cx.listener(move |this, ev: &KeyDownEvent, window, cx| {
+                if ev.keystroke.key == "escape" {
+                    this.security_confirm = None;
+                    window.prevent_default();
+                    cx.stop_propagation();
+                    cx.notify();
+                }
+            }))
+            .child(v_flex().w(px(520.0)).max_w(relative(0.94)).gap_3().p_4().rounded(px(10.0))
+                .border_2().border_color(cx.theme().warning).bg(cx.theme().background).shadow_lg()
+                .child(div().text_lg().font_weight(FontWeight::BOLD).child("Enable automatic approvals for this session?"))
+                .child(div().text_sm().child(DESCRIPTION))
+                .child(h_flex().justify_end().gap_2()
+                    .child(Button::new("trusted-security-cancel").primary().track_focus(&cancel_focus)
+                        .label("Cancel").on_click(cx.listener(|this, _, _, cx| {
+                            this.security_confirm = None;
+                            cx.notify();
+                        })))
+                    .child(Button::new("trusted-security-enable").danger().label("Enable auto-approve")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            if this.security_confirm.take().is_some() {
+                                this.kernel.approvals.set_auto_approve_from_native_ui(true);
+                            }
+                            cx.notify();
+                        })))))
+            .into_any_element())
+    }
+}

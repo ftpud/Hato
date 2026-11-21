@@ -5,15 +5,17 @@ use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::Arc;
 
+#[derive(Clone)]
 pub struct Audit {
-    file: Mutex<Option<std::fs::File>>,
+    file: Arc<Mutex<Option<std::fs::File>>>,
 }
 
 impl Audit {
     pub fn new(path: PathBuf) -> Self {
         let f = std::fs::OpenOptions::new().create(true).append(true).open(path).ok();
-        Audit { file: Mutex::new(f) }
+        Audit { file: Arc::new(Mutex::new(f)) }
     }
     pub fn record(&self, module: &str, generation: u64, op: &str, detail: &str, result: &str, approver: Option<&str>) {
         let line = json!({

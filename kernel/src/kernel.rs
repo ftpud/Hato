@@ -83,7 +83,7 @@ impl Kernel {
         let artifacts = ArtifactStore::open(cfg.artifacts_dir(), cfg.registry_file());
         let plugin_registry = cfg.plugin_registry_file();
         let k = Arc::new_cyclic(|me| Kernel {
-            approvals: Approvals::new(ui.clone()),
+            approvals: Approvals::with_audit(ui.clone(), audit.clone()),
             cfg,
             me: me.clone(),
             handles: HandleRegistry::default(),
@@ -967,11 +967,12 @@ impl Kernel {
     pub fn require_approval(&self, requester: &Generation, op: &str, title: &str, detail: &str) -> HResult<()> {
         let d = self.approvals.request(&requester.module_id, requester.gen_id, op, title, detail, false, Approvals::allow_deny(), Duration::from_secs(600));
         match d {
+            Decision::Automatic(o) if o == "allow" => Ok(()),
             Decision::Option(o) if o == "allow" => {
                 self.audit.record(&requester.module_id, requester.gen_id, op, title, "approved", Some("native-user"));
                 Ok(())
             }
-            Decision::Option(_) => {
+            Decision::Option(_) | Decision::Automatic(_) => {
                 self.audit.record(&requester.module_id, requester.gen_id, op, title, "denied", Some("native-user"));
                 Err(HostError::new("EDENIED", format!("user denied: {title}")))
             }
