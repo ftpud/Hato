@@ -1,5 +1,6 @@
 use super::*;
 use gpui_component::menu::PopupMenu;
+use gpui_component::Icon;
 use std::{cell::RefCell, rc::Rc};
 
 /// Event routing shared by native context menus. Submenus carry the same owning node and row.
@@ -49,11 +50,19 @@ pub(super) struct TabStrip {
     rendered: String,
 }
 
-struct TabDrag { owner: String, key: String, label: String }
+fn tab_content(label: String, icon: Option<Icon>, active: bool) -> Div {
+    h_flex().items_center().gap(px(6.0))
+        .when_some(icon, |row, icon| row.child(icon))
+        .child(div().text_sm().when(active, |label| label.font_weight(FontWeight::BOLD)).child(label))
+}
+
+#[derive(Clone)]
+struct TabDrag { owner: String, key: String, label: String, icon: Option<Icon> }
 impl Render for TabDrag {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div().px_2().py_1().rounded(px(4.0)).bg(cx.theme().background)
-            .border_1().border_color(cx.theme().border).text_sm().child(self.label.clone())
+            .border_1().border_color(cx.theme().border)
+            .child(tab_content(self.label.clone(), self.icon.clone(), false))
     }
 }
 
@@ -84,21 +93,28 @@ impl Shell {
             keys.push(key.clone());
             let (click, focus, cursor, select, click_key) = (dispatch.clone(), state.focus.clone(), state.cursor.clone(), action.clone(), key.clone());
             let rename = if tab["draggable"].as_bool() == Some(true) { double_click.clone() } else { String::new() };
+            let icon = tab["iconSvg"].as_str().filter(|svg| !svg.trim().is_empty()).map(|svg| {
+                let color = theme::color(cx, tab["iconColor"].as_str().unwrap_or("muted"), cx.theme().muted_foreground);
+                Icon::default().data(svg.as_bytes()).with_size(px(14.0)).text_color(color)
+            });
             let button = Button::new(sid(module, &format!("{path}/{key}"))).h(px(28.0)).small().ghost()
                 .when_some(tab["tooltip"].as_str(), |button, tip| button.tooltip(tip.to_owned()))
-                .child(div().text_sm().when(key == active, |d| d.font_weight(FontWeight::BOLD)).child(label.to_owned()))
+                .child(tab_content(label.to_owned(), icon.clone(), key == active))
                 .on_click(move |event, window, cx| {
                     window.focus(&focus, cx);
                     *cursor.borrow_mut() = click_key.clone();
                     let action = if event.click_count() >= 2 && !rename.is_empty() { &rename } else { &select };
                     Self::fire(&click.kernel, &click.module, &click.inputs, action, &click.key, None, json!(click_key), cx);
                 });
-            let mut item = div().id(sid(module, &format!("{path}/item/{key}"))).flex_none().child(button)
+            let item = div().flex_none().child(button)
                 .when(key == active, |d| d.border_b_2().border_color(cx.theme().primary));
+            #[cfg(all(test, feature = "snapshot"))]
+            let item = item.debug_selector(|| format!("tab-strip-item/{key}"));
+            let mut item = item.id(sid(module, &format!("{path}/item/{key}")));
             if !reorder.is_empty() && tab["draggable"].as_bool() == Some(true) {
-                let drag = TabDrag { owner: drag_owner.clone(), key: key.clone(), label: label.to_owned() };
+                let drag = TabDrag { owner: drag_owner.clone(), key: key.clone(), label: label.to_owned(), icon };
                 let (owner, target, drop_action, drop) = (drag_owner.clone(), key.clone(), reorder.clone(), dispatch.clone());
-                item = item.on_drag(drag, |drag, _, _, cx| cx.new(|_| TabDrag { owner: drag.owner.clone(), key: drag.key.clone(), label: drag.label.clone() }))
+                item = item.on_drag(drag, |drag, _, _, cx| cx.new(|_| drag.clone()))
                     .on_drop(move |drag: &TabDrag, _, cx| {
                         if drag.owner != owner || drag.key == target { return; }
                         Self::fire(&drop.kernel, &drop.module, &drop.inputs, &drop_action, &drop.key, None, json!({"from": drag.key, "to": target}), cx);
@@ -129,5 +145,48 @@ impl Shell {
                 cx.stop_propagation();
                 Self::fire(&dispatch.kernel, &dispatch.module, &dispatch.inputs, &action, &dispatch.key, None, json!(keys[next]), cx);
             }).child(bar).into_any_element()
+    }
+}
+
+#[cfg(all(test, feature = "snapshot"))]
+mod tests {
+    use super::Shell;
+    use crate::{bridge::UiBridge, config::Config, kernel::Kernel};
+    use gpui_kit as gpui;
+    use gpui::{px, size, TestAppContext, VisualTestContext};
+    use serde_json::json;
+    use std::sync::Arc;
+
+    #[gpui_kit::test]
+    fn tab_icon_adds_its_width_and_gap_only_when_present(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let temp = tempfile::tempdir().unwrap();
+        let cfg = Config::from_args(&[
+            "hato".into(),
+            "--repo-root".into(), temp.path().display().to_string(),
+            "--data-dir".into(), temp.path().join("data").display().to_string(),
+        ]).unwrap();
+        let kernel = Kernel::new(cfg, UiBridge::disconnected()).unwrap();
+        let window = cx.open_window(size(px(360.0), px(120.0)), |window, cx| {
+            let mut shell = Shell::new(kernel.clone(), UiBridge::new().1, window, cx);
+            let module = "__tab-strip-test".to_owned();
+            shell.trees.insert(module.clone(), Arc::new(json!({
+                "type": "tabStrip", "key": "sessions", "action": "tab", "active": "",
+                "tabs": [
+                    {"key": "plain", "label": "Session"},
+                    {"key": "icon", "label": "Session", "iconColor": "success",
+                     "iconSvg": "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><circle cx='12' cy='12' r='6' fill='currentColor'/></svg>"}
+                ]
+            })));
+            shell.only_module = Some(module);
+            shell
+        });
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let plain = cx.debug_bounds("tab-strip-item/plain").unwrap();
+        let icon = cx.debug_bounds("tab-strip-item/icon").unwrap();
+        assert_eq!(icon.size.width - plain.size.width, px(20.0));
+        assert_eq!(icon.size.height, plain.size.height);
+        kernel.shutdown();
     }
 }

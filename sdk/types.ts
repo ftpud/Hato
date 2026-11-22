@@ -349,7 +349,11 @@ export type UiNode =
   | (Base & { type: "window"; /** Set false to omit native titlebar chrome. */ titlebar?: boolean; title?: string; width?: number; height?: number; closeAction?: string; children: UiNode[] })
   | (Base & { type: "scroll"; children: UiNode[]; /** See row/column `itemHeight`. */ itemHeight?: number })
   | (Base & { type: "tabs"; tabs: { key: string; label: string }[]; active: string; action: string; children: UiNode[] })
-  | (Base & { type: "tabStrip"; tabs: { key: string; label: string; tooltip?: string; contextMenu?: MenuItem[]; draggable?: boolean }[]; active: string; action: string; doubleClickAction?: string; reorderAction?: string })
+  | (Base & { type: "tabStrip"; tabs: {
+      key: string; label: string; tooltip?: string; contextMenu?: MenuItem[]; draggable?: boolean;
+      /** Inline SVG drawn at 14px before the label. */ iconSvg?: string;
+      /** Color used for the SVG's `currentColor`. Defaults to muted. */ iconColor?: UiColor;
+    }[]; active: string; action: string; doubleClickAction?: string; reorderAction?: string })
   | (Base & { type: "slot"; module: string })
   /** Button-anchored popup rendered outside clipped toolbars/panels. Escape/outside click send action=false. */
   | (Base & { type: "dropdown"; text: string; iconSvg?: string; open: boolean; action: string; disabled?: boolean; variant?: "primary" | "ghost" | "danger" | "default";
