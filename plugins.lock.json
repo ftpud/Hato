@@ -1,17 +1,17 @@
 {
   "schemaVersion": 1,
-  "revision": "d9fa6679767d469c99493a7dbf893d5e7fd465be",
-  "baseUrl": "https://raw.githubusercontent.com/ftpud/Hato-plugins/d9fa6679767d469c99493a7dbf893d5e7fd465be/",
+  "revision": "a62867c398d22356006dc3a2e846fcbd1963d326",
+  "baseUrl": "https://raw.githubusercontent.com/ftpud/Hato-plugins/a62867c398d22356006dc3a2e846fcbd1963d326/",
   "modules": [
     {
       "id": "persistence",
       "kind": "service",
       "manifest": {
-        "path": "packages/foundation/0.1.47/persistence/manifest.json",
-        "sha256": "0e0904bbe880c8911c924f42b3a12da83548d723c424bea8f5dfb58ba3a26f2d"
+        "path": "packages/foundation/0.1.48/persistence/manifest.json",
+        "sha256": "b0d859dbb8f5478b4c483744f895ef0d936e59eff1c66a5798c7f3221c8b8383"
       },
       "bundle": {
-        "path": "packages/foundation/0.1.47/persistence/dist/persistence.mjs",
+        "path": "packages/foundation/0.1.48/persistence/dist/persistence.mjs",
         "sha256": "8e07d5cd8093fb143c58c2f6ecc34416c26a6f370efc2564fbe9e03c86b3f4df"
       }
     },
@@ -19,11 +19,11 @@
       "id": "workspace",
       "kind": "service",
       "manifest": {
-        "path": "packages/foundation/0.1.47/workspace/manifest.json",
-        "sha256": "1aef8ff8765c95aff0b70dc8b75c5e02d0f4bdb39515989220ae7e169401eccb"
+        "path": "packages/foundation/0.1.48/workspace/manifest.json",
+        "sha256": "05c888606e8a5d9cde48094d3d81a4810c838bd219aa5164b029081e5061019b"
       },
       "bundle": {
-        "path": "packages/foundation/0.1.47/workspace/dist/workspace.mjs",
+        "path": "packages/foundation/0.1.48/workspace/dist/workspace.mjs",
         "sha256": "c8ad06d6a01b751138c60221d55c9b35d9f168d347305f4fe546a8dd8bda56b9"
       }
     },
@@ -31,11 +31,11 @@
       "id": "projects",
       "kind": "service",
       "manifest": {
-        "path": "packages/foundation/0.1.47/projects/manifest.json",
-        "sha256": "16537bc28bd70aabd32416156c3804a61e0c80d399193533764fff9ce087b506"
+        "path": "packages/foundation/0.1.48/projects/manifest.json",
+        "sha256": "299b2fe7c4e0795940f5d5cb73bd61a54daa580d8c35caa0b3ee828dd886b071"
       },
       "bundle": {
-        "path": "packages/foundation/0.1.47/projects/dist/projects.mjs",
+        "path": "packages/foundation/0.1.48/projects/dist/projects.mjs",
         "sha256": "60fdf4973afc1f19df9eed9d32a1a8b27335641285680e4cd0d3614644fbce4f"
       }
     },
@@ -43,11 +43,11 @@
       "id": "files",
       "kind": "service",
       "manifest": {
-        "path": "packages/foundation/0.1.47/files/manifest.json",
-        "sha256": "2404adb06b23b04d8a979af8565d9b7e618c0991d80e1dfde4e85e43b8586f61"
+        "path": "packages/foundation/0.1.48/files/manifest.json",
+        "sha256": "c1e357577580be3c7378ceee7075692870f0c89b0610c49ec97550bb79a3fdb2"
       },
       "bundle": {
-        "path": "packages/foundation/0.1.47/files/dist/files.mjs",
+        "path": "packages/foundation/0.1.48/files/dist/files.mjs",
         "sha256": "cd92d6292f70919697c7a90801fdec4fb7b2ad4ab8e9620da82c650c6c54d4eb"
       }
     },
@@ -55,11 +55,11 @@
       "id": "terminals",
       "kind": "service",
       "manifest": {
-        "path": "packages/foundation/0.1.47/terminals/manifest.json",
-        "sha256": "483a363427912467837ee6197c3e6a07f76d308c86fffd59dd89a5c973a95ad0"
+        "path": "packages/foundation/0.1.48/terminals/manifest.json",
+        "sha256": "c2669e8503c66e2a97b86a34066339e4e31346fed74cf826df8e02439a0410a0"
       },
       "bundle": {
-        "path": "packages/foundation/0.1.47/terminals/dist/terminals.mjs",
+        "path": "packages/foundation/0.1.48/terminals/dist/terminals.mjs",
         "sha256": "aa0af2960e7268dc63c32bceacca59d8cb8c0ec054e525c2ef50b25c44fbf829"
       }
     },
@@ -67,35 +67,35 @@
       "id": "workspace-layout",
       "kind": "ui",
       "manifest": {
-        "path": "packages/foundation/0.1.47/workspace-layout/manifest.json",
-        "sha256": "29849ef1d7a097b80db5882438b6e30b52dc2519b3a28a1e29092d927c0a3acc"
+        "path": "packages/foundation/0.1.48/workspace-layout/manifest.json",
+        "sha256": "5adc17ab33f9b4a41f581a020a99eed39374314974ffca5a06be10877478abe4"
       },
       "bundle": {
-        "path": "packages/foundation/0.1.47/workspace-layout/dist/workspace-layout.mjs",
-        "sha256": "71cad7c794e72de371aab21e235d2f712f915f3f4b192e2f2ce8de9ae955a1fa"
+        "path": "packages/foundation/0.1.48/workspace-layout/dist/workspace-layout.mjs",
+        "sha256": "461d1894ac74e92b9cdfcfaea911984ffef48fac1034e25a41a97a979c67e3f5"
       }
     },
     {
       "id": "settings",
       "kind": "ui",
       "manifest": {
-        "path": "packages/foundation/0.1.47/settings/manifest.json",
-        "sha256": "2059e6a60ee64eda0b5d3b7f89e6fff1a79e8e2d6c178e0a32eed8b392891d6b"
+        "path": "packages/foundation/0.1.48/settings/manifest.json",
+        "sha256": "c99eedcb04504facf451af978af2bcc906b9e0ecc5261c8d1d082d6571197f0b"
       },
       "bundle": {
-        "path": "packages/foundation/0.1.47/settings/dist/settings.mjs",
-        "sha256": "207e13ebcdf284ce2f19eb34c61ebaa33a353cd5ac38bad503df43727b3fdf6b"
+        "path": "packages/foundation/0.1.48/settings/dist/settings.mjs",
+        "sha256": "9cbef56063d0a14ce2e0182dd46c0c7074a669216333d017bef173daca952ea8"
       }
     },
     {
       "id": "module-dev",
       "kind": "service",
       "manifest": {
-        "path": "packages/foundation/0.1.47/module-dev/manifest.json",
-        "sha256": "a60449a917cf6443ac9009ca10ea22be8ed7993f73352d4f312a5c8a08b996ae"
+        "path": "packages/foundation/0.1.48/module-dev/manifest.json",
+        "sha256": "b20dd9d2dad16c2efaed33a2befe6f4347975d7ceff19f0e3f5dbb6e0ffbf3d2"
       },
       "bundle": {
-        "path": "packages/foundation/0.1.47/module-dev/dist/module-dev.mjs",
+        "path": "packages/foundation/0.1.48/module-dev/dist/module-dev.mjs",
         "sha256": "26abe4ea71efa99ce90334d9527d000493170275cf9b61f0765d68f89db47744"
       }
     },
@@ -103,11 +103,11 @@
       "id": "explorer",
       "kind": "ui",
       "manifest": {
-        "path": "packages/foundation/0.1.47/explorer/manifest.json",
-        "sha256": "d42070294f80f775a2ba4bd40bff3ac98d58effc5fd01345b88b4cd9d3c60d5a"
+        "path": "packages/foundation/0.1.48/explorer/manifest.json",
+        "sha256": "194317c023bab78338d9d4a3137d577f8bb623cacd15714a1229154b5f17cca5"
       },
       "bundle": {
-        "path": "packages/foundation/0.1.47/explorer/dist/explorer.mjs",
+        "path": "packages/foundation/0.1.48/explorer/dist/explorer.mjs",
         "sha256": "c185035d5bbc6159cd0219f318954aa5c52dbfe4080eaa8f64037f385c35de7c"
       }
     },
@@ -115,23 +115,23 @@
       "id": "viewer",
       "kind": "ui",
       "manifest": {
-        "path": "packages/foundation/0.1.47/viewer/manifest.json",
-        "sha256": "d4d8490aa81a8bcd621a07c2fbd21eb95963d9843007820f8ef8d8415bc65184"
+        "path": "packages/foundation/0.1.48/viewer/manifest.json",
+        "sha256": "6bc06bd2c428a3aced9c8dee331c1ce250a3331c2c244d3dbb08f209cbd751f8"
       },
       "bundle": {
-        "path": "packages/foundation/0.1.47/viewer/dist/viewer.mjs",
-        "sha256": "3747140516b8a1f26ee3d859242796b3091d6cc00e341ad8658a0282ce79e73c"
+        "path": "packages/foundation/0.1.48/viewer/dist/viewer.mjs",
+        "sha256": "fb9f82b3b65b6b285c2d7796f50424cba08d1a123e43a472487c32201eeb3b76"
       }
     },
     {
       "id": "terminal-panel",
       "kind": "ui",
       "manifest": {
-        "path": "packages/foundation/0.1.47/terminal-panel/manifest.json",
-        "sha256": "5ec1be7072417974f01a5bffce5c46d426b68dae2aed3dfad15ecd42516813e1"
+        "path": "packages/foundation/0.1.48/terminal-panel/manifest.json",
+        "sha256": "7177ad2664b685b346df47dd189a8d0a2bbc8ff4ff03b31933dd6cb7478fc723"
       },
       "bundle": {
-        "path": "packages/foundation/0.1.47/terminal-panel/dist/terminal-panel.mjs",
+        "path": "packages/foundation/0.1.48/terminal-panel/dist/terminal-panel.mjs",
         "sha256": "8219c9e0726ac4cc8c00cf9203464d7f705ee48b680fa9ec567964db91a17481"
       }
     },
@@ -139,11 +139,11 @@
       "id": "projects-panel",
       "kind": "ui",
       "manifest": {
-        "path": "packages/foundation/0.1.47/projects-panel/manifest.json",
-        "sha256": "852e605f2595c82f5603760e1d06a8f1414a333f8032453a7da9356c53e8a60a"
+        "path": "packages/foundation/0.1.48/projects-panel/manifest.json",
+        "sha256": "63afe985cac5699d101bc1de95d682fcddef16121c0bfc1c6792f0de31068f8d"
       },
       "bundle": {
-        "path": "packages/foundation/0.1.47/projects-panel/dist/projects-panel.mjs",
+        "path": "packages/foundation/0.1.48/projects-panel/dist/projects-panel.mjs",
         "sha256": "e4da9bf85fd4465cc101b289382b7cb6100e4e8bddc58a200dcf56b9b63a6c6b"
       }
     },
@@ -151,11 +151,11 @@
       "id": "left-sidebar",
       "kind": "ui",
       "manifest": {
-        "path": "packages/foundation/0.1.47/left-sidebar/manifest.json",
-        "sha256": "312edbf3d042b11d55bf62e3d8cfad9625549fc471e1a639d4d3f69f32f0bf5c"
+        "path": "packages/foundation/0.1.48/left-sidebar/manifest.json",
+        "sha256": "89333e13feec4eb90d470e651b6f67a3989be0f61d5612e0c3a8bc90f4931910"
       },
       "bundle": {
-        "path": "packages/foundation/0.1.47/left-sidebar/dist/left-sidebar.mjs",
+        "path": "packages/foundation/0.1.48/left-sidebar/dist/left-sidebar.mjs",
         "sha256": "cf5fed5cc6f44ef57a5a8ed53f97c53773cf88023549a0069dd34262e0b2e4b6"
       }
     },
@@ -163,11 +163,11 @@
       "id": "sidebar",
       "kind": "ui",
       "manifest": {
-        "path": "packages/foundation/0.1.47/sidebar/manifest.json",
-        "sha256": "7fb5fed9a495fe6b2c8b1224c35f5a6eca2f24d4ed9531a564ce25d8da3ac99c"
+        "path": "packages/foundation/0.1.48/sidebar/manifest.json",
+        "sha256": "503f0262429aab9baa59a9bebf0fb166abbc3780957f42a8603c5bf8556e1bdd"
       },
       "bundle": {
-        "path": "packages/foundation/0.1.47/sidebar/dist/sidebar.mjs",
+        "path": "packages/foundation/0.1.48/sidebar/dist/sidebar.mjs",
         "sha256": "4b7cc98dae493e74da7ed138616e9696cde657f81a33970c79cd67995a679253"
       }
     },
