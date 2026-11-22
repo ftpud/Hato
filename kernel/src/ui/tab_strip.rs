@@ -25,11 +25,15 @@ impl MenuDispatch {
                 menu = menu.submenu(label.to_owned(), window, cx, move |menu, window, cx| dispatch.build(menu, &children, window, cx));
             } else if let Some(action) = item["action"].as_str() {
                 let (dispatch, action, value) = (self.clone(), action.to_owned(), item["value"].clone());
+                let copy = item["copyText"].as_str().map(str::to_owned);
                 menu = menu.item(PopupMenuItem::new(label.to_owned())
                     .disabled(item["disabled"].as_bool() == Some(true))
                     .when_some(item["checked"].as_bool(), |item, checked| item.checked(checked))
                     .on_click(move |_, _, cx| {
-                        Shell::fire(&dispatch.kernel, &dispatch.module, &dispatch.inputs, &action, &dispatch.key, dispatch.row.clone(), value.clone(), cx);
+                        if let Some(text) = &copy { cx.write_to_clipboard(ClipboardItem::new_string(text.clone())); }
+                        if !action.is_empty() {
+                            Shell::fire(&dispatch.kernel, &dispatch.module, &dispatch.inputs, &action, &dispatch.key, dispatch.row.clone(), value.clone(), cx);
+                        }
                     }));
             }
         }

@@ -7,7 +7,7 @@ use gpui::{
 };
 use gpui::{
     HighlightStyle, Hitbox, HitboxBehavior, Hsla, InteractiveElement, IntoElement, LayoutId,
-    LongPressEvent, MouseButton, MouseMoveEvent, MouseUpEvent, ParentElement as _, Path, Pixels,
+    LongPressEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _, Path, Pixels,
     Point, Position, ShapedLine, SharedString, Size, Style, Styled as _, TextAlign, TextRun,
     TextStyle, TouchDragEvent, TouchPhase, UnderlineStyle, Window, fill, point, px, relative, size,
 };
@@ -2455,6 +2455,8 @@ pub(super) struct PrepaintState {
     ///
     /// The child is the soft lines.
     line_numbers: Option<Vec<SmallVec<[ShapedLine; 1]>>>,
+    line_number_cells: Option<Hitbox>,
+    line_number_overlay: Option<AnyElement>,
     /// Size of the scrollable area by entire lines.
     scroll_size: Size<Pixels>,
     /// Caret bounds for every selection, active flagged.
@@ -3192,6 +3194,22 @@ impl<M: InputModeKind> Element for TextElement<M> {
                 cursor_scroll_offset,
                 state,
             )));
+        let line_number_cells = (line_numbers.is_some()
+            && (state.line_number_painter.is_some() || state.line_number_click.is_some() || state.line_number_overlay.is_some()))
+            .then(|| {
+                let fold_width = if state.mode.is_folding() { FOLD_ICON_HITBOX_WIDTH } else { px(0.) };
+                let width = (line_number_width - LINE_NUMBER_RIGHT_MARGIN - fold_width).max(px(0.));
+                window.insert_hitbox(
+                    Bounds::new(input_bounds.origin, size(width, input_bounds.size.height)),
+                    HitboxBehavior::Normal,
+                )
+            });
+        let line_number_overlay = state.line_number_overlay.clone();
+        let line_number_overlay = line_number_overlay.zip(line_number_cells.as_ref()).map(|(overlay, hitbox)| {
+            let mut element = overlay();
+            element.prepaint_as_root(hitbox.bounds.origin, hitbox.bounds.size.into(), window, cx);
+            element
+        });
         let fold_icon_layout =
             self.layout_fold_icons(original_x, &bounds, &last_layout, window, cx);
         let hitbox = window.insert_hitbox(input_bounds, HitboxBehavior::Normal);
@@ -3212,6 +3230,8 @@ impl<M: InputModeKind> Element for TextElement<M> {
             last_layout,
             scroll_size,
             line_numbers,
+            line_number_cells,
+            line_number_overlay,
             cursor_infos,
             cursor_scroll_offset,
             current_row,
@@ -3515,6 +3535,15 @@ impl<M: InputModeKind> Element for TextElement<M> {
             );
             window.paint_quad(fill(gutter_bounds, gutter_bg));
 
+            let (painter, click) = {
+                let state = self.state.read(cx);
+                (state.line_number_painter.clone(), state.line_number_click.clone())
+            };
+            let cells = prepaint.line_number_cells.as_ref();
+            let mouse = window.mouse_position();
+            let mut targets = Vec::new();
+            let mut hovered = None;
+
             // Each item is the normal lines.
             for (lines, &buffer_line) in line_numbers
                 .iter()
@@ -3544,16 +3573,60 @@ impl<M: InputModeKind> Element for TextElement<M> {
                     ));
                 }
 
-                for line in lines {
-                    _ = line.paint(p, line_height, TextAlign::Left, None, window, cx);
-                    offset_y += line_height;
+                let replaced = cells.is_some_and(|hitbox| {
+                    let cell = Bounds::new(p, size(hitbox.bounds.size.width, line_height));
+                    let target = Bounds::new(p, size(cell.size.width, height));
+                    let over = hitbox.is_hovered(window) && target.contains(&mouse);
+                    if over { hovered = Some(buffer_line); }
+                    targets.push((buffer_line, target));
+                    painter.as_ref().is_some_and(|paint| paint(buffer_line, cell, over, window, cx))
+                });
+                if !replaced {
+                    for line in lines {
+                        _ = line.paint(p, line_height, TextAlign::Left, None, window, cx);
+                    }
                 }
+                offset_y += height;
 
                 // Add ghost line height after cursor row for line numbers alignment
                 if !prepaint.ghost_lines.is_empty() && prepaint.current_row == Some(buffer_line) {
                     offset_y += prepaint.ghost_lines_height;
                 }
             }
+
+            if let Some(cells) = cells {
+                let targets = Rc::new(targets);
+                if painter.is_some() {
+                    let (cells, targets, id) = (cells.clone(), targets.clone(), self.state.entity_id());
+                    window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
+                        if !phase.capture() { return; }
+                        let over = if cells.is_hovered(window) {
+                            targets.iter().find(|(_, bounds)| bounds.contains(&event.position)).map(|(line, _)| *line)
+                        } else { None };
+                        if over != hovered { cx.notify(id); }
+                    });
+                }
+                if let Some(click) = click {
+                    let cells = cells.clone();
+                    window.set_cursor_style(gpui::CursorStyle::PointingHand, &cells);
+                    window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
+                        if !phase.capture() || !cells.is_hovered(window) { return; }
+                        if let Some((line, bounds)) = targets.iter().find(|(_, bounds)| bounds.contains(&event.position)) {
+                            let row = ((event.position.y - bounds.top()) / line_height).floor();
+                            let bottom = bounds.top() + line_height * (row + 1.0);
+                            let anchor = point(bounds.right(), bottom.min(cells.bounds.bottom()));
+                            if click(*line, bounds.top() - cells.bounds.top(), anchor, event.button, window, cx) {
+                                window.prevent_default();
+                                cx.stop_propagation();
+                            }
+                        }
+                    });
+                }
+            }
+        }
+
+        if let Some(overlay) = prepaint.line_number_overlay.as_mut() {
+            overlay.paint(window, cx);
         }
 
         // Paint fold icons (only visible on hover or for current line)

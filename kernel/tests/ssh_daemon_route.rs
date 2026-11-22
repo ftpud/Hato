@@ -66,7 +66,8 @@ fn start(streamlocal: bool) -> Option<Server> {
     let daemon = Command::new(env!("CARGO_BIN_EXE_hato")).args(["daemon", "serve", "--dir"]).arg(dir.join("daemon"))
         .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
     let t = Instant::now();
-    while std::net::TcpStream::connect(("127.0.0.1", port)).is_err() || !socket(&dir).exists() {
+    // Wait for the daemon before probing SSH so startup cannot accumulate no-auth penalties.
+    while !socket(&dir).exists() || std::net::TcpStream::connect(("127.0.0.1", port)).is_err() {
         assert!(t.elapsed() < Duration::from_secs(15), "sshd or daemon did not start");
         std::thread::sleep(Duration::from_millis(50));
     }

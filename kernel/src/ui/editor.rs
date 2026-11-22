@@ -21,13 +21,14 @@ pub struct EditorView {
     font: Value,
     /// `codeViewer.contextMenu`: items appended after the built-in editor menu.
     menu: Value,
+    gutter_configured: bool,
     _subscription: Subscription,
 }
 
 impl EditorView {
     pub fn new(state: Entity<EditorState>, editable: bool, font: Value, cx: &mut Context<Self>) -> Self {
         let subscription = cx.observe(&state, |_, _, cx| cx.notify());
-        Self { state, editable, font, menu: Value::Null, _subscription: subscription }
+        Self { state, editable, font, menu: Value::Null, gutter_configured: false, _subscription: subscription }
     }
 
     pub fn configure(&mut self, editable: bool, font: &Value, menu: &Value, cx: &mut Context<Self>) {
@@ -36,6 +37,60 @@ impl EditorView {
             self.font = font.clone();
             self.menu = menu.clone();
             cx.notify();
+        }
+    }
+}
+
+impl EditorView {
+    pub fn configure_gutter(
+        &mut self,
+        markers: HashMap<usize, GutterMarker>,
+        ghost: Option<GutterIcon>,
+        [marker_action, click_action, context_action]: [String; 3],
+        tooltip: Option<(SharedString, String)>,
+        fire: impl Fn(&str, usize, &Value, Pixels, Point<Pixels>, &mut App) + 'static,
+        cx: &mut Context<Self>,
+    ) {
+        let markers = Rc::new(markers);
+        let painter = (!markers.is_empty() || ghost.is_some()).then(|| {
+            let markers = markers.clone();
+            Rc::new(move |line, bounds: Bounds<Pixels>, hovered, window: &mut Window, cx: &mut App| {
+                let icon = markers.get(&line).map(|marker| &marker.icon).or_else(|| ghost.as_ref().filter(|_| hovered));
+                let Some(icon) = icon else { return false };
+                let side = bounds.size.height.min(bounds.size.width).min(px(13.0));
+                let origin = bounds.center() - point(side / 2.0, side / 2.0);
+                let _ = window.paint_svg(Bounds::new(origin, size(side, side)), icon.asset.clone(),
+                    Some(icon.svg.as_bytes()), TransformationMatrix::unit(), icon.color, cx);
+                true
+            }) as Rc<dyn Fn(usize, Bounds<Pixels>, bool, &mut Window, &mut App) -> bool>
+        });
+        let click = (!marker_action.is_empty() || !click_action.is_empty() || !context_action.is_empty()).then(|| {
+            Rc::new(move |line, y, anchor, button, _: &mut Window, cx: &mut App| {
+                let marker = markers.get(&line);
+                let action = match button {
+                    MouseButton::Left if marker.is_some() && !marker_action.is_empty() => &marker_action,
+                    MouseButton::Left => &click_action,
+                    MouseButton::Right => &context_action,
+                    _ => return false,
+                };
+                if action.is_empty() { return false; }
+                fire(action, line, marker.map(|m| &m.value).unwrap_or(&Value::Null), y, anchor, cx);
+                true
+            }) as Rc<dyn Fn(usize, Pixels, Point<Pixels>, MouseButton, &mut Window, &mut App) -> bool>
+        });
+        let overlay = tooltip.map(|(id, text)| Rc::new(move || {
+            let text = text.clone();
+            div().id(id.clone()).size_full()
+                .tooltip(move |window, cx| gpui_component::tooltip::Tooltip::new(text.clone()).build(window, cx))
+                .into_any_element()
+        }) as Rc<dyn Fn() -> AnyElement>);
+        let configured = painter.is_some() || click.is_some() || overlay.is_some();
+        if configured || self.gutter_configured {
+            self.gutter_configured = configured;
+            self.state.update(cx, |state, cx| {
+                state.set_line_number_handlers(painter, click, overlay);
+                cx.notify();
+            });
         }
     }
 }
@@ -395,40 +450,21 @@ pub fn position_json(text: &str, offset: usize) -> Value { module_position(&Rope
 /// Module line markers painted in a strip at the editor's left edge (e.g. Git change bars).
 /// `line..end_line` (zero-based, exclusive); an empty range is a deletion point between lines.
 pub struct LineMarker { pub line: usize, pub end_line: usize, pub color: Hsla, pub value: Value }
-pub struct GutterMarker { pub line: usize, pub svg: String, pub asset: SharedString, pub color: Hsla, pub value: Value }
+pub struct GutterIcon { svg: String, asset: SharedString, color: Hsla }
+pub struct GutterMarker { icon: GutterIcon, value: Value }
 
-pub fn gutter_markers(spec: &Value, color: impl Fn(&str) -> Hsla) -> Vec<GutterMarker> {
+pub fn gutter_icon(svg: &str, color: Hsla) -> Option<GutterIcon> {
+    if svg.is_empty() || svg.len() > 4096 { return None; }
+    let asset = format!("gutter-{}", crate::util::sha256_hex(svg.as_bytes())).into();
+    Some(GutterIcon { svg: svg.to_owned(), asset, color })
+}
+
+pub fn gutter_markers(spec: &Value, color: impl Fn(&str) -> Hsla) -> HashMap<usize, GutterMarker> {
     spec.as_array().into_iter().flatten().take(1000).filter_map(|m| {
         let line = m["line"].as_u64()? as usize;
-        let svg = m["iconSvg"].as_str().filter(|svg| !svg.is_empty() && svg.len() <= 4096)?.to_owned();
-        let asset = format!("gutter-{}", crate::util::sha256_hex(svg.as_bytes())).into();
-        Some(GutterMarker { line, svg, asset, color: color(m["color"].as_str().unwrap_or("muted")), value: m["value"].clone() })
+        let icon = gutter_icon(m["iconSvg"].as_str()?, color(m["color"].as_str().unwrap_or("muted")))?;
+        Some((line, GutterMarker { icon, value: m["value"].clone() }))
     }).collect()
-}
-
-pub fn gutter_origins(state: &EditorState, markers: &[GutterMarker]) -> Vec<(Pixels, usize)> {
-    use gpui_component::input::RopeExt;
-    let text = state.text();
-    let Some(rows) = state.visible_row_range() else { return vec![]; };
-    markers.iter().enumerate().filter(|(_, m)| rows.contains(&m.line)).filter_map(|(i, marker)| {
-        let start = text.line_start_offset(marker.line);
-        state.range_to_bounds(&(start..start)).map(|bounds| (bounds.top(), i))
-    }).collect()
-}
-/// The visible buffer line under window `y` and that line's top. A soft-wrapped line owns every
-/// row until the next line starts.
-pub fn line_at_y(state: &EditorState, y: Pixels) -> Option<(usize, Pixels)> {
-    use gpui_component::input::RopeExt;
-    let text = state.text();
-    let rows = state.visible_row_range()?;
-    let mut hit = None;
-    for line in rows.start..rows.end.min(text.lines_len()) {
-        let start = text.line_start_offset(line);
-        let Some(bounds) = state.range_to_bounds(&(start..start)) else { continue };
-        if bounds.top() > y { break; }
-        hit = Some((line, bounds.top()));
-    }
-    hit
 }
 
 /// Module full-line tints (e.g. a debugger's current line), painted translucently over the text.
@@ -510,6 +546,47 @@ mod annotation_tests {
         fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
             div().size_full().child(self.0.clone())
         }
+    }
+
+    #[gpui_kit::test]
+    fn line_number_cells_paint_hover_and_route_both_buttons(cx: &mut TestAppContext) {
+        use gpui::{Modifiers, MouseButton};
+        use std::{cell::RefCell, rc::Rc};
+
+        cx.update(gpui_kit::init);
+        let rows = Rc::new(RefCell::new(Vec::new()));
+        let clicks = Rc::new(RefCell::new(Vec::new()));
+        let window = cx.open_window(size(px(480.), px(240.)), |window, cx| {
+            let editor = cx.new(|cx| EditorState::new(window, cx).default_value("alpha\nbeta\ngamma"));
+            let (rows, clicks) = (rows.clone(), clicks.clone());
+            editor.update(cx, |state, _| {
+                state.set_line_number_handlers(Some(Rc::new(move |line, bounds, hover, _, _| {
+                    rows.borrow_mut().push((line, bounds, hover));
+                    hover
+                })), Some(Rc::new(move |line, _, anchor, button, _, _| {
+                    clicks.borrow_mut().push((line, anchor, button));
+                    true
+                })), None);
+            });
+            EditorHarness(editor)
+        });
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        cx.update(|window, cx| {
+            window.activate_window();
+            window.draw(cx).clear(cx);
+        });
+        let cell = rows.borrow().iter().rev().find(|(line, _, _)| *line == 1).unwrap().1;
+        let center = cell.center();
+        rows.borrow_mut().clear();
+        cx.simulate_mouse_move(center, None, Modifiers::default());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(rows.borrow().iter().any(|(line, _, hover)| *line == 1 && *hover));
+        for button in [MouseButton::Left, MouseButton::Right] {
+            cx.simulate_mouse_down(center, button, Modifiers::default());
+            cx.simulate_mouse_up(center, button, Modifiers::default());
+        }
+        let anchor = point(cell.right(), cell.bottom());
+        assert_eq!(*clicks.borrow(), vec![(1, anchor, MouseButton::Left), (1, anchor, MouseButton::Right)]);
     }
 
     #[gpui_kit::test]

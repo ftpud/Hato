@@ -303,7 +303,9 @@ export interface CanvasEdge { key: string; from: string; to: string; fromSide?: 
   /** Optional Bezier handle length in canvas pixels; compact graphs can use shorter curves. */ curveOffset?: number;
   color?: UiColor; width?: number; dashed?: boolean; arrow?: boolean; label?: string;
   /** A spark travels along the connection (e.g. data in flight). */ active?: boolean; sparkColor?: UiColor }
-export type MenuItem = { separator: true } | { text: string; action: string; value?: Json; disabled?: boolean; checked?: boolean } | { text: string; children: MenuItem[] };
+export type MenuItem = { separator: true } | { text: string; action: string; value?: Json; disabled?: boolean; checked?: boolean; /** Copied natively when the menu item is chosen. */ copyText?: string } | { text: string; children: MenuItem[] };
+/** Window-relative logical pixels for positioning an anchored popover. */
+export interface WindowAnchor { x: number; y: number }
 export type UiNode =
   /** Window-wide theme (normally from the root plugin). `mode` is the appearance preference;
    *  `terminal` overrides the 16 ANSI colors; `chrome` configures kernel chrome such as toasts. */
@@ -369,7 +371,7 @@ export type UiNode =
   | (Base & { type: "colorPicker"; value: string | null; action: string; swatches?: string[]; label?: string; disabled?: boolean })
   /** Click-outside-to-close overlay. Anchored from `top` (default 52), or upward from `bottom`
    *  (content height then, unless `heightFraction` is set). */
-  | (Base & { type: "popover"; children: UiNode[]; closeAction: string; top?: number; bottom?: number; left?: number; right?: number; /** Height as a fraction of the parent (0.1–1). */ heightFraction?: number; maxHeight?: number })
+  | (Base & { type: "popover"; children: UiNode[]; closeAction: string; /** Anchor in window coordinates; takes precedence over inset positioning. */ windowAnchor?: WindowAnchor; top?: number; bottom?: number; left?: number; right?: number; /** Height as a fraction of the parent (0.1–1). */ heightFraction?: number; maxHeight?: number })
   | (Base & { type: "toggle"; label: string; checked: boolean; action: string; disabled?: boolean })
   | (Base & { type: "tree"; rows: TreeRow[]; selectAction: string; expandAction: string; /** Fired with the row key as the pointer enters a row, and without one when it leaves the list. */ hoverAction?: string; /** Double click or Enter activates the row. Also enables arrow-key selection. */ activateAction?: string;
       /** Fixed row height (px); omit for content height. */ rowHeight?: number;
@@ -391,12 +393,13 @@ export type UiNode =
       /** Bars at the editor's left edge for zero-based lines `line..endLine` (exclusive; equal = a
        *  deletion point). Clicking one fires `lineMarkerAction` with {marker: value, y}. */
       lineMarkers?: { line: number; endLine?: number; color: UiColor; value?: Json }[]; lineMarkerAction?: string; lineMarkerWidth?: number;
-      /** Icons in a separate gutter lane. The click action receives { marker, y }. */
+      /** Icons replacing line numbers. The marker action receives CodeViewerGutterEvent in ev.value. */
       gutterMarkers?: { line: number; iconSvg: string; color?: UiColor; value?: Json }[];
       gutterMarkerAction?: string; gutterTooltip?: string;
-      /** Click / right-click on any line in the gutter lane (shown even without markers), with
-       *  {line, marker: value of a marker on that line or null, y}. A marker click with
-       *  `gutterMarkerAction` set fires that action instead. */
+      /** A faint icon replacing the number of the hovered, unmarked line. */
+      gutterHoverIconSvg?: string;
+      /** Click / right-click in the line-number column. A marker click with gutterMarkerAction set
+       *  fires that action instead. Both receive CodeViewerGutterEvent in ev.value. */
       gutterClickAction?: string; gutterContextAction?: string;
       /** Translucent full-line tints for zero-based `line..endLine` (exclusive; default one line), e.g. the
        *  debugger's current line. `opacity` 0.05–1 (default 0.18) applies to `color` (default primary). */
@@ -413,6 +416,12 @@ export type UiNode =
       /** Restyle tokens by text: `{baseCapture: {text: capture}}`, e.g. `{type: {Runnable: "type.interface"}}`. */
       nameCaptures?: Record<string, Record<string, string>>;
       /** Method on this UI module returning LSP LocationLink[]. Receives args + document/text/position. */ definitionMethod?: string; definitionArgs?: Json | object;
+      /** When set, delayed pointer hover dispatches a CodeViewerHoverEvent instead of markdown hover. */
+      hoverAction?: string;
+      /** Optional event on native hover dismissal, with { requestId }. */
+      hoverDismissAction?: string;
+      /** Interactive content for the current hover request, anchored by the editor. */
+      hoverPopover?: { requestId: number; node: UiNode };
       /** Methods on the rendering module receiving document/text/UTF-16 position and definitionArgs. */
       hoverMethod?: string; completionMethod?: string; completionTriggers?: string[];
       /** Completion items render `label` (+ muted `labelDetails.detail`) and right-aligned `labelDetails.description`
@@ -451,7 +460,35 @@ export type UiNode =
 /** Ordered lexical rules; earliest match wins, then declaration order. Rust regex syntax. */
 export interface SyntaxRule { pattern: string; capture: string }
 
-export interface TreeRow { /** Optional plugin-supplied row tint; selection/hover take precedence. */ background?: UiColor; /** Native hover tooltip for the row. */ tooltip?: string; description?: string; /** Shows an animated activity indicator after the label. */ busy?: boolean; iconSvg?: string; iconColor?: UiColor; connector?: "branch" | "last"; /** An empty key renders a noninteractive group heading. */ key: string; label: string; depth: number; expandable: boolean; expanded: boolean; selected: boolean; /** Shown as-is after the label. */ badge?: string;
+export interface CodeViewerGutterEvent {
+  document: string;
+  line: number;
+  marker: Json;
+  /** Top of the line relative to the text viewport, in logical pixels. */
+  y: number;
+  /** Window-relative point at the right edge and bottom of the visual gutter row under the pointer. */
+  anchor: WindowAnchor;
+}
+
+/** The current word and pointer anchor. Positions are zero-based UTF-16, range end exclusive.
+ *  x/y are logical pixels relative to the codeViewer's text viewport. */
+export interface CodeViewerHoverEvent {
+  requestId: number;
+  document: string;
+  offset: number;
+  line: number;
+  column: number;
+  range: { start: number; end: number };
+  text: string;
+  x: number;
+  y: number;
+}
+
+export interface TreeRow { /** Optional plugin-supplied row tint; selection/hover take precedence. */ background?: UiColor; /** Native hover tooltip for the row. */ tooltip?: string; /** Module-side description metadata. */ description?: string; /** Shows an animated activity indicator after the label. */ busy?: boolean; iconSvg?: string; iconColor?: UiColor; connector?: "branch" | "last"; /** An empty key renders a noninteractive group heading. */ key: string; label: string; depth: number; expandable: boolean; expanded: boolean; selected: boolean; /** Shown as-is after the label. */ badge?: string;
+  /** Single-line monospace text after the label, before badges. Ellipsizes to fit. */
+  value?: string;
+  /** Color of the inline value. Defaults to muted. */
+  valueColor?: UiColor;
   /** Colored short texts before `badge` (e.g. "+12" success, "−3" danger). */ badges?: { text: string; color?: UiColor }[];
   /** Native right-click menu; items fire `action` with this row's key as rowKey and `value`. */
   contextMenu?: MenuItem[];

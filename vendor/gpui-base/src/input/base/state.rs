@@ -45,6 +45,10 @@ use crate::input::{
 use crate::overscroll::Overscroll;
 use crate::{AutoScroll, StepAction, TestSupportExt as _};
 
+type LineNumberPainter = Rc<dyn Fn(usize, Bounds<Pixels>, bool, &mut Window, &mut App) -> bool>;
+type LineNumberClick = Rc<dyn Fn(usize, Pixels, Point<Pixels>, MouseButton, &mut Window, &mut App) -> bool>;
+type LineNumberOverlay = Rc<dyn Fn() -> gpui::AnyElement>;
+
 pub(super) const EDITOR_ELEMENT_ID: &str = "input-state";
 
 /// Vertical clearance to retain when revealing a text position.
@@ -527,6 +531,9 @@ pub struct InputBaseState<M: InputModeKind> {
     /// is rebuilt at the top of every render, which is what keeps it current
     /// when the palette changes after the state was built.
     pub(super) editor_style: InputEditorStyle,
+    pub(super) line_number_painter: Option<LineNumberPainter>,
+    pub(super) line_number_click: Option<LineNumberClick>,
+    pub(super) line_number_overlay: Option<LineNumberOverlay>,
     /// What a consumer projected, kept verbatim so that resolution never
     /// consumes its own output: resolving in place would fill the unset
     /// colours once and then never see them as unset again, which is the same
@@ -1014,6 +1021,9 @@ impl<M: InputModeKind> InputBaseState<M> {
             mask_pattern: MaskPattern::default(),
             mask_pattern_set: false,
             editor_style: InputEditorStyle::default(),
+            line_number_painter: None,
+            line_number_click: None,
+            line_number_overlay: None,
             projected_editor_style: InputEditorStyle::default(),
             accessibility: None,
             scrollbar_renderer: None,
@@ -1105,6 +1115,41 @@ impl<M: InputModeKind> InputBaseState<M> {
     /// Install a default adapter without replacing an application-provided one.
     pub fn ensure_highlighter_factory(&mut self, factory: InputHighlighterFactory) {
         self.mode.ensure_highlighter_factory(factory);
+    }
+
+    /// Customize the existing line-number cells. Returning true replaces a number or consumes a click.
+    /// The optional overlay can attach a tooltip to the number column.
+    pub fn set_line_number_handlers(
+        &mut self,
+        painter: Option<LineNumberPainter>,
+        click: Option<LineNumberClick>,
+        overlay: Option<LineNumberOverlay>,
+    ) {
+        self.line_number_painter = painter;
+        self.line_number_click = click;
+        self.line_number_overlay = overlay;
+    }
+
+    /// Byte offset of the glyph under a pointer in the text viewport.
+    pub fn text_offset_at(&self, position: Point<Pixels>) -> Option<usize> {
+        let layout = self.last_layout.as_ref()?;
+        let bounds = self.last_bounds?;
+        if !self.input_bounds.contains(&position)
+            || position.x < self.input_bounds.left() + layout.line_number_width
+        {
+            return None;
+        }
+        let inner = position - bounds.origin - point(layout.line_number_width, px(0.));
+        let mut y = layout.visible_top;
+        for (line, start) in layout.lines.iter().zip(&layout.visible_line_byte_offsets) {
+            let height = line.size(layout.line_height).height;
+            if inner.y >= y && inner.y < y + height {
+                return line.index_for_position(inner - point(px(0.), y), layout)
+                    .map(|offset| self.resolve_index(*start + offset));
+            }
+            y += height;
+        }
+        None
     }
 
     pub fn set_editor_style(&mut self, style: InputEditorStyle) {

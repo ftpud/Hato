@@ -185,8 +185,18 @@ impl Shell {
                 row = row.bg(cx.theme().list_active);
             }
             let weight = match r["weight"].as_str() { Some("semibold") => Some(FontWeight::SEMIBOLD), Some("bold") => Some(FontWeight::BOLD), Some("medium") => Some(FontWeight::MEDIUM), _ => None };
+            let value = r["value"].as_str().filter(|value| !value.is_empty());
+            let name = div().min_w_0().text_sm().when_some(weight, |d, w| d.font_weight(w))
+                .when(value.is_none(), |d| d.flex_1())
+                .overflow_hidden().whitespace_nowrap().text_ellipsis()
+                .child(r["label"].as_str().unwrap_or("").to_string());
             let label = v_flex().flex_1().min_w_0()
-                .child(h_flex().w_full().min_w_0().gap_1().child(div().flex_1().min_w_0().text_sm().when_some(weight, |d, w| d.font_weight(w)).overflow_hidden().whitespace_nowrap().text_ellipsis().child(r["label"].as_str().unwrap_or("").to_string()))
+                .child(h_flex().w_full().min_w_0().gap_1().child(name)
+                    .when_some(value, |d, value| {
+                        let color = r["valueColor"].as_str().map(|c| theme::color(cx, c, theme_muted)).unwrap_or(theme_muted);
+                        d.child(div().flex_1().min_w_0().text_sm().font_family(cx.theme().mono_font_family.clone())
+                            .text_color(color).overflow_hidden().whitespace_nowrap().text_ellipsis().child(value.to_owned()))
+                    })
                     .when(busy, |d| d.child(div().flex_none().child(Spinner::new().xsmall().color(theme::color(cx, "primary", cx.theme().primary)))))
                     .children(r["badges"].as_array().into_iter().flatten().take(8).map(|badge| {
                         let color = badge["color"].as_str().map(|c| theme::color(cx, c, theme_muted)).unwrap_or(theme_muted);
@@ -194,6 +204,8 @@ impl Shell {
                     }))
                     .child(div().text_xs().text_color(theme_muted).whitespace_nowrap().child(r["badge"].as_str().unwrap_or("").to_string())))
                 .when_some(r["detail"].as_str(), |d, detail| d.child(div().text_xs().text_color(theme_muted).overflow_hidden().whitespace_nowrap().text_ellipsis().child(detail.to_string())));
+            #[cfg(all(test, feature = "snapshot"))]
+            let label = label.debug_selector(|| format!("tree-content/{rk}"));
             let icon_element = match r["iconSvg"].as_str() {
                 Some(svg) => {
                     let color = r["iconColor"].as_str().map(|c| theme::color(cx, c, theme_muted)).unwrap_or(theme_muted);
@@ -223,5 +235,52 @@ impl Shell {
             } else { item });
         }
         list
+    }
+}
+
+#[cfg(all(test, feature = "snapshot"))]
+mod tests {
+    use super::Shell;
+    use crate::{bridge::UiBridge, config::Config, kernel::Kernel};
+    use gpui_kit as gpui;
+    use gpui::{px, size, TestAppContext, VisualTestContext};
+    use serde_json::json;
+    use std::sync::Arc;
+
+    #[gpui_kit::test]
+    fn tree_description_is_metadata_and_value_stays_inline(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let temp = tempfile::tempdir().unwrap();
+        let cfg = Config::from_args(&[
+            "hato".into(),
+            "--repo-root".into(),
+            temp.path().display().to_string(),
+            "--data-dir".into(),
+            temp.path().join("data").display().to_string(),
+        ]).unwrap();
+        let kernel = Kernel::new(cfg, UiBridge::disconnected()).unwrap();
+        let window = cx.open_window(size(px(360.), px(180.)), |window, cx| {
+            let mut shell = Shell::new(kernel.clone(), UiBridge::new().1, window, cx);
+            let module = "__tree-test".to_owned();
+            shell.trees.insert(module.clone(), Arc::new(json!({
+                "type": "tree", "key": "rows", "height": 100, "rowHeight": 26, "rowGap": 0,
+                "rows": [
+                    {"key": "plain", "label": "Plain.java"},
+                    {"key": "class", "label": "Example.java", "description": "Java class"},
+                    {"key": "count", "label": "count", "value": "42", "badge": "number"}
+                ]
+            })));
+            shell.only_module = Some(module);
+            shell
+        });
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let plain = cx.debug_bounds("tree-content/plain").unwrap();
+        let class = cx.debug_bounds("tree-content/class").unwrap();
+        let count = cx.debug_bounds("tree-content/count").unwrap();
+        assert_eq!(class.size.height, plain.size.height);
+        assert_eq!(count.size.height, plain.size.height);
+        assert!(plain.size.height <= px(26.));
+        kernel.shutdown();
     }
 }

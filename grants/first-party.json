@@ -29,7 +29,7 @@
     "left-sidebar":     { "kind": "ui", "capabilities": [], "calls": [] },
     "sidebar":          { "kind": "ui", "capabilities": [], "calls": [] },
     "settings":         { "kind": "ui", "capabilities": ["modules.read", "plugins.manage", "ui.dialog", "net.fetch", "fs.scope"], "calls": ["persistence"] },
-    "viewer":           { "kind": "ui", "capabilities": [], "calls": ["files", "workspace", "persistence", "git", "language-service"] },
+    "viewer":           { "kind": "ui", "capabilities": [], "calls": ["files", "workspace", "persistence", "git", "language-service", "debug"] },
     "git-history": { "kind": "ui", "capabilities": [], "calls": ["git", "persistence"] },
     "git-task-changes": { "kind": "ui", "capabilities": [], "calls": ["git"] },
     "git-panel":        { "kind": "ui", "capabilities": [], "calls": ["git", "workspace", "persistence"] },

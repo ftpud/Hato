@@ -26,7 +26,40 @@ export interface DebugSessionInfo {
 export interface DebugThread { conn: number; id: number; name: string; stopped: boolean }
 export interface DebugFrame { conn: number; id: number; name: string; path: string | null; source: string; line: number; column: number; library: boolean }
 export interface DebugScope { name: string; variablesReference: number; expensive: boolean }
-export interface DebugVariable { name: string; value: string; type?: string; variablesReference: number; evaluateName?: string; namedVariables?: number; indexedVariables?: number }
+export interface DebugVariablePresentationHint {
+  kind?: string;
+  attributes?: string[];
+  visibility?: string;
+  lazy?: boolean;
+}
+export interface DebugVariable {
+  name: string;
+  value: string;
+  variablesReference: number;
+  type?: string;
+  evaluateName?: string;
+  namedVariables?: number;
+  indexedVariables?: number;
+  presentationHint?: DebugVariablePresentationHint;
+  memoryReference?: string;
+}
+
+/** Select an identifier or a dotted member chain at a zero-based UTF-16 offset. */
+export function debugExpressionAt(text: string, offset: number): { start: number; end: number; text: string } | null {
+  if (!Number.isInteger(offset) || offset < 0 || offset >= text.length) return null;
+  const lineStart = offset === 0 ? 0 : text.lastIndexOf("\n", offset - 1) + 1;
+  const newline = text.indexOf("\n", offset);
+  const line = text.slice(lineStart, newline === -1 ? undefined : newline);
+  const identifier = String.raw`[$_\p{ID_Start}][$\u200c\u200d\p{ID_Continue}]*`;
+  const chains = new RegExp(String.raw`(?<![$\u200c\u200d\p{ID_Continue}])${identifier}(?:[ \t]*\.[ \t]*${identifier})*`, "gu");
+  for (const match of line.matchAll(chains)) {
+    const start = lineStart + match.index;
+    if (start > offset) break;
+    const end = start + match[0].length;
+    if (offset < end) return { start, end, text: match[0] };
+  }
+  return null;
+}
 
 /** Run configuration types each adapter debugs. Node types launch through js-debug; Java types run
  *  with a JDWP agent that java-debug attaches to. */

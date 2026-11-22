@@ -6,6 +6,7 @@ pub mod interact;
 mod canvas;
 mod controls;
 mod editor;
+mod editor_hover;
 pub mod terminal_view;
 mod theme;
 mod images;
@@ -94,6 +95,8 @@ pub struct Shell {
     /// binding from the tree, keyed by document handle.
     editor_subs: HashMap<String, Subscription>,
     editor_views: HashMap<String, Entity<editor::EditorView>>,
+    editor_hovers: HashMap<(String, String), editor_hover::HoverBinding>,
+    rendered_editor_hovers: HashSet<(String, String)>,
     editor_search: HashMap<String, String>,
     editor_bind: HashMap<String, (String, String, String, u64)>,
     editor_seq: HashMap<String, u64>,
@@ -175,6 +178,8 @@ impl Shell {
             editors: HashMap::new(),
             editor_subs: HashMap::new(),
             editor_views: HashMap::new(),
+            editor_hovers: HashMap::new(),
+            rendered_editor_hovers: HashSet::new(),
             editor_search: HashMap::new(),
             editor_bind: HashMap::new(),
             editor_seq: HashMap::new(),
@@ -739,16 +744,9 @@ impl Shell {
                         let (k, m, inputs, action, key, value, copy) = (k.clone(), m.clone(), inputs.clone(), action.clone(), key.clone(), value.clone(), copy.clone());
                         move |_, _, cx| { if let Some(text) = &copy { cx.write_to_clipboard(ClipboardItem::new_string(text.clone())); } if !action.is_empty() { Self::fire(&k, &m, &inputs, &action, &key, None, value.clone(), cx); } }
                     });
-                    return wrapper.child(button).context_menu(move |mut menu, _, _| {
-                        for item in &menu_items {
-                            let (k, m, inputs, key) = (k.clone(), m.clone(), inputs.clone(), key.clone());
-                            let action = item["action"].as_str().unwrap_or("").to_string();
-                            let value = item.get("value").cloned().unwrap_or(Value::Null);
-                            menu = menu.item(PopupMenuItem::new(item["text"].as_str().unwrap_or("").to_string()).disabled(item["disabled"].as_bool().unwrap_or(false)).on_click(move |_, _, cx| {
-                                Self::fire(&k, &m, &inputs, &action, &key, None, value.clone(), cx);
-                            }));
-                        }
-                        menu
+                    let dispatch = tab_strip::MenuDispatch { kernel: k, module: m, inputs, key, row: None };
+                    return wrapper.child(button).context_menu(move |menu, window, cx| {
+                        dispatch.build(menu, &menu_items, window, cx)
                     }).into_any_element();
                 }
                 let double_action = s("doubleClickAction");
@@ -1055,9 +1053,22 @@ impl Shell {
                 let inputs = self.module_inputs(module);
                 let action = s("closeAction");
                 let key2 = key.to_string();
-                div().absolute().inset_0().occlude()
-                    .on_mouse_down(MouseButton::Left, move |_, _, cx| Self::fire(&k, &m, &inputs, &action, &key2, None, Value::Null, cx))
-                    .child(self.apply_base(v_flex(), n, cx).absolute()
+                let overlay = div().absolute().inset_0().occlude()
+                    .on_mouse_down(MouseButton::Left, move |_, _, cx| Self::fire(&k, &m, &inputs, &action, &key2, None, Value::Null, cx));
+                let max_height = px(n["maxHeight"].as_f64().unwrap_or(420.0).clamp(40.0, 4096.0) as f32);
+                let card = self.apply_base(v_flex(), n, cx).max_h(max_height)
+                    .shadow_lg().occlude().on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation());
+                if let (Some(x), Some(y)) = (n["windowAnchor"]["x"].as_f64(), n["windowAnchor"]["y"].as_f64()) {
+                    let viewport = window.viewport_size();
+                    let position = point(
+                        px(x.clamp(0.0, f64::from(f32::from(viewport.width))) as f32),
+                        px(y.clamp(0.0, f64::from(f32::from(viewport.height))) as f32),
+                    );
+                    let card = card.id(sid(module, &format!("{path}/anchored"))).max_w(viewport.width)
+                        .max_h(viewport.height.min(max_height)).overflow_y_scroll().children(kids);
+                    return overlay.child(deferred(anchored().position(position).child(card))).into_any_element();
+                }
+                overlay.child(card.absolute()
                         // `bottom` anchors upward (e.g. above a composer); content height unless `heightFraction`.
                         .map(|d| match n["bottom"].as_f64() {
                             Some(b) => d.bottom(px(b.clamp(0.0, 4096.0) as f32)),
@@ -1066,8 +1077,7 @@ impl Shell {
                         .left(px(n["left"].as_f64().unwrap_or(8.0).clamp(0.0, 4096.0) as f32))
                         .right(px(n["right"].as_f64().unwrap_or(8.0).clamp(0.0, 4096.0) as f32))
                         .when(n["bottom"].is_null() || n["heightFraction"].is_number(), |d| d.h(relative(n["heightFraction"].as_f64().unwrap_or(0.55).clamp(0.1, 1.0) as f32)))
-                        .max_h(px(n["maxHeight"].as_f64().unwrap_or(420.0).clamp(40.0, 4096.0) as f32)).shadow_lg().overflow_hidden().occlude()
-                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation()).children(kids))
+                        .overflow_hidden().children(kids))
                     .into_any_element()
             }
             "toggle" => {
@@ -1208,7 +1218,10 @@ impl Shell {
                             triggers: n["completionTriggers"].as_array().map(|items| items.iter().filter_map(|s| s.as_str().map(str::to_owned)).collect()).unwrap_or_default(),
                             offered: offered.clone(),
                         }));
-                        let hover = intelligence("hoverMethod").map(|p| p as std::rc::Rc<dyn gpui_component::input::HoverProvider>);
+                        let has_hover_action = n["hoverAction"].as_str().is_some_and(|action| !action.is_empty());
+                        let hover = if has_hover_action { None } else {
+                            intelligence("hoverMethod").map(|p| p as std::rc::Rc<dyn gpui_component::input::HoverProvider>)
+                        };
                         let completion = intelligence("completionMethod").map(|p| p as std::rc::Rc<dyn gpui_component::input::CompletionProvider>);
                         let action = s("openLocationAction");
                         let show_document = if action.is_empty() { None } else {
@@ -1221,7 +1234,8 @@ impl Shell {
                         let menu = &n["completionMenu"];
                         let menu_px = |key: &str, default: f32, max: f64| menu[key].as_f64().filter(|v| v.is_finite()).map(|v| px(v.clamp(80.0, max) as f32)).unwrap_or(px(default));
                         let menu_options = gpui_component::input::CompletionMenuOptions { max_width: menu_px("width", 320.0, 1600.0), min_width: menu_px("minWidth", 120.0, 1600.0), max_height: menu_px("maxHeight", 240.0, 1200.0) };
-                        st.update(cx, |state, _| { state.lsp_mut().definition_provider = provider; state.lsp_mut().hover_provider = hover; state.lsp_mut().completion_provider = completion; state.lsp_mut().show_document = show_document; state.lsp_mut().completion_menu = menu_options; });
+                        st.update(cx, |state, cx| { state.lsp_mut().definition_provider = provider; if has_hover_action && state.lsp_mut().hover_provider.is_some() { state.clear_hover_state(cx); }
+                            state.lsp_mut().hover_provider = hover; state.lsp_mut().completion_provider = completion; state.lsp_mut().show_document = show_document; state.lsp_mut().completion_menu = menu_options; });
                         if let Some(reveal_key) = n["reveal"]["key"].as_str() {
                             if self.editor_reveal.get(&h).map(|s| s.as_str()) != Some(reveal_key) {
                                 let line = n["reveal"]["line"].as_u64().unwrap_or(0).min(u32::MAX as u64) as u32;
@@ -1284,69 +1298,18 @@ impl Shell {
                             }
                         };
                         let gutter = editor::gutter_markers(&n["gutterMarkers"], |c| theme::color(cx, c, theme_muted));
-                        // Line clicks need the lane even before any marker exists (e.g. adding a breakpoint).
-                        let (click_action, context_action) = (s("gutterClickAction"), s("gutterContextAction"));
-                        let lane_on = !gutter.is_empty() || !click_action.is_empty() || !context_action.is_empty();
-                        let editor_content = div().size_full().when(lane_on, |d| d.pl(px(23.0))).child(editor_el);
-                        let mut surface = div().relative().size_full().capture_key_down(dismiss_hints).on_action(on_menu).child(editor_content).children(hints);
-                        if lane_on {
-                            let gutter = std::rc::Rc::new(gutter);
-                            let (paint_state, icons) = (st.clone(), gutter.clone());
-                            let strip = canvas(|_, _, _| (), move |bounds, _, window, cx| {
-                                let state = paint_state.read(cx);
-                                let Some(height) = state.line_height() else { return; };
-                                let side = height.min(px(13.0));
-                                window.with_content_mask(Some(ContentMask { bounds }), |window| {
-                                    for (top, i) in editor::gutter_origins(state, &icons) {
-                                        let icon = &icons[i];
-                                        let at = point(bounds.left() + (bounds.size.width - side) / 2., top + (height - side) / 2.);
-                                        let _ = window.paint_svg(Bounds::new(at, size(side, side)), icon.asset.clone(),
-                                            Some(icon.svg.as_bytes()), TransformationMatrix::unit(), icon.color, cx);
-                                    }
-                                });
-                            }).size_full();
-                            let action = s("gutterMarkerAction");
-                            let (k, m, key, hit_state) = (self.kernel.clone(), module.to_string(), key.to_string(), st.clone());
-                            let inputs = self.module_inputs(module);
-                            let lane = div().id(sid(module, &format!("{path}/gutter"))).absolute().left(px(7.0)).top_0().bottom_0().w(px(16.0))
-                                .when_some(n["gutterTooltip"].as_str().map(str::to_owned), |d, tooltip| d.tooltip(move |window, cx| gpui_component::tooltip::Tooltip::new(tooltip.clone()).build(window, cx)))
-                                .when(!action.is_empty() || !click_action.is_empty(), |d| {
-                                    let (k, m, key, inputs, hit_state, gutter, action, click_action) =
-                                        (k.clone(), m.clone(), key.clone(), inputs.clone(), hit_state.clone(), gutter.clone(), action.clone(), click_action.clone());
-                                    d.cursor_pointer().on_mouse_down(MouseButton::Left, move |ev, window, cx| {
-                                        let state = hit_state.read(cx);
-                                        let Some(height) = state.line_height() else { return; };
-                                        let origin = state.input_bounds().origin.y;
-                                        if !action.is_empty() {
-                                            if let Some((top, i)) = editor::gutter_origins(state, &gutter).into_iter()
-                                                .find(|(top, _)| ev.position.y >= *top && ev.position.y < *top + height) {
-                                                let value = json!({"marker": gutter[i].value, "line": gutter[i].line, "y": f32::from(top - origin)});
-                                                window.prevent_default(); cx.stop_propagation();
-                                                Self::fire(&k, &m, &inputs, &action, &key, None, value, cx);
-                                                return;
-                                            }
-                                        }
-                                        if click_action.is_empty() { return; }
-                                        let Some((line, top)) = editor::line_at_y(state, ev.position.y) else { return; };
-                                        let marker = gutter.iter().find(|g| g.line == line).map(|g| g.value.clone()).unwrap_or(Value::Null);
-                                        window.prevent_default(); cx.stop_propagation();
-                                        Self::fire(&k, &m, &inputs, &click_action, &key, None, json!({"line": line, "marker": marker, "y": f32::from(top - origin)}), cx);
-                                    })
-                                })
-                                .when(!context_action.is_empty(), |d| {
-                                    let (k, m, key, inputs, hit_state, gutter) = (k.clone(), m.clone(), key.clone(), inputs.clone(), hit_state.clone(), gutter.clone());
-                                    d.on_mouse_down(MouseButton::Right, move |ev, window, cx| {
-                                        let state = hit_state.read(cx);
-                                        let Some((line, top)) = editor::line_at_y(state, ev.position.y) else { return; };
-                                        let marker = gutter.iter().find(|g| g.line == line).map(|g| g.value.clone()).unwrap_or(Value::Null);
-                                        let y = f32::from(top - state.input_bounds().origin.y);
-                                        window.prevent_default(); cx.stop_propagation();
-                                        Self::fire(&k, &m, &inputs, &context_action, &key, None, json!({"line": line, "marker": marker, "y": y}), cx);
-                                    })
-                                })
-                                .child(strip);
-                            surface = surface.child(lane);
-                        }
+                        let ghost = n["gutterHoverIconSvg"].as_str().and_then(|svg| editor::gutter_icon(svg, theme_muted.opacity(0.35)));
+                        let actions = [s("gutterMarkerAction"), s("gutterClickAction"), s("gutterContextAction")];
+                        let tooltip = n["gutterTooltip"].as_str().filter(|text| !text.is_empty()
+                            && (!gutter.is_empty() || !actions[1].is_empty() || !actions[2].is_empty()))
+                            .map(|text| (sid(module, &format!("{path}/gutter")), text.to_owned()));
+                        let (k, m, gutter_key, document) = (self.kernel.clone(), module.to_string(), key.to_string(), h.clone());
+                        let inputs = self.module_inputs(module);
+                        editor_el.update(cx, |view, cx| view.configure_gutter(gutter, ghost, actions, tooltip, move |action, line, marker, y, anchor, cx| {
+                            Self::fire(&k, &m, &inputs, action, &gutter_key, None, json!({"line": line, "marker": marker, "y": f32::from(y), "document": document,
+                                "anchor": {"x": f32::from(anchor.x), "y": f32::from(anchor.y)}}), cx);
+                        }, cx));
+                        let mut surface = div().relative().size_full().capture_key_down(dismiss_hints).on_action(on_menu).child(editor_el).children(hints);
                         let highlights = editor::line_highlights(&n["lineHighlights"], |c| theme::color(cx, c, theme_muted));
                         if !highlights.is_empty() {
                             // Translucent full-line tints over the text; no hitbox, so input passes through.
@@ -1386,6 +1349,7 @@ impl Shell {
                                 });
                             }).size_full()));
                         }
+                        let surface = self.editor_hover(surface, &st, module, key, &path, &h, n, depth, window, cx);
                         if markers.is_empty() { surface.into_any_element() } else {
                             // Marker strip over the gutter's left edge, positioned from the editor's
                             // own layout so it follows scrolling, folding and soft wrap.
@@ -1827,6 +1791,7 @@ impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.modals.clear();
         self.begin_frame();
+        self.rendered_editor_hovers.clear();
         let root = self.kernel.root_module();
         let layout_ok = root.as_ref().map(|r| self.trees.contains_key(r) || self.kernel.router.active(r).is_some()).unwrap_or(false);
         let body = if let Some(m) = self.only_module.clone() {
@@ -1845,6 +1810,7 @@ impl Render for Shell {
         self.sync_windows(window, cx);
         let modals = std::mem::take(&mut self.modals);
         let modal_els: Vec<AnyElement> = modals.iter().map(|(m, p, n)| self.render_modal(m, p, n, window, cx)).collect();
+        self.prune_editor_hovers();
         let approvals = self.render_approvals(window, cx);
         let security_indicator = self.auto_approve_indicator(cx);
         let security_confirmation = self.security_confirmation(cx);
@@ -1863,6 +1829,12 @@ impl Render for Shell {
         }
         let _ = &self.submit_queue;
         div().size_full().relative().flex().flex_col().overflow_hidden().bg(cx.theme().background).text_color(cx.theme().foreground).font_family(cx.theme().font_family.clone()).font_weight(theme::font_weight(cx))
+            .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                if event.keystroke.key == "escape" && this.dismiss_open_editor_hover(cx) {
+                    window.prevent_default();
+                    cx.stop_propagation();
+                }
+            }))
             .children(security_indicator)
             .child(div().flex_1().min_h_0().min_w_0().overflow_hidden().flex().flex_col().child(body))
             .children(float_els)
