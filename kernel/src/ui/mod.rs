@@ -1848,7 +1848,7 @@ impl Render for Shell {
 
 pub fn run(cfg: Config) {
     let (bridge, rx) = UiBridge::new();
-    let kernel = match Kernel::new(cfg, bridge) {
+    let kernel = match Kernel::new_gui(cfg, bridge) {
         Ok(k) => k,
         Err(e) => {
             eprintln!("hato: kernel init failed: {e:#}");

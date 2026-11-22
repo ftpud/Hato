@@ -6,7 +6,8 @@ use crate::bridge::{UiBridge, UiMsg};
 use crate::audit::Audit;
 use crate::util::{now_ms, random_hex};
 use parking_lot::Mutex;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -69,8 +70,9 @@ pub struct Approvals {
     pending: Mutex<Vec<Pending>>,
     ui: UiBridge,
     audit: Option<Audit>,
-    /// Session-only native preference. There is no module-callable or on-disk writer.
     auto_approve: AtomicBool,
+    #[cfg(any(feature = "gui", test))]
+    security_file: Option<PathBuf>,
     /// Headless test hook: auto-decisions (only settable from the kernel's own headless runner).
     pub headless_policy: Mutex<Option<Arc<dyn Fn(&ApprovalRequest) -> Option<String> + Send + Sync>>>,
     /// Headless test hook: what a secret prompt "types". Without it, secret prompts are cancelled.
@@ -84,14 +86,57 @@ pub enum Decision {
     Expired,
 }
 
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SecuritySettings {
+    auto_approve: bool,
+}
+
+impl SecuritySettings {
+    fn load_auto_approve(path: &Path) -> bool {
+        if !std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_file()) { return false; }
+        std::fs::read(path).ok()
+            .and_then(|bytes| serde_json::from_slice::<Self>(&bytes).ok())
+            .is_some_and(|settings| settings.auto_approve)
+    }
+
+    #[cfg(any(feature = "gui", test))]
+    fn save(&self, path: &Path) -> std::io::Result<()> {
+        use std::io::Write;
+        let parent = path.parent().expect("security file is in the application data directory");
+        std::fs::create_dir_all(parent)?;
+        let mut file = tempfile::NamedTempFile::new_in(parent)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            file.as_file().set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        }
+        serde_json::to_writer(&mut file, self)?;
+        file.write_all(b"\n")?;
+        file.as_file().sync_all()?;
+        file.persist(path).map_err(|error| error.error)?;
+        Ok(())
+    }
+}
+
 impl Approvals {
     pub fn new(ui: UiBridge) -> Self {
         Approvals { pending: Mutex::new(Vec::new()), ui, audit: None, auto_approve: AtomicBool::new(false),
+            #[cfg(any(feature = "gui", test))]
+            security_file: None,
             headless_policy: Mutex::new(None), headless_secret: Mutex::new(None) }
     }
 
-    pub(crate) fn with_audit(ui: UiBridge, audit: Audit) -> Self {
-        Self { audit: Some(audit), ..Self::new(ui) }
+    pub(crate) fn with_audit(ui: UiBridge, audit: Audit, security_file: Option<PathBuf>) -> Self {
+        let auto_approve = security_file.as_deref().is_some_and(SecuritySettings::load_auto_approve);
+        if auto_approve {
+            audit.record("kernel", 0, "security.autoApprove", "Native security setting",
+                "restored from saved setting", Some("native-startup"));
+        }
+        Self { audit: Some(audit), auto_approve: AtomicBool::new(auto_approve),
+            #[cfg(any(feature = "gui", test))]
+            security_file,
+            ..Self::new(ui) }
     }
 
     pub fn auto_approve_enabled(&self) -> bool {
@@ -99,13 +144,25 @@ impl Approvals {
     }
 
     #[cfg(any(feature = "gui", test))]
-    pub(crate) fn set_auto_approve_from_native_ui(&self, enabled: bool) {
-        if self.auto_approve.swap(enabled, Ordering::AcqRel) == enabled { return; }
-        if let Some(audit) = &self.audit {
-            audit.record("kernel", 0, "security.autoApprove", "Native security setting",
-                if enabled { "enabled for this session" } else { "disabled" }, Some("native-user"));
+    pub(crate) fn set_auto_approve_from_native_ui(&self, enabled: bool) -> std::io::Result<()> {
+        let previous = self.auto_approve_enabled();
+        // Turn off in-memory approval even if the saved preference cannot be updated.
+        if !enabled { self.auto_approve.store(false, Ordering::Release); }
+        let saved = self.security_file.as_deref().map_or(Ok(()), |path| {
+            SecuritySettings { auto_approve: enabled }.save(path)
+        });
+        if enabled {
+            if saved.is_err() { return saved; }
+            self.auto_approve.store(true, Ordering::Release);
         }
-        self.ui.send(UiMsg::ApprovalsChanged);
+        if enabled != previous {
+            if let Some(audit) = &self.audit {
+                audit.record("kernel", 0, "security.autoApprove", "Native security setting",
+                    if enabled { "enabled" } else { "disabled" }, Some("native-user"));
+            }
+            self.ui.send(UiMsg::ApprovalsChanged);
+        }
+        saved
     }
 
     pub fn allow_deny() -> Vec<ApprovalOption> {
@@ -220,34 +277,104 @@ mod tests {
     use super::*;
 
     #[test]
-    fn automatic_approvals_are_session_only_audited_and_stop_immediately() {
-        let dir = std::env::temp_dir().join(format!("hato-auto-approve-{}", random_hex(8)));
-        std::fs::create_dir(&dir).unwrap();
-        let path = dir.join("audit.log");
-        let approvals = Approvals::with_audit(UiBridge::disconnected(), Audit::new(path.clone()));
+    fn automatic_approvals_persist_are_audited_and_stop_immediately() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audit.log");
+        let security_file = dir.path().join("security/settings.json");
+        let reopen = || Approvals::with_audit(UiBridge::disconnected(), Audit::new(path.clone()), Some(security_file.clone()));
+        let approvals = reopen();
         let ask = || approvals.request("files", 3, "capabilities.fsWrite", "Allow writing files?", "", false,
             Approvals::allow_deny(), Duration::from_millis(1));
         assert!(!approvals.auto_approve_enabled());
         assert!(matches!(ask(), Decision::Expired));
 
-        approvals.set_auto_approve_from_native_ui(true);
+        approvals.set_auto_approve_from_native_ui(true).unwrap();
         assert!(matches!(ask(), Decision::Automatic(option) if option == "allow"));
         assert_eq!(approvals.count(), 0);
-        let audit = std::fs::read_to_string(&path).unwrap();
-        let entry = audit.lines().map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
-            .find(|entry| entry["op"] == "capabilities.fsWrite").unwrap();
-        assert_eq!(entry["result"], "auto-approved (allow)");
-        assert_eq!(entry["approver"], "native-auto-approve");
+        assert!(reopen().auto_approve_enabled());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&security_file).unwrap().permissions().mode() & 0o777, 0o600);
+        }
 
         let deny_only = vec![ApprovalOption { id: "deny".into(), label: "Deny".into(), kind: "deny".into() }];
         assert!(matches!(approvals.request("agent", 4, "module:permission", "Choose", "", true, deny_only,
             Duration::from_millis(1)), Decision::Expired));
         assert!(approvals.request_secret("workspace", 1, "ssh.password", "Password", "", "Password", "Connect",
             Duration::from_millis(1)).is_none());
-        assert!(!Approvals::with_audit(UiBridge::disconnected(), Audit::new(path.clone())).auto_approve_enabled());
-        approvals.set_auto_approve_from_native_ui(false);
+        approvals.set_auto_approve_from_native_ui(false).unwrap();
         assert!(matches!(ask(), Decision::Expired));
-        drop(approvals);
-        std::fs::remove_dir_all(dir).unwrap();
+        let settings: serde_json::Value = serde_json::from_slice(&std::fs::read(&security_file).unwrap()).unwrap();
+        assert_eq!(settings, serde_json::json!({"autoApprove": false}));
+        assert!(!reopen().auto_approve_enabled());
+
+        let audit = std::fs::read_to_string(path).unwrap();
+        let entries: Vec<serde_json::Value> = audit.lines().map(|line| serde_json::from_str(line).unwrap()).collect();
+        let expected = [
+            ("security.autoApprove", "enabled", "native-user"),
+            ("capabilities.fsWrite", "auto-approved (allow)", "native-auto-approve"),
+            ("security.autoApprove", "restored from saved setting", "native-startup"),
+            ("security.autoApprove", "disabled", "native-user"),
+        ];
+        let actual: Vec<_> = entries.iter().map(|entry| (
+            entry["op"].as_str().unwrap(), entry["result"].as_str().unwrap(), entry["approver"].as_str().unwrap(),
+        )).collect();
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn malformed_or_unreadable_security_settings_default_to_off() {
+        let dir = tempfile::tempdir().unwrap();
+        let security_file = dir.path().join("settings.json");
+        let reopen = || Approvals::with_audit(UiBridge::disconnected(),
+            Audit::new(dir.path().join("audit.log")), Some(security_file.clone()));
+        for contents in ["{", "{}", r#"{"autoApprove": "true"}"#] {
+            std::fs::write(&security_file, contents).unwrap();
+            assert!(!reopen().auto_approve_enabled());
+        }
+        std::fs::remove_file(&security_file).unwrap();
+        std::fs::create_dir(&security_file).unwrap();
+        assert!(!reopen().auto_approve_enabled());
+        assert!(std::fs::read_to_string(dir.path().join("audit.log")).unwrap().is_empty());
+    }
+
+    #[test]
+    fn failed_saves_do_not_enable_automatic_approvals_or_prevent_disabling() {
+        let dir = tempfile::tempdir().unwrap();
+        let security_file = dir.path().join("settings.json");
+        std::fs::write(&security_file, r#"{"autoApprove":true}"#).unwrap();
+        let approvals = Approvals::with_audit(UiBridge::disconnected(),
+            Audit::new(dir.path().join("audit.log")), Some(security_file.clone()));
+        assert!(approvals.auto_approve_enabled());
+        std::fs::remove_file(&security_file).unwrap();
+        std::fs::create_dir(&security_file).unwrap();
+
+        assert!(approvals.set_auto_approve_from_native_ui(false).is_err());
+        assert!(!approvals.auto_approve_enabled());
+        assert!(approvals.set_auto_approve_from_native_ui(true).is_err());
+        assert!(!approvals.auto_approve_enabled());
+    }
+
+    #[cfg(feature = "gui")]
+    #[test]
+    fn only_the_interactive_gui_kernel_restores_automatic_approvals() {
+        use crate::{config::Config, kernel::Kernel};
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = Config::from_args(&[
+            "hato".into(),
+            "--repo-root".into(), dir.path().display().to_string(),
+            "--data-dir".into(), dir.path().join("data").display().to_string(),
+        ]).unwrap();
+        let gui = Kernel::new_gui(cfg.clone(), UiBridge::disconnected()).unwrap();
+        gui.approvals.set_auto_approve_from_native_ui(true).unwrap();
+        gui.shutdown();
+
+        let runner = Kernel::new(cfg.clone(), UiBridge::disconnected()).unwrap();
+        assert!(!runner.approvals.auto_approve_enabled());
+        runner.shutdown();
+        let gui = Kernel::new_gui(cfg, UiBridge::disconnected()).unwrap();
+        assert!(gui.approvals.auto_approve_enabled());
+        gui.shutdown();
     }
 }

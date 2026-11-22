@@ -3,7 +3,7 @@ use super::*;
 
 const LABEL: &str = "Automatically approve all security requests";
 const DESCRIPTION: &str =
-    "Hato will grant module and agent permission requests without asking. Anyone or anything that can run code in Hato gets full access.";
+    "Hato will grant module and agent permission requests without asking. Anyone or anything that can run code in Hato gets full access. Stays on after restarting Hato until you turn it off.";
 
 impl Shell {
     pub(super) fn security_preferences(&mut self, cx: &mut Context<Self>) -> AnyElement {
@@ -17,7 +17,7 @@ impl Shell {
                     window.focus(&cancel, cx);
                     this.security_confirm = Some(cancel);
                 } else {
-                    this.kernel.approvals.set_auto_approve_from_native_ui(false);
+                    this.change_auto_approve(false);
                 }
                 cx.notify();
             }));
@@ -57,7 +57,7 @@ impl Shell {
             }))
             .child(v_flex().w(px(520.0)).max_w(relative(0.94)).gap_3().p_4().rounded(px(10.0))
                 .border_2().border_color(cx.theme().warning).bg(cx.theme().background).shadow_lg()
-                .child(div().text_lg().font_weight(FontWeight::BOLD).child("Enable automatic approvals for this session?"))
+                .child(div().text_lg().font_weight(FontWeight::BOLD).child("Enable automatic approvals?"))
                 .child(div().text_sm().child(DESCRIPTION))
                 .child(h_flex().justify_end().gap_2()
                     .child(Button::new("trusted-security-cancel").primary().track_focus(&cancel_focus)
@@ -68,10 +68,22 @@ impl Shell {
                     .child(Button::new("trusted-security-enable").danger().label("Enable auto-approve")
                         .on_click(cx.listener(|this, _, _, cx| {
                             if this.security_confirm.take().is_some() {
-                                this.kernel.approvals.set_auto_approve_from_native_ui(true);
+                                this.change_auto_approve(true);
                             }
                             cx.notify();
                         })))))
             .into_any_element())
+    }
+
+    fn change_auto_approve(&mut self, enabled: bool) {
+        if let Err(error) = self.kernel.approvals.set_auto_approve_from_native_ui(enabled) {
+            log::error!("could not save automatic approvals setting: {error}");
+            let message = if enabled {
+                "Hato couldn’t save the setting. Automatic approvals are off."
+            } else {
+                "Automatic approvals are off now. Hato couldn’t save the change, so they may come back on after restart."
+            };
+            self.toasts.push(("error".into(), message.into(), Instant::now()));
+        }
     }
 }

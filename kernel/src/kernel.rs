@@ -77,13 +77,24 @@ pub const DISABLED: &str = "plugin is disabled";
 
 impl Kernel {
     pub fn new(cfg: Config, ui: UiBridge) -> anyhow::Result<Arc<Kernel>> {
+        Self::new_with_security_file(cfg, ui, None)
+    }
+
+    /// Only the interactive desktop restores native security preferences.
+    #[cfg(feature = "gui")]
+    pub(crate) fn new_gui(cfg: Config, ui: UiBridge) -> anyhow::Result<Arc<Kernel>> {
+        let security_file = cfg.security_dir().join("settings.json");
+        Self::new_with_security_file(cfg, ui, Some(security_file))
+    }
+
+    fn new_with_security_file(cfg: Config, ui: UiBridge, security_file: Option<PathBuf>) -> anyhow::Result<Arc<Kernel>> {
         let grants = GrantRegistry::load(cfg.approved_grants_file())?;
         let audit = Audit::new(cfg.logs_dir().join("audit.log"));
         let logs = ModuleLogs::open(cfg.logs_dir().join("modules.log"));
         let artifacts = ArtifactStore::open(cfg.artifacts_dir(), cfg.registry_file());
         let plugin_registry = cfg.plugin_registry_file();
         let k = Arc::new_cyclic(|me| Kernel {
-            approvals: Approvals::with_audit(ui.clone(), audit.clone()),
+            approvals: Approvals::with_audit(ui.clone(), audit.clone(), security_file),
             cfg,
             me: me.clone(),
             handles: HandleRegistry::default(),

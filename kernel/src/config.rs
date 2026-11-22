@@ -132,6 +132,7 @@ impl Config {
     pub fn artifacts_dir(&self) -> PathBuf { under(&self.data_dir, "artifacts") }
     pub fn registry_file(&self) -> PathBuf { under(&self.data_dir, "module-registry.json") }
     pub fn approved_grants_file(&self) -> PathBuf { under(&self.data_dir, "approved-grants.json") }
+    pub fn security_dir(&self) -> PathBuf { under(&self.data_dir, "security") }
     pub fn logs_dir(&self) -> PathBuf { under(&self.data_dir, "logs") }
     pub fn sqlite_dir(&self) -> PathBuf { under(&self.data_dir, "sqlite") }
     pub fn ssh_dir(&self) -> PathBuf { under(&self.data_dir, "ssh") }
@@ -159,6 +160,7 @@ impl Config {
             self.ssh_dir(),
             self.registry_file(),
             self.approved_grants_file(),
+            self.security_dir(),
             self.plugins_dir(),
             self.runtime_dir(),
             self.plugin_registry_file(),
