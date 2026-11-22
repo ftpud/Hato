@@ -394,6 +394,13 @@ export type UiNode =
       /** Icons in a separate gutter lane. The click action receives { marker, y }. */
       gutterMarkers?: { line: number; iconSvg: string; color?: UiColor; value?: Json }[];
       gutterMarkerAction?: string; gutterTooltip?: string;
+      /** Click / right-click on any line in the gutter lane (shown even without markers), with
+       *  {line, marker: value of a marker on that line or null, y}. A marker click with
+       *  `gutterMarkerAction` set fires that action instead. */
+      gutterClickAction?: string; gutterContextAction?: string;
+      /** Translucent full-line tints for zero-based `line..endLine` (exclusive; default one line), e.g. the
+       *  debugger's current line. `opacity` 0.05–1 (default 0.18) applies to `color` (default primary). */
+      lineHighlights?: { line: number; endLine?: number; color?: UiColor; opacity?: number }[];
       /** Dim text painted after the end of zero-based `line` (e.g. author and age of a declaration); it
        *  follows scrolling and soft wrap and takes no input. Code font at `lineAnnotationScale` (0.5–1.2,
        *  default 0.9) of its size, `color` or the muted color at `lineAnnotationOpacity` (default 0.65). */

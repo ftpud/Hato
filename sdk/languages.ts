@@ -12,6 +12,9 @@ export interface LanguageServerSpec {
   settings?: Record<string, any>; installHint: string; dependencySetup?: LanguageDependencySetup;
   /** Build file names (e.g. "pom.xml") whose error diagnostics are reported as project import problems. */
   buildFiles?: string[];
+  /** `workspace/executeCommand` commands other modules may run through language-service (e.g. a
+   *  debugger asking JDT LS to start java-debug). Anything else is refused. */
+  commands?: string[];
 }
 export interface LanguageDefinition {
   id: string; name: string; extensions?: string[]; filenames?: string[];

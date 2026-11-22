@@ -415,6 +415,51 @@ pub fn gutter_origins(state: &EditorState, markers: &[GutterMarker]) -> Vec<(Pix
         state.range_to_bounds(&(start..start)).map(|bounds| (bounds.top(), i))
     }).collect()
 }
+/// The visible buffer line under window `y` and that line's top. A soft-wrapped line owns every
+/// row until the next line starts.
+pub fn line_at_y(state: &EditorState, y: Pixels) -> Option<(usize, Pixels)> {
+    use gpui_component::input::RopeExt;
+    let text = state.text();
+    let rows = state.visible_row_range()?;
+    let mut hit = None;
+    for line in rows.start..rows.end.min(text.lines_len()) {
+        let start = text.line_start_offset(line);
+        let Some(bounds) = state.range_to_bounds(&(start..start)) else { continue };
+        if bounds.top() > y { break; }
+        hit = Some((line, bounds.top()));
+    }
+    hit
+}
+
+/// Module full-line tints (e.g. a debugger's current line), painted translucently over the text.
+pub struct LineHighlight { pub line: usize, pub end_line: usize, pub color: Hsla }
+pub fn line_highlights(spec: &Value, color: impl Fn(&str) -> Hsla) -> Vec<LineHighlight> {
+    spec.as_array().into_iter().flatten().take(200).filter_map(|h| {
+        let line = h["line"].as_u64()? as usize;
+        let end_line = h["endLine"].as_u64().map(|e| e as usize).unwrap_or(line + 1).max(line + 1);
+        let opacity = h["opacity"].as_f64().filter(|v| v.is_finite()).unwrap_or(0.18).clamp(0.05, 1.0) as f32;
+        Some(LineHighlight { line, end_line, color: color(h["color"].as_str().unwrap_or("primary")).opacity(opacity) })
+    }).collect()
+}
+/// Visible vertical bands (top, bottom) in window pixels for each highlight.
+pub fn highlight_bands(state: &EditorState, highlights: &[LineHighlight]) -> Vec<(Pixels, Pixels, Hsla)> {
+    use gpui_component::input::RopeExt;
+    let text = state.text();
+    let (Some(rows), Some(height)) = (state.visible_row_range(), state.line_height()) else { return vec![] };
+    let lines = text.lines_len();
+    let top_of = |line: usize| {
+        let start = text.line_start_offset(line);
+        state.range_to_bounds(&(start..start)).map(|b| b.top())
+    };
+    highlights.iter().filter(|h| h.line < rows.end && h.end_line > rows.start && h.line < lines).filter_map(|h| {
+        let first = h.line.max(rows.start);
+        let last = h.end_line.min(rows.end).min(lines);
+        let top = top_of(first)?;
+        let bottom = if last < lines { top_of(last).unwrap_or(top + height) } else { top_of(last - 1).map(|t| t + height)? };
+        Some((top, bottom.max(top + height), h.color))
+    }).collect()
+}
+
 /// Module-chosen code font (`codeViewer.font`): family, weight 100–900, size in px, and line
 /// height as a multiple of the size. Unset fields keep the editor's theme defaults.
 pub fn code_font(mut editor: gpui_component::input::Editor, font: &Value) -> gpui_component::input::Editor {
@@ -777,5 +822,24 @@ mod highlight_query_tests {
         assert_eq!(ranges, [0..1, 1..2, 2..4, 4..5, 5..6]);
         assert_eq!(out[1].1.background_color, base.background_color);
         assert_eq!(out[1].1.color, over.color);
+    }
+}
+
+#[cfg(test)]
+mod highlight_tests {
+    use super::line_highlights;
+    use gpui_kit as gpui;
+    use gpui::{hsla, Hsla};
+    use serde_json::json;
+
+    #[test]
+    fn parses_ranges_opacity_and_rejects_bad_entries() {
+        let red: Hsla = hsla(0.0, 1.0, 0.5, 1.0);
+        let spec = json!([{ "line": 3 }, { "line": 5, "endLine": 2, "opacity": 0.5, "color": "danger" }, { "line": -1 }, { "endLine": 4 }, { "line": 7, "opacity": 9 }]);
+        let parsed = line_highlights(&spec, |_| red);
+        assert_eq!(parsed.iter().map(|h| (h.line, h.end_line)).collect::<Vec<_>>(), vec![(3, 4), (5, 6), (7, 8)]);
+        assert!((parsed[0].color.a - 0.18).abs() < 1e-6, "default opacity");
+        assert!((parsed[1].color.a - 0.5).abs() < 1e-6);
+        assert!((parsed[2].color.a - 1.0).abs() < 1e-6, "opacity is clamped");
     }
 }

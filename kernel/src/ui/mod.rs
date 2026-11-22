@@ -1284,9 +1284,12 @@ impl Shell {
                             }
                         };
                         let gutter = editor::gutter_markers(&n["gutterMarkers"], |c| theme::color(cx, c, theme_muted));
-                        let editor_content = div().size_full().when(!gutter.is_empty(), |d| d.pl(px(23.0))).child(editor_el);
+                        // Line clicks need the lane even before any marker exists (e.g. adding a breakpoint).
+                        let (click_action, context_action) = (s("gutterClickAction"), s("gutterContextAction"));
+                        let lane_on = !gutter.is_empty() || !click_action.is_empty() || !context_action.is_empty();
+                        let editor_content = div().size_full().when(lane_on, |d| d.pl(px(23.0))).child(editor_el);
                         let mut surface = div().relative().size_full().capture_key_down(dismiss_hints).on_action(on_menu).child(editor_content).children(hints);
-                        if !gutter.is_empty() {
+                        if lane_on {
                             let gutter = std::rc::Rc::new(gutter);
                             let (paint_state, icons) = (st.clone(), gutter.clone());
                             let strip = canvas(|_, _, _| (), move |bounds, _, window, cx| {
@@ -1307,18 +1310,55 @@ impl Shell {
                             let inputs = self.module_inputs(module);
                             let lane = div().id(sid(module, &format!("{path}/gutter"))).absolute().left(px(7.0)).top_0().bottom_0().w(px(16.0))
                                 .when_some(n["gutterTooltip"].as_str().map(str::to_owned), |d, tooltip| d.tooltip(move |window, cx| gpui_component::tooltip::Tooltip::new(tooltip.clone()).build(window, cx)))
-                                .when(!action.is_empty(), |d| d.cursor_pointer().on_mouse_down(MouseButton::Left, move |ev, window, cx| {
-                                    let state = hit_state.read(cx);
-                                    let Some(height) = state.line_height() else { return; };
-                                    if let Some((top, i)) = editor::gutter_origins(state, &gutter).into_iter()
-                                        .find(|(top, _)| ev.position.y >= *top && ev.position.y < *top + height) {
-                                        let y = f32::from(top - state.input_bounds().origin.y);
-                                        let value = json!({"marker": gutter[i].value, "y": y});
+                                .when(!action.is_empty() || !click_action.is_empty(), |d| {
+                                    let (k, m, key, inputs, hit_state, gutter, action, click_action) =
+                                        (k.clone(), m.clone(), key.clone(), inputs.clone(), hit_state.clone(), gutter.clone(), action.clone(), click_action.clone());
+                                    d.cursor_pointer().on_mouse_down(MouseButton::Left, move |ev, window, cx| {
+                                        let state = hit_state.read(cx);
+                                        let Some(height) = state.line_height() else { return; };
+                                        let origin = state.input_bounds().origin.y;
+                                        if !action.is_empty() {
+                                            if let Some((top, i)) = editor::gutter_origins(state, &gutter).into_iter()
+                                                .find(|(top, _)| ev.position.y >= *top && ev.position.y < *top + height) {
+                                                let value = json!({"marker": gutter[i].value, "line": gutter[i].line, "y": f32::from(top - origin)});
+                                                window.prevent_default(); cx.stop_propagation();
+                                                Self::fire(&k, &m, &inputs, &action, &key, None, value, cx);
+                                                return;
+                                            }
+                                        }
+                                        if click_action.is_empty() { return; }
+                                        let Some((line, top)) = editor::line_at_y(state, ev.position.y) else { return; };
+                                        let marker = gutter.iter().find(|g| g.line == line).map(|g| g.value.clone()).unwrap_or(Value::Null);
                                         window.prevent_default(); cx.stop_propagation();
-                                        Self::fire(&k, &m, &inputs, &action, &key, None, value, cx);
-                                    }
-                                })).child(strip);
+                                        Self::fire(&k, &m, &inputs, &click_action, &key, None, json!({"line": line, "marker": marker, "y": f32::from(top - origin)}), cx);
+                                    })
+                                })
+                                .when(!context_action.is_empty(), |d| {
+                                    let (k, m, key, inputs, hit_state, gutter) = (k.clone(), m.clone(), key.clone(), inputs.clone(), hit_state.clone(), gutter.clone());
+                                    d.on_mouse_down(MouseButton::Right, move |ev, window, cx| {
+                                        let state = hit_state.read(cx);
+                                        let Some((line, top)) = editor::line_at_y(state, ev.position.y) else { return; };
+                                        let marker = gutter.iter().find(|g| g.line == line).map(|g| g.value.clone()).unwrap_or(Value::Null);
+                                        let y = f32::from(top - state.input_bounds().origin.y);
+                                        window.prevent_default(); cx.stop_propagation();
+                                        Self::fire(&k, &m, &inputs, &context_action, &key, None, json!({"line": line, "marker": marker, "y": y}), cx);
+                                    })
+                                })
+                                .child(strip);
                             surface = surface.child(lane);
+                        }
+                        let highlights = editor::line_highlights(&n["lineHighlights"], |c| theme::color(cx, c, theme_muted));
+                        if !highlights.is_empty() {
+                            // Translucent full-line tints over the text; no hitbox, so input passes through.
+                            let (paint_state, highlights) = (st.clone(), std::rc::Rc::new(highlights));
+                            surface = surface.child(div().absolute().top_0().left_0().size_full().child(canvas(|_, _, _| (), move |bounds, _, window, cx| {
+                                let state = paint_state.read(cx);
+                                window.with_content_mask(Some(ContentMask { bounds }), |window| {
+                                    for (top, bottom, color) in editor::highlight_bands(state, &highlights) {
+                                        window.paint_quad(fill(Bounds::new(point(bounds.left(), top), size(bounds.size.width, bottom - top)), color));
+                                    }
+                                });
+                            }).size_full()));
                         }
                         let annotations = editor::line_annotations(&n["lineAnnotations"], |c| Some(theme::color(cx, c, theme_muted)));
                         if !annotations.is_empty() {
