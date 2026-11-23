@@ -924,7 +924,7 @@ fn dispatch(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: &Value) -> H
             }
             let config = cloud::Config::load(path).map_err(|e| HostError::invalid(e.to_string()))?;
             let label = config.label();
-            let fingerprint = config.fingerprint();
+            let fingerprint = config.fingerprint().ok_or_else(|| HostError::invalid("desktop Cloud connections require a pinned host key"))?;
             k.require_approval(gen, "daemon.cloudConnect", "Connect to a Cloud host",
                 &format!("Module '{owner}' requests full access as the daemon user on {label}.\nHost key SHA-256: {fingerprint}"))?;
             check_alive(gen, true)?;

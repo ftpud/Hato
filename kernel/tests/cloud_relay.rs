@@ -398,3 +398,28 @@ async fn exercise() -> Result<()> {
     }
     Ok(())
 }
+
+#[test]
+#[ignore = "started by HatoCloud's native enrolment integration test"]
+fn enrolled_connector_exchange() -> Result<()> {
+    let configuration = |name| -> Result<Connection> {
+        let file = std::env::var_os(name).with_context(|| format!("missing {name}"))?;
+        Ok(Connection::new(Config::load(Path::new(&file))?))
+    };
+    let client = configuration("HATO_CLOUD_M2_CLIENT")?;
+    let unregistered = configuration("HATO_CLOUD_M2_UNKNOWN_KEY")?;
+    Connection::wait(async {
+        let status = hello(&client).await?;
+        ensure!(status["abi"] == 1);
+        if let Ok(os) = std::env::var("HATO_CLOUD_M2_EXPECT_OS") {
+            ensure!(status["os"] == os, "unexpected enrolled connector platform");
+        }
+        let run = program(&client, Kind::Exec, "printf m2-enrolled").await?;
+        ensure!(output(&run).await? == b"m2-enrolled");
+        ensure!(
+            unregistered.open(Kind::Control).await.is_err(),
+            "host accepted an unregistered key"
+        );
+        Ok(())
+    })
+}

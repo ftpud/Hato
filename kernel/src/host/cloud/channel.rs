@@ -1,5 +1,5 @@
-use super::noise::Keys;
 use super::wire::{Frame, CHUNK, DATA, WINDOW};
+use super::Config;
 use anyhow::{anyhow, bail, Result};
 use parking_lot::Mutex;
 use snow::TransportState;
@@ -101,21 +101,29 @@ impl Tunnel {
         self.data(bytes.into()).await
     }
 
-    pub async fn authenticate(&mut self, keys: &Keys, initiator: bool) -> Result<TransportState> {
-        let mut state = keys.handshake(initiator)?;
+    pub async fn authenticate(
+        &mut self,
+        config: &Arc<Config>,
+        initiator: bool,
+    ) -> Result<TransportState> {
+        let mut state = config.keys.handshake(initiator)?;
         if initiator {
             self.write_handshake(&mut state).await?;
             self.read_handshake(&mut state).await?;
-            keys.finish(state)
+            if state.get_remote_static() != config.keys.peer() {
+                bail!("Noise host key does not match the configured pin");
+            }
         } else {
             self.read_handshake(&mut state).await?;
-            // Authenticate the desktop before writing the response or opening the daemon socket.
-            if state.get_remote_static() != Some(keys.peer()) {
-                bail!("Noise desktop key does not match the configured pin");
+            let peer = state
+                .get_remote_static()
+                .ok_or_else(|| anyhow!("Noise desktop key missing"))?;
+            if !config.authorize_desktop(peer).await? {
+                bail!("Noise desktop key is not authorized");
             }
             self.write_handshake(&mut state).await?;
-            keys.finish(state)
         }
+        Ok(state.into_transport_mode()?)
     }
 
     pub async fn bridge<T: AsyncRead + AsyncWrite + Unpin>(

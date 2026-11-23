@@ -1,5 +1,6 @@
 //! Kernel-owned, multiplexed transport to a same-user daemon socket.
 mod channel;
+mod enrol;
 mod noise;
 mod program;
 mod wire;
@@ -47,7 +48,10 @@ struct ConfigFile {
     host_id: String,
     token: String,
     private_key: String,
-    peer_key: String,
+    peer_key: Option<String>,
+    peer_fingerprint: Option<String>,
+    server: Option<String>,
+    public_key: Option<String>,
     relay_ca_der: Option<String>,
 }
 
@@ -56,6 +60,7 @@ pub struct Config {
     host_id: String,
     token: String,
     keys: Keys,
+    server: Option<String>,
     tls: Option<Arc<rustls::ClientConfig>>,
 }
 
@@ -111,23 +116,24 @@ impl Config {
         {
             bail!("invalid Cloud host ID or token");
         }
-        let uri: http::Uri = file.relay.parse().context("invalid Cloud relay URL")?;
-        let scheme = uri.scheme_str();
-        let authority = uri
-            .authority()
-            .ok_or_else(|| anyhow!("invalid Cloud relay authority"))?;
-        let is_loopback = matches!(authority.host(), "127.0.0.1" | "[::1]");
-        if uri.path() != "/"
-            || uri.query().is_some()
-            || authority.as_str().contains('@')
-            || !(scheme == Some("wss") || scheme == Some("ws") && is_loopback)
-        {
-            bail!("Cloud relay requires a WSS origin, or WS on literal loopback for local development");
+        let relay = enrol::origin(&file.relay, true)?;
+        let server = file
+            .server
+            .as_deref()
+            .map(|server| enrol::origin(server, false))
+            .transpose()?;
+        match (&server, &file.peer_key, &file.public_key) {
+            (Some(server), None, Some(public_key))
+                if enrol::relay_for(server) == relay
+                    && public_key.len() == 64
+                    && public_key.bytes().all(|b| b.is_ascii_hexdigit()) => {}
+            (None, Some(_), None) => {}
+            _ => bail!("expected an enrolled host credential or a pinned desktop configuration"),
         }
         let tls = file
             .relay_ca_der
             .map(|encoded| {
-                if scheme != Some("wss") {
+                if !relay.starts_with("wss://") {
                     bail!("a relay CA requires WSS");
                 }
                 let der = base64::engine::general_purpose::STANDARD
@@ -142,11 +148,18 @@ impl Config {
                 ))
             })
             .transpose()?;
+        let keys = Keys::new(&file.private_key, file.peer_key.as_deref())?;
+        if let Some(expected) = file.peer_fingerprint {
+            if keys.peer().map(crate::util::sha256_hex).as_deref() != Some(expected.as_str()) {
+                bail!("Cloud host key does not match the expected fingerprint");
+            }
+        }
         Ok(Self {
-            relay: file.relay.trim_end_matches('/').to_string(),
+            relay,
             host_id: file.host_id,
             token: file.token,
-            keys: Keys::new(&file.private_key, &file.peer_key)?,
+            keys,
+            server,
             tls,
         })
     }
@@ -160,8 +173,24 @@ impl Config {
         format!("cloud:{}", crate::util::sha256_hex(self.label().as_bytes()))
     }
 
-    pub fn fingerprint(&self) -> String {
-        crate::util::sha256_hex(self.keys.peer())
+    pub fn fingerprint(&self) -> Option<String> {
+        self.keys.peer().map(crate::util::sha256_hex)
+    }
+
+    async fn authorize_desktop(self: &Arc<Self>, peer: &[u8]) -> Result<bool> {
+        if let Some(key) = self.keys.peer() {
+            return Ok(peer == key);
+        }
+        let config = self.clone();
+        let peer = peer.to_vec();
+        tokio::task::spawn_blocking(move || {
+            let server = config
+                .server
+                .as_deref()
+                .context("missing Cloud account authority")?;
+            enrol::trusted_device(server, &config.token, &peer)
+        })
+        .await?
     }
 }
 
@@ -223,7 +252,7 @@ impl Session {
         let task = tokio::spawn(async move {
             let result = async {
                 let noise =
-                    timeout(DEADLINE, tunnel.authenticate(&config.keys, reply.is_some())).await??;
+                    timeout(DEADLINE, tunnel.authenticate(&config, reply.is_some())).await??;
                 if let Some(reply) = reply {
                     let (pipe, mut bridge) = tokio::io::duplex(wire::CHUNK);
                     let (lifetime, dropped) = oneshot::channel();
@@ -520,6 +549,8 @@ pub fn cli(args: &[String]) -> i32 {
     let result = match args.first().map(String::as_str) {
         Some("keygen") if args.len() == 2 => keygen(Path::new(&args[1])),
         #[cfg(unix)]
+        Some("enroll") => enrol::run(&args[1..]),
+        #[cfg(unix)]
         Some("connect") => {
             let flags = crate::daemon::Args::parse(&args[1..]);
             let home = crate::daemon::home_dir(flags.get("dir"));
@@ -532,7 +563,7 @@ pub fn cli(args: &[String]) -> i32 {
             })
         }
         _ => Err(anyhow!(
-            "usage: hato cloud keygen <private-key-file> | connect [--dir DIR] [--config FILE]"
+            "usage: hato cloud keygen <private-key-file> | enroll [--server URL] [--claim -] | connect [--dir DIR] [--config FILE]"
         )),
     };
     match result {
