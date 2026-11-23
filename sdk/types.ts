@@ -175,12 +175,27 @@ export interface NativeHost {
     discard(stageId: string): Promise<void>;
     sourceInfo(): Promise<{ repoRoot: string; sdkRoot: string; modulesRoot: string; buildTool: string | null }>;
   };
+  /** Cloud device credentials stay in broker-owned storage. Requires `cloud.account`. */
+  cloud: {
+    begin(server: string): Promise<{ publicKey: string; fingerprint: string; state: string; verifier: string; challenge: string }>;
+    device(server: string): Promise<{ id: string; name: string; fingerprint: string } | null>;
+    exchange(server: string, body: { code: string; verifier: string; redirect_uri: string }): Promise<HttpResponse>;
+    request(server: string, path: string, method?: HttpRequest["method"], body?: object): Promise<HttpResponse>;
+    clear(server: string): Promise<void>;
+    events(server: string): Promise<{ handle: Handle }>;
+    connect(server: string, host: { hostId: string; publicKey: string; fingerprint: string }): Promise<CloudDaemonConnection>;
+    disconnect(connection: Handle): Promise<void>;
+    share(connection: Handle, recipient: string): Promise<CloudDaemonTarget>;
+    enrolSsh(connection: Handle, args: { server: string; name: string; claim: string }): Promise<{ hostId: string }>;
+    superviseSsh(connection: Handle): Promise<void>;
+  };
   /** Remote runtime (`hato daemon`): holds terminals/processes across disconnects and hosts
    *  plugins on the workspace machine. Requires the `remote.daemon` capability. */
   daemon: {
     /** M1 dev config on disk. Requires remote.daemon.admin and trusted native approval. */
     cloudConnect(configPath: string): Promise<CloudDaemonConnection>;
     /** Full-host command on an approved Cloud connection. Release its handle to end the channel. */
+    cloudOpenTerminal(target: CloudDaemonTarget, options: { cwd: string; key: string; columns?: number; rows?: number }): Promise<{ handle: Handle; machineId: string; cwd: string }>;
     cloudOpenProgram(target: CloudDaemonTarget, request: CloudProgramRequest): Promise<{ handle: Handle; machineId: string }>;
     /** One read at a time. ECLOUD indicates transport failure. A later independent call may reconnect. */
     cloudReadProgram(handle: Handle, waitMs?: number): Promise<CloudProgramOutput>;

@@ -1,6 +1,6 @@
 // Shared helpers bundled (statically, at build time) into modules. Not a live module: nothing
 // here is imported at runtime from another module's generation.
-import type { ExecutionTarget, Handle, ModuleContext, ScopeGrant, SshProfileSpec } from "./types";
+import type { DaemonTarget, ExecutionTarget, Handle, ModuleContext, ScopeGrant, SshProfileSpec } from "./types";
 
 /** Workspace descriptor produced by the `workspace` service (the kernel never parses it). */
 export interface WorkspaceDescriptor {
@@ -8,7 +8,8 @@ export interface WorkspaceDescriptor {
   projectId: string;
   taskId?: string | null;
   name: string;
-  location: "local" | "ssh";
+  location: "local" | "ssh" | "cloud";
+  cloudHostId?: string;
   machineId: string; // local | ssh:<profileId>
   rootAbsolutePath: string; // path ON that machine
   connectionRef?: string | null; // ssh profile id (no credentials)
@@ -56,8 +57,24 @@ export function forgetSsh(machineId: string) {
   for (const k of Array.from(grantCache.keys())) if (k.includes("|" + machineId + "|")) grantCache.delete(k);
 }
 
+/** Resolve a daemon target explicitly. Caller modules receive their own Cloud handle. */
+export async function daemonTargetFor(ctx: ModuleContext, desc: WorkspaceDescriptor): Promise<DaemonTarget> {
+  switch (desc.location) {
+    case "local": return { kind: "local" };
+    case "ssh": return { kind: "ssh", connection: (await sshConnect(ctx, desc)).connection };
+    case "cloud": {
+      if (!desc.cloudHostId) throw new Error("Cloud workspace is missing its host.");
+      const target = await ctx.modules.call<DaemonTarget>("cloud", "target", { hostId: desc.cloudHostId }, { timeoutMs: 620000 });
+      if (target?.kind !== "cloud" || !target.connection) throw new Error("Invalid Cloud daemon route.");
+      return target;
+    }
+    default: throw new Error("Unsupported workspace location.");
+  }
+}
+
 export async function targetFor(ctx: ModuleContext, desc: WorkspaceDescriptor): Promise<ExecutionTarget> {
   if (desc.location === "local") return { kind: "local" };
+  if (desc.location === "cloud") throw new Error("Files and Git are not available over Cloud yet.");
   const c = await sshConnect(ctx, desc);
   return { kind: "ssh", connection: c.connection, machineId: c.machineId };
 }

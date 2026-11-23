@@ -11,6 +11,17 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 use std::time::Duration;
 
+static BROWSER: Mutex<Option<std::collections::VecDeque<String>>> = Mutex::new(None);
+
+pub fn capture_browser(url: &str) -> bool {
+    let mut browser = BROWSER.lock();
+    if let Some(queue) = browser.as_mut() {
+        if queue.len() == 16 { queue.pop_front(); }
+        queue.push_back(url.to_string());
+        true
+    } else { false }
+}
+
 pub static DONE: Mutex<Option<(bool, Value)>> = Mutex::new(None);
 
 pub fn run(k: &Arc<Kernel>, script: &std::path::Path) -> anyhow::Result<bool> {
@@ -22,7 +33,7 @@ pub fn run(k: &Arc<Kernel>, script: &std::path::Path) -> anyhow::Result<bool> {
     let (tx, rx) = crossbeam_channel::unbounded();
     let gen = Arc::new(Generation {
         gen_id: k.router.alloc_gen_id(), module_id: "__driver".into(), version: 1, kind: "service".into(), hash: String::new(),
-        stage_id: String::new(), manifest, caps: EffectiveCaps { caps: ["remote.daemon", "pty.scope", "process.scope", "fs.scope", "ssh.connect"].into_iter().map(String::from).collect(), calls: ["*".to_string()].into_iter().collect() },
+        stage_id: String::new(), manifest, caps: EffectiveCaps { caps: ["remote.daemon", "pty.scope", "process.scope", "fs.scope", "ssh.connect", "net.fetch"].into_iter().map(String::from).collect(), calls: ["*".to_string()].into_iter().collect() },
         tx, status: Mutex::new(GenStatus::Loading), inflight: Default::default(), exports: Mutex::new(Value::Null),
         errors: Default::default(), created: std::time::Instant::now(),
     });
@@ -52,6 +63,28 @@ pub fn driver_op(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: &Value)
         return Err(HostError::denied("test ops unavailable"));
     }
     match op {
+        "test.browserCapture" => {
+            *BROWSER.lock() = Some(Default::default());
+            Ok(Value::Null)
+        }
+        "test.browserNext" => Ok(BROWSER.lock().as_mut().and_then(|queue| queue.pop_front()).map(Value::String).unwrap_or(Value::Null)),
+        "test.cloudProgram" => {
+            use crate::host::cloud::{Connection, Kind};
+            let c: Arc<Connection> = k.handles.get_kernel(arg_str(args, "connection")?, "cloud-connection")
+                .ok_or_else(|| HostError::not_found("no Cloud connection"))?;
+            let kind = if args["kind"] == "pty" { Kind::Pty } else { Kind::Exec };
+            Connection::wait(async {
+                let program = c.program(kind, json!({ "sh": arg_str(args, "command")? })).await?;
+                let mut frames = Vec::new();
+                while frames.len() < 16 {
+                    let frame = program.read(Duration::from_secs(5)).await?;
+                    let exited = frame["kind"] == "exit";
+                    frames.push(frame);
+                    if exited { return Ok(Value::Array(frames)); }
+                }
+                Err(HostError::invalid("Cloud test program produced too many frames"))
+            })
+        }
         "test.render" => k.router.invoke_blocking(arg_str(args, "module")?, json!({"kind": "render"}), Duration::from_secs(20)),
         "test.event" => {
             let m = arg_str(args, "module")?.to_string();

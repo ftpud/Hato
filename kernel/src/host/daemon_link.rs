@@ -210,6 +210,27 @@ pub fn ensure_ssh(table: &DaemonTable, master: &Arc<SshMaster>, data_dir: &std::
     Ok(info)
 }
 
+pub fn cloud_enrol(master: &SshMaster, info: &DaemonInfo, server: &str, name: &str, claim: &str) -> HResult<Value> {
+    if claim.len() != 43 || !claim.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_') {
+        return Err(HostError::invalid("Invalid Cloud enrolment claim"));
+    }
+    let command = format!("{} cloud enroll --dir {} --server {} --name {} --claim -",
+        sh_quote(&info.bin), sh_quote(&info.dir), sh_quote(server), sh_quote(name));
+    let (code, out, err) = run_ssh(master, &command, Some(claim.as_bytes()), Duration::from_secs(30))?;
+    if code != 0 { return Err(HostError::new("ECLOUD", format!("Could not enrol host: {}", err.trim()))); }
+    let id = out.lines().find_map(|line| line.strip_prefix("Enrolled host "))
+        .ok_or_else(|| HostError::new("ECLOUD", "Host enrolment returned no host ID"))?;
+    Ok(json!({ "hostId": id }))
+}
+
+pub fn cloud_supervise(master: &SshMaster, info: &DaemonInfo) -> HResult<()> {
+    let require = if info.status["stale"] == true { " --require-systemd" } else { "" };
+    let command = format!("{} cloud supervise --dir {}{require}", sh_quote(&info.bin), sh_quote(&info.dir));
+    let (code, _, err) = run_ssh(master, &command, None, Duration::from_secs(60))?;
+    if code != 0 { return Err(HostError::new("ECLOUD", format!("Could not supervise connector: {}", err.trim()))); }
+    Ok(())
+}
+
 /// Reverse loopback forward: remote 127.0.0.1:<allocated> reaches local 127.0.0.1:<local_port>.
 /// WSL shares no loopback with Windows, so its leg goes through a relay process in Linux.
 pub fn forward_reverse(master: &Arc<SshMaster>, local_port: u16, data_dir: &std::path::Path, repo_root: &std::path::Path) -> HResult<u16> {

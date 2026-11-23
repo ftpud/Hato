@@ -193,6 +193,8 @@ pub fn serve(home: &Path, idle_secs: u64) -> anyhow::Result<()> {
         started: Instant::now(),
         ephemeral: Mutex::new(Default::default()),
     });
+    let connector_home = home.to_path_buf();
+    std::thread::spawn(move || crate::host::cloud::supervise_daemon(connector_home));
     let d2 = d.clone();
     let touched = sock.clone();
     std::thread::Builder::new().name("idle".into()).spawn(move || loop {
@@ -240,7 +242,7 @@ impl Daemon {
 
     /// Idle = no connections, no live resources, no enabled plugins.
     fn idle_for(&self) -> Duration {
-        if self.connections.load(Ordering::SeqCst) > 0 || !self.ptys.lock().is_empty() || !self.procs.lock().is_empty() {
+        if crate::host::cloud::daemon_managed(&self.home) || self.connections.load(Ordering::SeqCst) > 0 || !self.ptys.lock().is_empty() || !self.procs.lock().is_empty() {
             return Duration::ZERO;
         }
         let plugins = self.kernel.plugins_json();

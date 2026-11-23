@@ -246,7 +246,7 @@ pub fn host_async(k: &Arc<Kernel>, gen: &Arc<Generation>, op: String, args: Valu
 /// Audit text for an op. Requests that can carry credentials (headers, form bodies) are reduced
 /// to their method and host/path.
 fn audit_summary(op: &str, args: &Value) -> String {
-    if op.starts_with("daemon.cloud") || args["target"]["kind"] == "cloud" {
+    if op.starts_with("cloud.") || op.starts_with("daemon.cloud") || args["target"]["kind"] == "cloud" {
         return "Cloud daemon operation".into();
     }
     if op == "net.fetch" {
@@ -751,6 +751,7 @@ fn dispatch(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: &Value) -> H
                     let p: Arc<ProcessRes> = k.handles.get(h, "process", owner)?;
                     if channel == "stderr" { p.stderr.clone() } else { p.stdout.clone() }
                 }
+                Some("cloud-events") => k.handles.get::<cloud::account::Events>(h, "cloud-events", owner)?.0.clone(),
                 Some("netconn") => k.handles.get::<NetConn>(h, "netconn", owner)?.stream.clone(),
                 Some("listener") => k.handles.get::<NetListener>(h, "listener", owner)?.events.clone(),
                 _ => return Err(HostError::new("EBADF", "handle has no stream")),
@@ -915,6 +916,101 @@ fn dispatch(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: &Value) -> H
         }
 
         // ---------------------------------------------------------------- remote runtime
+        "cloud.begin" | "cloud.device" | "cloud.exchange" | "cloud.request" | "cloud.clear" | "cloud.events" => {
+            gen.caps.require("cloud.account")?;
+            let account = cloud::account::Account::new(&k.cfg.data_dir, owner, arg_str(args, "server")?)?;
+            match op {
+                "cloud.begin" => account.begin(),
+                "cloud.device" => Ok(account.device()),
+                "cloud.exchange" => { check_alive(gen, true)?; account.exchange(&args["body"]) },
+                "cloud.clear" => { check_alive(gen, true)?; account.clear()?; Ok(Value::Null) },
+                "cloud.events" => {
+                    let handle = k.handles.insert("cloud-events", owner, "Cloud presence", account.events()?);
+                    Ok(json!({ "handle": handle }))
+                }
+                _ => account.request(arg_str(args, "path")?, arg_opt_str(args, "method").unwrap_or("GET"), &args["body"]),
+            }
+        }
+        "cloud.connect" => {
+            gen.caps.require("cloud.account")?;
+            gen.caps.require("remote.daemon.admin")?;
+            let server = arg_str(args, "server")?;
+            let id = arg_str(args, "hostId")?;
+            let fingerprint = arg_str(args, "fingerprint")?;
+            let account = cloud::account::Account::new(&k.cfg.data_dir, owner, server)?;
+            let connection = Arc::new(account.connection(id, arg_str(args, "publicKey")?, fingerprint)?);
+            k.require_approval(gen, "cloud.connect", "Connect to a Cloud host",
+                &format!("Module '{owner}' requests full access as the daemon user on {id} at {server}.\nHost key SHA-256: {fingerprint}"))?;
+            check_alive(gen, true)?;
+            let machine_id = connection.machine_id();
+            let status = cloud_status(&connection)?;
+            let handle = k.handles.insert("cloud-connection", owner, format!("Cloud host {id}"), connection);
+            Ok(json!({ "target": { "kind": "cloud", "connection": handle }, "machineId": machine_id,
+                "hostKeyFingerprint": fingerprint, "status": status }))
+        }
+        "cloud.disconnect" => {
+            gen.caps.require("cloud.account")?;
+            let handle = arg_str(args, "connection")?;
+            let c = k.handles.get::<cloud::Connection>(handle, "cloud-connection", owner)?;
+            cloud::Connection::wait(c.disconnect());
+            k.handles.remove(handle, owner)?;
+            Ok(Value::Null)
+        }
+        "cloud.share" => {
+            gen.caps.require("cloud.account")?;
+            let connection = arg_str(args, "connection")?;
+            let c = k.handles.get::<cloud::Connection>(connection, "cloud-connection", owner)?;
+            let recipient = arg_str(args, "recipient")?;
+            let recipient_gen = k.router.active(recipient).ok_or_else(|| HostError::not_found("Cloud recipient is not active"))?;
+            recipient_gen.caps.require("remote.daemon")?;
+            let key = format!("cloud-route:{}", c.machine_id());
+            if let Some(existing) = k.handles.lookup(recipient, &key) {
+                if let Ok(old) = k.handles.get::<cloud::Connection>(&existing, "cloud-connection", recipient) {
+                    if Arc::ptr_eq(&old, &c) {
+                        return Ok(json!({ "kind": "cloud", "connection": existing }));
+                    }
+                }
+                k.handles.remove(&existing, recipient)?;
+            }
+            let handle = k.handles.insert("cloud-connection", recipient, "Cloud daemon route", c);
+            k.handles.retain(&handle, recipient, &key)?;
+            Ok(json!({ "kind": "cloud", "connection": handle }))
+        }
+        "cloud.enrolSsh" | "cloud.superviseSsh" => {
+            gen.caps.require("cloud.account")?;
+            gen.caps.require("remote.daemon.admin")?;
+            gen.caps.require("ssh.connect")?;
+            check_alive(gen, true)?;
+            let c = k.handles.get::<SshConnRef>(arg_str(args, "connection")?, "ssh", owner)?;
+            let info = k.daemons.get(&c.master.profile.machine_id()).ok_or_else(|| HostError::new("EDAEMON", "Install the host daemon first"))?;
+            if op == "cloud.enrolSsh" {
+                return daemon_link::cloud_enrol(&c.master, &info, arg_str(args, "server")?, arg_str(args, "name")?, arg_str(args, "claim")?);
+            }
+            daemon_link::cloud_supervise(&c.master, &info)?;
+            Ok(Value::Null)
+        }
+        "daemon.cloudOpenTerminal" => {
+            gen.caps.require("remote.daemon")?;
+            gen.caps.require("pty.scope")?;
+            check_alive(gen, true)?;
+            let connection = cloud_target(k, owner, args)?.ok_or_else(|| HostError::invalid("expected a Cloud daemon target"))?;
+            let cwd = normalize_posix(arg_str(args, "cwd")?).ok_or_else(|| HostError::invalid("terminal cwd must be an absolute host path"))?;
+            let key = daemon_link::scoped_key(owner, arg_str(args, "key")?)?;
+            let cols = args["columns"].as_u64().unwrap_or(120).clamp(10, 1000) as u16;
+            let rows = args["rows"].as_u64().unwrap_or(30).clamp(3, 500) as u16;
+            let program = cloud::Connection::wait(connection.terminal(json!({
+                "cwd": cwd, "key": key, "columns": cols, "rows": rows
+            })))?;
+            let sess = pty::open_cloud(PtySpec {
+                remote: None, program: String::new(), args: vec![], cwd: None, env: vec![],
+                cols, rows, machine_id: connection.machine_id(), display_cwd: cwd, answer_queries: false,
+            }, program)?;
+            let h = k.handles.insert("pty", owner, format!("pty {}", sess.cwd), sess.clone());
+            let ui = k.ui.clone();
+            let h2 = h.clone();
+            *sess.notify.lock() = Some(Arc::new(move || ui.send(UiMsg::TerminalDirty(h2.clone()))));
+            Ok(json!({ "handle": h, "machineId": sess.machine_id, "cwd": sess.cwd }))
+        }
         "daemon.cloudConnect" => {
             gen.caps.require("remote.daemon")?;
             gen.caps.require("remote.daemon.admin")?;
@@ -1084,6 +1180,7 @@ fn dispatch(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: &Value) -> H
                 return Err(HostError::invalid("only http(s) URLs can be opened"));
             }
             if !k.ui.connected() {
+                if k.cfg.headless && crate::headless::capture_browser(url) { return Ok(Value::Null); }
                 return Err(HostError::new("ENOTSUP", "no window (headless)"));
             }
             k.audit.record(owner, gen.gen_id, "ui.openUrl", &url.split(['?', '#']).next().unwrap_or("").chars().take(200).collect::<String>(), "ok", None);

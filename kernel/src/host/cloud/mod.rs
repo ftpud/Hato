@@ -1,8 +1,11 @@
 //! Kernel-owned, multiplexed transport to a same-user daemon socket.
+pub mod account;
 mod channel;
 mod enrol;
 mod noise;
 mod program;
+#[cfg(unix)]
+mod supervise;
 mod wire;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -460,6 +463,7 @@ async fn drive(
 pub struct Connection {
     config: Arc<Config>,
     link: tokio::sync::Mutex<Option<(Link, JoinHandle<()>)>>,
+    closed: std::sync::atomic::AtomicBool,
 }
 
 impl Connection {
@@ -467,6 +471,7 @@ impl Connection {
         Self {
             config: Arc::new(config),
             link: tokio::sync::Mutex::new(None),
+            closed: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -477,6 +482,9 @@ impl Connection {
     pub async fn open(&self, kind: Kind) -> Result<Channel> {
         let sender = {
             let mut link = self.link.lock().await;
+            if self.closed.load(std::sync::atomic::Ordering::Acquire) {
+                bail!("Cloud connection closed");
+            }
             if !link
                 .as_ref()
                 .is_some_and(|(sender, task)| !sender.is_closed() && !task.is_finished())
@@ -505,6 +513,14 @@ impl Connection {
         timeout(DEADLINE, result)
             .await?
             .map_err(|_| anyhow!("Cloud channel closed during peer authentication"))?
+    }
+
+    pub async fn disconnect(&self) {
+        self.closed
+            .store(true, std::sync::atomic::Ordering::Release);
+        if let Some((_, task)) = self.link.lock().await.take() {
+            task.abort();
+        }
     }
 
     pub fn wait<F: std::future::Future>(future: F) -> F::Output {
@@ -545,22 +561,33 @@ pub async fn connect_host(config: Config, path: PathBuf) -> Result<()> {
     }
 }
 
+#[cfg(unix)]
+pub use supervise::{daemon_managed, watch as supervise_daemon};
+
 pub fn cli(args: &[String]) -> i32 {
     let result = match args.first().map(String::as_str) {
         Some("keygen") if args.len() == 2 => keygen(Path::new(&args[1])),
         #[cfg(unix)]
         Some("enroll") => enrol::run(&args[1..]),
         #[cfg(unix)]
-        Some("connect") => {
+        Some("connect" | "supervise" | "service") => {
+            let command = args[0].as_str();
             let flags = crate::daemon::Args::parse(&args[1..]);
             let home = crate::daemon::home_dir(flags.get("dir"));
             let path = flags
                 .get("config")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| home.join("cloud/host.json"));
-            Config::load(&path).and_then(|config| {
-                Connection::wait(connect_host(config, crate::daemon::socket_path(&home)))
-            })
+            match command {
+                "supervise" => supervise::install(&home, flags.has("require-systemd")),
+                "service" => supervise::service(&home),
+                _ => {
+                    if flags.has("parent-stdin") { supervise::close_on_parent_exit(); }
+                    Config::load(&path).and_then(|config| {
+                        Connection::wait(connect_host(config, crate::daemon::socket_path(&home)))
+                    })
+                }
+            }
         }
         _ => Err(anyhow!(
             "usage: hato cloud keygen <private-key-file> | enroll [--server URL] [--claim -] | connect [--dir DIR] [--config FILE]"

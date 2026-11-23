@@ -1,5 +1,5 @@
 use super::{Channel, Connection, Kind};
-use crate::daemon::{self, F_EOF, F_ERR, F_EXIT, F_IN, F_OUT, F_RESIZE, F_SIGNAL};
+use crate::daemon::{self, F_DETACHED, F_EOF, F_ERR, F_EXIT, F_IN, F_OUT, F_RESIZE, F_SIGNAL};
 use crate::util::{HResult, HostError};
 use base64::Engine;
 use serde_json::{json, Value};
@@ -68,6 +68,14 @@ impl Connection {
                 return Err(HostError::invalid("program channel requires exec or PTY"))
             }
         };
+        self.open_program(kind, op, args).await
+    }
+
+    pub async fn terminal(&self, args: Value) -> HResult<Program> {
+        self.open_program(Kind::Pty, "pty.attach", args).await
+    }
+
+    async fn open_program(&self, kind: Kind, op: &str, args: Value) -> HResult<Program> {
         let (mut reader, _) = timeout(
             IO_TIMEOUT,
             exchange(self, kind, &json!({ "op": op, "args": args })),
@@ -106,7 +114,7 @@ impl ProgramReader {
                 if self.buffered.len() >= 5 + len {
                     let payload = self.buffered[5..5 + len].to_vec();
                     self.buffered.drain(..5 + len);
-                    self.exited = kind == F_EXIT;
+                    self.exited = matches!(kind, F_EXIT | F_DETACHED);
                     return Ok(Some((kind, payload)));
                 }
             }
@@ -127,6 +135,26 @@ pub struct Program {
 }
 
 impl Program {
+    pub async fn terminal_frame(&self) -> HResult<Option<(u8, Vec<u8>)>> {
+        if self.failed.load(Ordering::Acquire) {
+            return Err(disconnected("Cloud terminal closed"));
+        }
+        let mut reader = self
+            .reader
+            .try_lock()
+            .map_err(|_| HostError::new("EBUSY", "a read is already pending"))?;
+        match timeout(Duration::from_millis(500), reader.frame()).await {
+            Err(_) => Ok(None),
+            Ok(Err(error)) => Err(disconnected(error)),
+            Ok(Ok(frame)) => Ok(frame.or(Some((F_DETACHED, Vec::new())))),
+        }
+    }
+
+    pub async fn close(&self) {
+        self.failed.store(true, Ordering::Release);
+        let _ = self.writer.lock().await.shutdown().await;
+    }
+
     pub async fn read(&self, wait: Duration) -> HResult<Value> {
         if self.failed.load(Ordering::Acquire) {
             return Err(disconnected("Cloud program channel failed"));
@@ -194,8 +222,15 @@ impl Program {
             }
             _ => return Err(HostError::invalid("unsupported Cloud program input")),
         };
+        self.send_frame(op, &data).await
+    }
+
+    pub async fn send_frame(&self, op: u8, data: &[u8]) -> HResult<()> {
+        if self.failed.load(Ordering::Acquire) {
+            return Err(disconnected("Cloud program channel failed"));
+        }
         let mut buffer = Vec::with_capacity(data.len() + 5);
-        daemon::write_frame(&mut buffer, op, &data).map_err(disconnected)?;
+        daemon::write_frame(&mut buffer, op, data).map_err(disconnected)?;
         let mut writer = self
             .writer
             .try_lock()

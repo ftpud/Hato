@@ -18,6 +18,8 @@ export const sidebarIcons = {
   ai: outline('<path d="M21 15a2 2 0 0 1-2 2H7l-5 5V4a2 2 0 0 1 2-2h15a2 2 0 0 1 2 2Z"/><path d="M8 9h8M8 13h5"/>'),
   bot: outline('<rect x="4" y="8" width="16" height="12" rx="3"/><path d="M12 8V4M10 4h4M2 14h2M20 14h2M9 13v2M15 13v2"/>'),
   plug: outline('<path d="M9 2v5M15 2v5M6 7h12v4a6 6 0 0 1-12 0V7ZM12 17v5"/>'),
+  // Connectivity
+  cloud: outline('<path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/>'),
   // Bottom dock
   terminal: outline('<path d="m4 17 6-6-6-6M12 19h8"/>'),
   // Kept for user plugins that reference the old name.

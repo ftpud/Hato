@@ -1,6 +1,8 @@
 //! PTY sessions with a native terminal emulator (alacritty_terminal) owned by the kernel.
 //! PTY bytes are parsed and rendered natively; modules can explicitly read bounded output by cursor.
 //! Sessions are independent of module generations and survive TS hot-swaps.
+use crate::daemon::{F_DETACHED, F_ERR, F_EXIT, F_IN, F_OUT, F_RESIZE};
+use crate::host::cloud::{Connection as CloudConnection, Program as CloudProgram};
 use crate::host::ssh::SshMaster;
 use crate::host::stdio::ProcHandle;
 use crate::util::{HResult, HostError};
@@ -74,6 +76,7 @@ enum Backend {
     Local { master: Box<dyn MasterPty + Send>, child: Box<dyn Child + Send + Sync> },
     /// A PTY channel on a built-in SSH connection.
     Remote(ProcHandle),
+    Cloud { program: Arc<CloudProgram>, status: Arc<Mutex<Option<String>>> },
 }
 
 /// A terminal on an SSH machine: `command` runs on a remote PTY of `master`'s connection.
@@ -99,10 +102,9 @@ pub struct PtySpec {
 }
 
 pub fn open(spec: PtySpec) -> HResult<Arc<PtySession>> {
-    let spec_answers = spec.answer_queries;
     let cols = spec.cols.clamp(10, 1000);
     let rows = spec.rows.clamp(3, 500);
-    let (backend, mut reader, writer, description, local) = match &spec.remote {
+    let (backend, reader, writer, description, local) = match &spec.remote {
         Some(r) => {
             let mut p = r.master.exec_pty(&r.command, cols, rows)?;
             let reader = p.stdout.take().unwrap();
@@ -130,6 +132,24 @@ pub fn open(spec: PtySpec) -> HResult<Arc<PtySession>> {
             (Backend::Local { master: pair.master, child }, reader, writer, format!("{} {}", spec.program, spec.args.join(" ")), true)
         }
     };
+    attach(spec, backend, reader, writer, description, local)
+}
+
+pub fn open_cloud(spec: PtySpec, program: CloudProgram) -> HResult<Arc<PtySession>> {
+    let program = Arc::new(program);
+    let status = Arc::new(Mutex::new(None));
+    let reader = CloudReader { program: program.clone(), status: status.clone(), bytes: std::io::Cursor::new(Vec::new()) };
+    let writer = CloudWriter(program.clone());
+    attach(spec, Backend::Cloud { program, status }, Box::new(reader), Box::new(writer), "Cloud terminal".into(), false)
+}
+
+fn attach(
+    spec: PtySpec, backend: Backend, mut reader: Box<dyn Read + Send>, writer: Box<dyn Write + Send>,
+    description: String, local: bool,
+) -> HResult<Arc<PtySession>> {
+    let cols = spec.cols.clamp(10, 1000);
+    let rows = spec.rows.clamp(3, 500);
+    let spec_answers = spec.answer_queries;
     let writer: SharedWriter = Arc::new(Mutex::new(writer));
     let title = Arc::new(Mutex::new(String::new()));
     let listener = Listener { writer: writer.clone(), title: title.clone(), answer_queries: spec.answer_queries };
@@ -175,6 +195,7 @@ pub fn open(spec: PtySpec) -> HResult<Arc<PtySession>> {
             }
             let status = match &mut *s2.backend.lock() {
                 Backend::Local { child, .. } => child.wait().map(|s| format!("exited with code {}", s.exit_code())).unwrap_or_else(|e| format!("exited ({e})")),
+                Backend::Cloud { status, .. } => status.lock().clone().unwrap_or_else(|| "exited (Cloud connection closed)".into()),
                 Backend::Remote(h) => match h.wait(Some(std::time::Duration::from_secs(5))) {
                     Some(e) if e.code.is_some() => format!("exited with code {}", e.code.unwrap_or(0)),
                     Some(e) if e.signal.is_some() => format!("exited (signal {})", e.signal.unwrap_or(0)),
@@ -186,6 +207,50 @@ pub fn open(spec: PtySpec) -> HResult<Arc<PtySession>> {
         })
         .map_err(HostError::io)?;
     Ok(sess)
+}
+
+struct CloudWriter(Arc<CloudProgram>);
+
+impl Write for CloudWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        let n = bytes.len().min(64 * 1024);
+        CloudConnection::wait(self.0.send_frame(F_IN, &bytes[..n]))
+            .map(|_| n)
+            .map_err(|e| std::io::Error::other(e.to_string()))
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+}
+
+struct CloudReader {
+    program: Arc<CloudProgram>,
+    status: Arc<Mutex<Option<String>>>,
+    bytes: std::io::Cursor<Vec<u8>>,
+}
+
+impl Read for CloudReader {
+    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+        if out.is_empty() { return Ok(0); }
+        loop {
+            let n = self.bytes.read(out)?;
+            if n > 0 { return Ok(n); }
+            let frame = CloudConnection::wait(self.program.terminal_frame()).map_err(|e| std::io::Error::other(e.to_string()))?;
+            let Some((kind, bytes)) = frame else { continue };
+            match kind {
+                F_OUT | F_ERR => self.bytes = std::io::Cursor::new(bytes),
+                F_EXIT | F_DETACHED => {
+                    *self.status.lock() = if kind == F_DETACHED {
+                        Some("detached (terminal attached elsewhere)".into())
+                    } else {
+                        serde_json::from_slice::<Value>(&bytes).ok().and_then(|v| v["status"].as_str().map(str::to_owned))
+                    };
+                    CloudConnection::wait(self.program.close());
+                    return Ok(0);
+                }
+                _ => {}
+            }
+        }
+    }
 }
 
 impl PtySession {
@@ -233,6 +298,12 @@ impl PtySession {
             Backend::Local { master, .. } => master
                 .resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
                 .map_err(|e| HostError::new("EPTY", e.to_string()))?,
+            Backend::Cloud { program, .. } => {
+                let mut dimensions = [0; 4];
+                dimensions[..2].copy_from_slice(&cols.to_be_bytes());
+                dimensions[2..].copy_from_slice(&rows.to_be_bytes());
+                CloudConnection::wait(program.send_frame(F_RESIZE, &dimensions))?;
+            }
             Backend::Remote(ProcHandle::Channel(c)) => c.resize(cols, rows),
             Backend::Remote(_) => {}
         }
@@ -243,6 +314,7 @@ impl PtySession {
     pub fn kill(&self) {
         match &mut *self.backend.lock() {
             Backend::Local { child, .. } => { let _ = child.kill(); }
+            Backend::Cloud { program, .. } => CloudConnection::wait(program.close()),
             Backend::Remote(h) => h.kill(),
         }
     }
