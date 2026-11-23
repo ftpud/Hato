@@ -181,6 +181,10 @@ pub fn main(args: &[String]) -> i32 {
     #[cfg_attr(not(unix), allow(unused_variables))]
     let home = home_dir(a.get("dir"));
     let r = match cmd {
+        "features" => {
+            println!("{}", serde_json::json!({"version":VERSION, "abi":ABI, "features":FEATURES}));
+            Ok(())
+        }
         #[cfg(unix)]
         "serve" => server::serve(&home, a.get("idle-exit-secs").and_then(|s| s.parse().ok()).unwrap_or(6 * 3600)),
         #[cfg(unix)]
@@ -204,7 +208,7 @@ pub fn main(args: &[String]) -> i32 {
         "serve" | "ensure" | "ctl" | "ctl-stream" | "stop" | "status" | "pty-attach" | "proc-attach" | "bridge" => Err(anyhow::anyhow!("not available on {}: run the daemon on the workspace's Linux machine or WSL distribution", std::env::consts::OS)),
         "forward" => crate::host::relay::serve_stdio(),
         _ => {
-            eprintln!("usage: hato daemon <serve|ensure|ctl|ctl-stream|stop|status|pty-attach|proc-attach|bridge|watch|forward> [--dir DIR] …");
+            eprintln!("usage: hato daemon <serve|ensure|features|ctl|ctl-stream|stop|status|pty-attach|proc-attach|bridge|watch|forward> [--dir DIR] …");
             return 2;
         }
     };

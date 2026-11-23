@@ -18,6 +18,7 @@ pub use channel::Channel;
 use channel::Tunnel;
 use futures::{SinkExt, StreamExt};
 use noise::Keys;
+use crate::util::{HResult, HostError};
 use parking_lot::Mutex;
 pub use program::Program;
 use serde::Deserialize;
@@ -483,6 +484,11 @@ impl Connection {
         self.config.machine_id()
     }
 
+    pub fn pinned_host(&self) -> HResult<(&str, &str, String)> {
+        let fingerprint = self.config.fingerprint().ok_or_else(|| HostError::invalid("Cloud host key is not pinned"))?;
+        Ok((&self.config.relay, &self.config.host_id, fingerprint))
+    }
+
     pub async fn open(&self, kind: Kind) -> Result<Channel> {
         let sender = {
             let mut link = self.link.lock().await;
@@ -581,6 +587,22 @@ pub fn cli(args: &[String]) -> i32 {
         Some("keygen") if args.len() == 2 => keygen(Path::new(&args[1])),
         #[cfg(unix)]
         Some("enroll") => enrol::run(&args[1..]),
+        #[cfg(unix)]
+        Some("upgrade") => {
+            let flags = crate::daemon::Args::parse(&args[1..]);
+            let home = crate::daemon::home_dir(flags.get("dir"));
+            (|| {
+                let config = Config::load(&home.join("cloud/host.json"))?;
+                if config.server.is_none()
+                    || Some(config.relay.as_str()) != flags.get("relay")
+                    || Some(config.host_id.as_str()) != flags.get("host-id")
+                    || Some(config.keys.local_fingerprint()?.as_str()) != flags.get("fingerprint")
+                {
+                    bail!("SSH target does not match the enrolled Cloud host");
+                }
+                supervise::upgrade(&home)
+            })()
+        }
         #[cfg(unix)]
         Some("connect" | "supervise" | "service") => {
             let command = args[0].as_str();

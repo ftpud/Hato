@@ -6,7 +6,7 @@ use base64::Engine;
 use hato_kernel::host::cloud::{Config, Connection, Kind, Program};
 use serde_json::{json, Value};
 use std::net::TcpListener;
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -49,6 +49,62 @@ fn private_config(path: &Path, fields: Value) -> Result<()> {
 
 fn keypair() -> Result<snow::Keypair> {
     Ok(snow::Builder::new("Noise_IK_25519_ChaChaPoly_BLAKE2s".parse()?).generate_keypair()?)
+}
+
+#[test]
+fn cloud_upgrade_requires_the_enrolled_identity_before_restarting() -> Result<()> {
+    use hato_kernel::daemon::client::request;
+    struct DaemonHome(tempfile::TempDir);
+    impl Drop for DaemonHome {
+        fn drop(&mut self) {
+            let _ = request(self.0.path(), &json!({"op":"shutdown"}));
+        }
+    }
+    let tmp = DaemonHome(tempfile::tempdir()?);
+    let home = tmp.0.path().canonicalize()?;
+    std::fs::create_dir(home.join("cloud"))?;
+    std::fs::set_permissions(home.join("cloud"), std::fs::Permissions::from_mode(0o700))?;
+    let tools = home.join("tools");
+    let log = home.join("systemctl.log");
+    std::fs::create_dir(&tools)?;
+    for (name, script) in [
+        ("systemctl", "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$HATO_UPGRADE_LOG\"\n"),
+        ("loginctl", "#!/bin/sh\nprintf 'yes\\n'\n"),
+    ] {
+        let tool = tools.join(name);
+        std::fs::write(&tool, script)?;
+        std::fs::set_permissions(tool, std::fs::Permissions::from_mode(0o700))?;
+    }
+    let path = std::env::join_paths(std::iter::once(tools).chain(std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())))?;
+    let keys = keypair()?;
+    let fingerprint = hato_kernel::util::sha256_hex(&keys.public);
+    let relay = "wss://cloud.example.test";
+    private_config(&home.join("cloud/host.json"), json!({
+        "server":"https://cloud.example.test", "relay":relay, "hostId":"test-host",
+        "privateKey":hex::encode(keys.private), "publicKey":hex::encode(keys.public),
+        "token":"test-token-for-isolated-daemon-upgrade",
+    }))?;
+    let start = checked(Command::new(HATO).args(["daemon", "ensure", "--dir"]).arg(&home))?;
+    let before: Value = serde_json::from_slice(&start)?;
+    let up = |fingerprint: &str| {
+        let mut cmd = Command::new(HATO);
+        cmd.args(["cloud", "upgrade", "--relay", relay, "--host-id", "test-host", "--fingerprint", fingerprint, "--dir"]).arg(&home)
+            .env("PATH", &path).env("HOME", &home).env("XDG_CONFIG_HOME", &home).env("HATO_UPGRADE_LOG", &log);
+        cmd
+    };
+    let wrong = up(&"0".repeat(64)).output()?;
+    assert!(!wrong.status.success());
+    assert!(String::from_utf8_lossy(&wrong.stderr).contains("does not match the enrolled Cloud host"));
+    assert!(!log.exists());
+    assert_eq!(request(&home, &json!({"op":"hello"}))?["pid"], before["pid"]);
+    checked(&mut up(&fingerprint))?;
+    let after = request(&home, &json!({"op":"hello"}))?;
+    assert_ne!(after["pid"], before["pid"]);
+    assert_eq!(after["exe"], before["exe"]);
+    assert!(after["features"].as_array().unwrap().contains(&json!("fs")));
+    let calls = std::fs::read_to_string(&log)?;
+    assert!(calls.contains("--user stop hato-cloud-") && calls.contains("--user restart hato-cloud-"));
+    Ok(())
 }
 
 struct Fixture {

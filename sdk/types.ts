@@ -204,6 +204,8 @@ export interface NativeHost {
     cloudWriteProgram(handle: Handle, frame: CloudProgramInput): Promise<void>;
     /** Start a local/SSH daemon if needed. For Cloud, checks the already installed daemon. */
     ensure(target?: DaemonTarget): Promise<DaemonStatus>;
+    /** Replace the daemon over SSH after trusted approval. A Cloud target pins the host identity. */
+    forceUpgrade(target: Extract<DaemonTarget, { kind: "ssh" }>, cloud?: CloudDaemonTarget): Promise<DaemonStatus>;
     status(target?: DaemonTarget): Promise<DaemonStatus | null>;
     /** hello/status, resources.list (own resources only), pty.kill/proc.kill/proc.closeStdin {key},
      *  plugins.list, plugins.push {id} (locally installed + approved plugins only),

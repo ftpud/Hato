@@ -159,7 +159,7 @@ fn run_ssh(master: &SshMaster, remote: &str, stdin: Option<&[u8]>, timeout: Dura
 }
 
 /// Upload the matching daemon binary if the machine lacks it. Returns (binary, daemon home).
-fn install(master: &Arc<SshMaster>, data_dir: &std::path::Path, repo_root: &std::path::Path) -> HResult<(String, String)> {
+fn install(master: &Arc<SshMaster>, data_dir: &std::path::Path, repo_root: &std::path::Path, daemon_home: Option<&str>) -> HResult<(String, String)> {
     let (code, uname, err) = run_ssh(master, "uname -sm", None, Duration::from_secs(30))?;
     if code != 0 {
         return Err(HostError::new("EREMOTE", format!("uname failed: {err}")));
@@ -171,11 +171,14 @@ fn install(master: &Arc<SshMaster>, data_dir: &std::path::Path, repo_root: &std:
     let sftp = master.sftp()?;
     let home = sftp.realpath(".")?;
     // `HATO_REMOTE_DAEMON_DIR` (absolute, or relative to the remote home) relocates the daemon.
-    let dir = match std::env::var("HATO_REMOTE_DAEMON_DIR") {
+    let dir = if let Some(dir) = daemon_home {
+        crate::grants::normalize_posix(dir).filter(|path| path != "/" && !path.chars().any(char::is_control))
+            .ok_or_else(|| HostError::invalid("Invalid remote daemon home"))?
+    } else { match std::env::var("HATO_REMOTE_DAEMON_DIR") {
         Ok(d) if d.starts_with('/') => d,
         Ok(d) if !d.is_empty() => format!("{home}/{d}"),
         _ => format!("{home}/.hato"),
-    };
+    }};
     let bin = format!("{dir}/bin/hato-{tag}");
     let present = sftp.stat(&bin).map(|a| a.size == Some(bytes.len() as u64)).unwrap_or(false);
     if !present {
@@ -194,20 +197,60 @@ fn install(master: &Arc<SshMaster>, data_dir: &std::path::Path, repo_root: &std:
 /// Install (if needed) and start the daemon on an SSH machine.
 pub fn ensure_ssh(table: &DaemonTable, master: &Arc<SshMaster>, data_dir: &std::path::Path, repo_root: &std::path::Path) -> HResult<DaemonInfo> {
     master.ensure_alive()?;
-    let machine_id = master.profile.machine_id();
-    let (bin, dir) = install(master, data_dir, repo_root)?;
+    let (bin, dir) = install(master, data_dir, repo_root, None)?;
     let (code, out, err) = run_ssh(master, &format!("{} daemon ensure --dir {}", sh_quote(&bin), sh_quote(&dir)), None, Duration::from_secs(60))?;
     if code != 0 {
         return Err(HostError::new("EREMOTE", format!("starting the daemon failed: {}", err.trim())));
     }
     let status: Value = serde_json::from_str(out.trim()).map_err(|e| HostError::new("EREMOTE", format!("bad daemon status: {e}: {}", out.trim())))?;
+    Ok(remember_ssh(table, master, bin, dir, status))
+}
+
+fn remember_ssh(table: &DaemonTable, master: &SshMaster, bin: String, dir: String, status: Value) -> DaemonInfo {
     // A daemon offering `exec` takes over commands and terminals (forwarded channels to its
     // socket instead of SSH sessions). Older or stale daemons keep the session path.
     let routes = status["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "exec") && f.iter().any(|x| x == "pty.exec"));
     master.set_daemon_route(status["socket"].as_str().filter(|s| routes && s.starts_with('/')).map(str::to_owned));
-    let info = DaemonInfo { bin, dir, machine_id, status };
+    let info = DaemonInfo { bin, dir, machine_id: master.profile.machine_id(), status };
     table.put(info.clone());
-    Ok(info)
+    info
+}
+
+pub struct CloudUpgrade<'a> {
+    pub relay: &'a str,
+    pub host_id: &'a str,
+    pub fingerprint: &'a str,
+    pub home: &'a str,
+}
+
+pub fn force_upgrade_ssh(
+    table: &DaemonTable, master: &Arc<SshMaster>, data_dir: &std::path::Path, repo_root: &std::path::Path,
+    cloud: Option<CloudUpgrade<'_>>,
+) -> HResult<DaemonInfo> {
+    master.ensure_alive()?;
+    let (bin, dir) = install(master, data_dir, repo_root, cloud.as_ref().map(|c| c.home))?;
+    let bin = master.sftp()?.realpath(&bin)?;
+    let executable = sh_quote(&bin);
+    let (code, out, _) = run_ssh(master, &format!("{executable} daemon features"), None, Duration::from_secs(30))?;
+    let features: Value = serde_json::from_str(out.trim()).unwrap_or(Value::Null);
+    if code != 0 || features["abi"] != crate::daemon::ABI || features["version"] != crate::daemon::VERSION
+        || !crate::daemon::FEATURES.iter().all(|name| features["features"].as_array().is_some_and(|items| items.iter().any(|f| f == *name))) {
+        return Err(HostError::new("ENOTSUP", "The selected daemon binary is outdated. Build or install the current daemon for that host."));
+    }
+    let directory = sh_quote(&dir);
+    let command = match cloud {
+        Some(c) => format!("{executable} cloud upgrade --dir {directory} --relay {} --host-id {} --fingerprint {}",
+            sh_quote(c.relay), sh_quote(c.host_id), sh_quote(c.fingerprint)),
+        None => format!("{executable} daemon ensure --force --dir {directory}"),
+    };
+    let (code, out, err) = run_ssh(master, &command, None, Duration::from_secs(120))?;
+    if code != 0 {
+        return Err(HostError::new("EREMOTE", format!("Daemon upgrade failed: {}", err.trim())));
+    }
+    let status = out.lines().filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .find(|status| status["exe"] == bin && status["pid"].is_u64())
+        .ok_or_else(|| HostError::new("EREMOTE", "Could not verify the new daemon after upgrade"))?;
+    Ok(remember_ssh(table, master, bin, dir, status))
 }
 
 pub fn cloud_enrol(master: &SshMaster, info: &DaemonInfo, server: &str, name: &str, claim: &str) -> HResult<Value> {
@@ -235,7 +278,7 @@ pub fn cloud_supervise(master: &SshMaster, info: &DaemonInfo) -> HResult<()> {
 /// WSL shares no loopback with Windows, so its leg goes through a relay process in Linux.
 pub fn forward_reverse(master: &Arc<SshMaster>, local_port: u16, data_dir: &std::path::Path, repo_root: &std::path::Path) -> HResult<u16> {
     if master.is_wsl() {
-        let (bin, _) = install(master, data_dir, repo_root)?;
+        let (bin, _) = install(master, data_dir, repo_root, None)?;
         return master.relay_from_wsl(local_port, &bin);
     }
     // SSH: the built-in client connects forwarded channels to this machine's loopback directly.

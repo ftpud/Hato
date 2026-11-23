@@ -248,6 +248,7 @@
         cloudReadProgram: (handle, waitMs) => call("daemon.cloudReadProgram", { handle, waitMs }),
         cloudWriteProgram: (handle, frame) => call("daemon.cloudWriteProgram", { handle, frame }),
         ensure: (target) => call("daemon.ensure", { target: target || { kind: "local" } }),
+        forceUpgrade: (target, cloud) => call("daemon.forceUpgrade", { target, cloud }),
         status: (target) => call("daemon.status", { target: target || { kind: "local" } }),
         request: (target, op, args) => call("daemon.request", { target: target || { kind: "local" }, op, args: args || {} }),
       },

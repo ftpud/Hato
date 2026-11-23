@@ -43,6 +43,15 @@ impl Keys {
     pub fn peer(&self) -> Option<&[u8]> {
         self.peer.as_ref().map(|key| key.as_slice())
     }
+
+    #[cfg(unix)]
+    pub fn local_fingerprint(&self) -> Result<String> {
+        use snow::resolvers::{CryptoResolver, DefaultResolver};
+        let mut dh = DefaultResolver.resolve_dh(&snow::params::DHChoice::Curve25519)
+            .context("Noise host key algorithm unavailable")?;
+        dh.set(&self.private);
+        Ok(crate::util::sha256_hex(dh.pubkey()))
+    }
 }
 
 pub(super) fn generate() -> Result<snow::Keypair> {

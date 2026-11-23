@@ -16,6 +16,35 @@ const protocol = await bundled(path + "protocol.ts");
 const runtime = await bundled("sdk/runtime.ts");
 const flush = () => new Promise(resolve => setImmediate(resolve));
 
+test("Remote Runtime offers a distinct native upgrade and asks for the Cloud host SSH profile", async () => {
+  const { default: panel } = await bundled("Hato-plugins/modules/ui/remote-panel/src/index.ts");
+  const actions = [];
+  const ctx = {
+    state: { get: () => ({ id: "cloud:p", location: "cloud" }), watch() {} },
+    events: { on() {} }, ui: { invalidate() {} },
+    modules: { async call(_, method, args) {
+      actions.push([method, args]);
+      if (method === "status") return { running: true, location: "cloud", machineId: "cloud:host", pid: 1 };
+      if (method === "tunnels") return [];
+      if (method === "upgradeProfiles") return [{ id: "host-a", label: "root@a" }, { id: "host-b", label: "root@b" }];
+      if (method === "forceUpgrade") return { status: { pid: 2 } };
+    } },
+  };
+  const find = (node, key) => node.key === key ? node : node.children?.map(child => find(child, key)).find(Boolean);
+  try {
+    await panel.activate(ctx);
+    assert.equal(find(panel.render(), "force-update").text, "Force update");
+    assert.equal(find(panel.render(), "force-upgrade").text, "Force upgrade");
+    await panel.onEvent(ctx, { action: "prepareUpgrade" });
+    assert.ok(find(panel.render(), "confirm-upgrade").disabled);
+    assert.equal(actions.some(([method]) => method === "forceUpgrade"), false);
+    await panel.onEvent(ctx, { action: "upgradeProfile", value: "host-b" });
+    await panel.onEvent(ctx, { action: "forceUpgrade" });
+    assert.deepEqual(actions.filter(([method]) => method === "forceUpgrade"),
+      [["forceUpgrade", { workspaceId: "cloud:p", profileId: "host-b" }]]);
+  } finally { panel.deactivate(); }
+});
+
 test("Cloud server origins, return paths and HTTP errors are mapped safely", () => {
   assert.equal(protocol.serverOrigin(" HTTPS://Cloud-Dev.HatoPad.Dev:443/ "), "https://cloud-dev.hatopad.dev");
   assert.equal(protocol.serverOrigin("http://localhost:3000"), "http://127.0.0.1:3000");

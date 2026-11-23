@@ -1106,6 +1106,37 @@ fn dispatch(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: &Value) -> H
             cloud::Connection::wait(program.write(arg_str(&args["frame"], "kind")?, &args["frame"]))?;
             Ok(Value::Null)
         }
+        "daemon.forceUpgrade" => {
+            gen.caps.require("remote.daemon.admin")?;
+            check_alive(gen, true)?;
+            let master = daemon_target(k, owner, args)?
+                .ok_or_else(|| HostError::invalid("A remote SSH connection is required"))?;
+            let expected = &args["cloud"];
+            let cloud = if expected.is_null() {
+                None
+            } else {
+                if expected["kind"] != "cloud" {
+                    return Err(HostError::invalid("Expected a Cloud daemon target"));
+                }
+                Some(k.handles.get::<cloud::Connection>(arg_str(expected, "connection")?, "cloud-connection", owner)?)
+            };
+            let pinned = cloud.as_deref().map(cloud::Connection::pinned_host).transpose()?;
+            let status = cloud.as_deref().map(cloud_status).transpose()?;
+            let cloud_upgrade = match (&pinned, &status) {
+                (Some((relay, host_id, fingerprint)), Some(status)) => Some(daemon_link::CloudUpgrade {
+                    relay, host_id, fingerprint, home: arg_str(status, "dir")?,
+                }),
+                _ => None,
+            };
+            let host = master.profile.label();
+            let cloud_note = pinned.as_ref().map(|(relay, host_id, _)| format!("\nEnrolled Cloud host {host_id} at {relay}.")).unwrap_or_default();
+            k.require_approval(gen, op, "Force upgrade the Hato daemon?",
+                &format!("Replace and restart the native daemon on {host}:{}.\nRunning terminals, processes, agents and workflows on this daemon will stop.{cloud_note}", master.profile.port))?;
+            check_alive(gen, true)?;
+            let info = daemon_link::force_upgrade_ssh(&k.daemons, &master, &k.cfg.data_dir, &k.cfg.repo_root, cloud_upgrade)?;
+            k.audit.record(owner, gen.gen_id, op, &info.machine_id, "ok", None);
+            Ok(daemon_link::status_json(&info))
+        }
         "daemon.ensure" => {
             gen.caps.require("remote.daemon")?;
             if let Some(connection) = cloud_target(k, owner, args)? {

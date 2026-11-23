@@ -22,17 +22,22 @@ fn write_file(path: &Path, contents: &[u8]) -> Result<()> {
     Ok(())
 }
 
+fn systemctl(args: &[&str]) -> bool {
+    Command::new("systemctl")
+        .arg("--user")
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
+fn service_id(home: &str) -> String {
+    format!("hato-cloud-{}", &crate::util::sha256_hex(home.as_bytes())[..16])
+}
+
 fn user_systemd(unit: &str, exe: &str, home: &str) -> Result<bool> {
-    let systemctl = |args: &[&str]| {
-        Command::new("systemctl")
-            .arg("--user")
-            .args(args)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .is_ok_and(|s| s.success())
-    };
     if !systemctl(&["show-environment"]) {
         return Ok(false);
     }
@@ -134,10 +139,7 @@ pub fn install(home: &Path, require_systemd: bool) -> Result<()> {
     }
     crate::daemon::secure_socket_dir(&home.join("cloud"), false)?;
     super::Config::load(&home.join("cloud/host.json"))?;
-    let id = format!(
-        "hato-cloud-{}",
-        &crate::util::sha256_hex(home_arg.as_bytes())[..16]
-    );
+    let id = service_id(home_arg);
     if user_systemd(&format!("{id}.service"), exe, home_arg)? {
         if marker(&home).exists() {
             std::fs::remove_file(marker(&home))?;
@@ -152,6 +154,26 @@ pub fn install(home: &Path, require_systemd: bool) -> Result<()> {
         println!("Cloud connector supervised by hatod with a crontab boot entry");
     }
     Ok(())
+}
+
+pub(super) fn upgrade(home: &Path) -> Result<()> {
+    let home = home.canonicalize()?;
+    let home_arg = home.to_str().context("Hato daemon home is not UTF-8")?;
+    let unit = format!("{}.service", service_id(home_arg));
+    let managed = daemon_managed(&home);
+    let systemd = systemctl(&["cat", &unit]);
+    if systemd && !systemctl(&["stop", &unit]) {
+        bail!("Could not stop the Hato Cloud connector");
+    }
+    let restarted = crate::daemon::client::ensure(&home, true).and_then(|()| {
+        if systemd || managed { install(&home, systemd)?; }
+        Ok(())
+    });
+    if restarted.is_err() && systemd {
+        // Bring the connector back even if refreshing the user service failed.
+        let _ = systemctl(&["start", &unit]);
+    }
+    restarted
 }
 
 pub fn service(home: &Path) -> Result<()> {
