@@ -26,8 +26,10 @@ export function cloudMachineId(server: string, hostId: string): string {
   return "cloud:" + sha256Hex(hostId + " on " + server.replace(/^http/, "ws"));
 }
 
-export function projectWorkspaceId(project: { id: string; kind: string }): string {
-  return project.kind === "cloud" ? `cloud:${project.id}` : `project:${project.id}:root`;
+/** Cloud-created projects use `cloud:<id>`; projects moved from SSH keep `project:<id>:root`
+ *  (`rootWorkspace`), so their agents, chats and views stay attached. */
+export function projectWorkspaceId(project: { id: string; kind: string; rootWorkspace?: boolean }): string {
+  return project.kind === "cloud" && !project.rootWorkspace ? `cloud:${project.id}` : `project:${project.id}:root`;
 }
 
 /** Connection parameters of a workspace's machine. */
