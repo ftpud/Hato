@@ -1,3 +1,4 @@
+pub mod cloud;
 pub mod daemon_link;
 pub mod db;
 pub mod fs;

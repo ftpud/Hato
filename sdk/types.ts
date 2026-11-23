@@ -47,7 +47,26 @@ export interface RunResult { code: number | null; signal: number | null; stdout:
 export interface PtyRequest { target?: ExecutionTarget; cwd: string; shell?: string; columns: number; rows: number; env?: Record<string, string>;
   /** Keep the shell in the target machine's daemon; opening the same key again reattaches. */ persist?: { key: string } }
 
-export type DaemonTarget = { kind: "local" } | { kind: "ssh"; connection: Handle };
+export type CloudDaemonTarget = { kind: "cloud"; connection: Handle };
+export type DaemonTarget = { kind: "local" } | { kind: "ssh"; connection: Handle } | CloudDaemonTarget;
+export interface CloudDaemonConnection {
+  target: CloudDaemonTarget;
+  machineId: string;
+  hostKeyFingerprint: string;
+  status: DaemonStatus;
+}
+export type CloudProgramRequest =
+  | { kind: "exec"; command: string }
+  | { kind: "pty"; command: string; columns?: number; rows?: number };
+export type CloudProgramInput =
+  | { kind: "stdin"; base64: string }
+  | { kind: "eof" }
+  | { kind: "signal"; signal: "TERM" | "KILL" | "INT" | "HUP" }
+  | { kind: "resize"; columns: number; rows: number };
+export type CloudProgramOutput =
+  | { kind: "stdout" | "stderr"; base64: string }
+  | { kind: "exit"; code: number | null; signal: number | null }
+  | { kind: "pending" | "closed" };
 export interface DaemonStatus { machineId: string; bin: string; dir: string; status: any }
 export interface DaemonResources { ptys: { key: string; cwd: string; exit: string | null; attached: boolean; title?: string }[];
   procs: { key: string; pid: number; command: string; exit: any; attached: boolean; bufferedBytes: number; droppedBytes: number }[] }
@@ -159,7 +178,15 @@ export interface NativeHost {
   /** Remote runtime (`hato daemon`): holds terminals/processes across disconnects and hosts
    *  plugins on the workspace machine. Requires the `remote.daemon` capability. */
   daemon: {
-    /** Install (upload) if needed and start the daemon on that machine. */
+    /** M1 dev config on disk. Requires remote.daemon.admin and trusted native approval. */
+    cloudConnect(configPath: string): Promise<CloudDaemonConnection>;
+    /** Full-host command on an approved Cloud connection. Release its handle to end the channel. */
+    cloudOpenProgram(target: CloudDaemonTarget, request: CloudProgramRequest): Promise<{ handle: Handle; machineId: string }>;
+    /** One read at a time. ECLOUD indicates transport failure. A later independent call may reconnect. */
+    cloudReadProgram(handle: Handle, waitMs?: number): Promise<CloudProgramOutput>;
+    /** One write at a time. Failed writes are never replayed. */
+    cloudWriteProgram(handle: Handle, frame: CloudProgramInput): Promise<void>;
+    /** Start a local/SSH daemon if needed. For Cloud, checks the already installed daemon. */
     ensure(target?: DaemonTarget): Promise<DaemonStatus>;
     status(target?: DaemonTarget): Promise<DaemonStatus | null>;
     /** hello/status, resources.list (own resources only), pty.kill/proc.kill/proc.closeStdin {key},

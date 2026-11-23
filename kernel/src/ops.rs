@@ -6,6 +6,7 @@ use crate::bridge::UiMsg;
 use crate::grants::{join_relative, normalize_posix, path_within, ScopeGrant, ScopeKind, Target};
 use crate::util::canonical_string;
 use crate::host::daemon_link;
+use crate::host::cloud;
 use crate::host::db::DbRes;
 use crate::host::fs as hfs;
 use crate::host::net::{NetConn, NetListener};
@@ -245,6 +246,9 @@ pub fn host_async(k: &Arc<Kernel>, gen: &Arc<Generation>, op: String, args: Valu
 /// Audit text for an op. Requests that can carry credentials (headers, form bodies) are reduced
 /// to their method and host/path.
 fn audit_summary(op: &str, args: &Value) -> String {
+    if op.starts_with("daemon.cloud") || args["target"]["kind"] == "cloud" {
+        return "Cloud daemon operation".into();
+    }
     if op == "net.fetch" {
         let url = args.get("url").and_then(|u| u.as_str()).unwrap_or("");
         let target = crate::host::http::check_url(url).unwrap_or_else(|_| url.split(['?', '#']).next().unwrap_or("").chars().take(200).collect());
@@ -911,8 +915,64 @@ fn dispatch(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: &Value) -> H
         }
 
         // ---------------------------------------------------------------- remote runtime
+        "daemon.cloudConnect" => {
+            gen.caps.require("remote.daemon")?;
+            gen.caps.require("remote.daemon.admin")?;
+            let path = std::path::Path::new(arg_str(args, "configPath")?);
+            if !path.is_absolute() {
+                return Err(HostError::invalid("Cloud config path must be absolute"));
+            }
+            let config = cloud::Config::load(path).map_err(|e| HostError::invalid(e.to_string()))?;
+            let label = config.label();
+            let fingerprint = config.fingerprint();
+            k.require_approval(gen, "daemon.cloudConnect", "Connect to a Cloud host",
+                &format!("Module '{owner}' requests full access as the daemon user on {label}.\nHost key SHA-256: {fingerprint}"))?;
+            check_alive(gen, true)?;
+            let connection = Arc::new(cloud::Connection::new(config));
+            let machine_id = connection.machine_id();
+            let status = cloud_status(&connection)?;
+            let handle = k.handles.insert("cloud-connection", owner, label, connection);
+            Ok(json!({ "target": { "kind": "cloud", "connection": handle },
+                "machineId": machine_id, "hostKeyFingerprint": fingerprint, "status": status }))
+        }
+        "daemon.cloudOpenProgram" => {
+            gen.caps.require("remote.daemon")?;
+            gen.caps.require("remote.daemon.admin")?;
+            check_alive(gen, true)?;
+            let connection = cloud_target(k, owner, args)?
+                .ok_or_else(|| HostError::invalid("expected a Cloud daemon target"))?;
+            let kind = match arg_str(args, "kind")? {
+                "exec" => cloud::Kind::Exec,
+                "pty" => cloud::Kind::Pty,
+                _ => return Err(HostError::invalid("expected exec or pty")),
+            };
+            let sh = arg_str(args, "command")?;
+            if sh.is_empty() || sh.len() > 65_536 {
+                return Err(HostError::invalid("expected a command of up to 64 KiB"));
+            }
+            let program = cloud::Connection::wait(connection.program(kind,
+                json!({ "sh": sh, "columns": args["columns"], "rows": args["rows"] })))?;
+            let handle = k.handles.insert("cloud-program", owner, "Cloud daemon program", Arc::new(program));
+            Ok(json!({ "handle": handle, "machineId": connection.machine_id() }))
+        }
+        "daemon.cloudReadProgram" => {
+            gen.caps.require("remote.daemon.admin")?;
+            let program: Arc<cloud::Program> = k.handles.get(arg_str(args, "handle")?, "cloud-program", owner)?;
+            let wait = args["waitMs"].as_u64().unwrap_or(1000).clamp(1, 5000);
+            cloud::Connection::wait(program.read(Duration::from_millis(wait)))
+        }
+        "daemon.cloudWriteProgram" => {
+            gen.caps.require("remote.daemon.admin")?;
+            check_alive(gen, true)?;
+            let program: Arc<cloud::Program> = k.handles.get(arg_str(args, "handle")?, "cloud-program", owner)?;
+            cloud::Connection::wait(program.write(arg_str(&args["frame"], "kind")?, &args["frame"]))?;
+            Ok(Value::Null)
+        }
         "daemon.ensure" => {
             gen.caps.require("remote.daemon")?;
+            if let Some(connection) = cloud_target(k, owner, args)? {
+                return cloud_status(&connection);
+            }
             let info = match daemon_target(k, owner, args)? {
                 None => daemon_link::ensure_local(&k.daemons)?,
                 Some(m) => daemon_link::ensure_ssh(&k.daemons, &m, &k.cfg.data_dir, &k.cfg.repo_root)?,
@@ -922,14 +982,17 @@ fn dispatch(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: &Value) -> H
         }
         "daemon.status" => {
             gen.caps.require("remote.daemon")?;
+            if let Some(connection) = cloud_target(k, owner, args)? {
+                return cloud_status(&connection);
+            }
             let machine = daemon_target(k, owner, args)?.map(|m| m.profile.machine_id()).unwrap_or_else(|| "local".into());
             Ok(k.daemons.get(&machine).map(|i| daemon_link::status_json(&i)).unwrap_or(Value::Null))
         }
         "daemon.request" => {
             gen.caps.require("remote.daemon")?;
-            let master = daemon_target(k, owner, args)?;
-            let machine = master.as_ref().map(|m| m.profile.machine_id()).unwrap_or_else(|| "local".into());
-            let info = k.daemons.get(&machine).ok_or_else(|| HostError::new("EDAEMON", format!("no daemon on {machine}; call daemon.ensure first")))?;
+            let cloud = cloud_target(k, owner, args)?;
+            let master = if cloud.is_some() { None } else { daemon_target(k, owner, args)? };
+            let machine = cloud.as_ref().map(|c| c.machine_id()).or_else(|| master.as_ref().map(|m| m.profile.machine_id())).unwrap_or_else(|| "local".into());
             let op = arg_str(args, "op")?;
             if !daemon_link::allowed_op(op) {
                 return Err(HostError::denied(format!("daemon op '{op}' is not available to modules")));
@@ -949,7 +1012,13 @@ fn dispatch(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: &Value) -> H
                 "plugins.push" => dargs = push_payload(k, dargs["id"].as_str().unwrap_or(""))?,
                 _ => {}
             }
-            let r = daemon_link::request(&k.daemons, &info, master.as_ref(), &json!({"op": op, "args": dargs}))?;
+            let request = json!({"op": op, "args": dargs});
+            let r = if let Some(connection) = cloud {
+                cloud::Connection::wait(connection.request(&request))?
+            } else {
+                let info = k.daemons.get(&machine).ok_or_else(|| HostError::new("EDAEMON", format!("no daemon on {machine}; call daemon.ensure first")))?;
+                daemon_link::request(&k.daemons, &info, master.as_ref(), &request)?
+            };
             if (op == "resources.list" || op == "hello" || op == "status") && !admin {
                 return Ok(own_resources(r, owner));
             }
@@ -1152,6 +1221,19 @@ fn daemon_target(k: &Kernel, owner: &str, args: &Value) -> HResult<Option<Arc<Ss
         }
         _ => Err(HostError::invalid("target.kind must be local or ssh")),
     }
+}
+
+fn cloud_target(k: &Kernel, owner: &str, args: &Value) -> HResult<Option<Arc<cloud::Connection>>> {
+    let target = &args["target"];
+    if target["kind"] == "cloud" {
+        return k.handles.get(arg_str(target, "connection")?, "cloud-connection", owner).map(Some);
+    }
+    Ok(None)
+}
+
+fn cloud_status(connection: &cloud::Connection) -> HResult<Value> {
+    let status = cloud::Connection::wait(connection.request(&json!({ "op": "hello" })))?;
+    Ok(json!({ "machineId": connection.machine_id(), "bin": status["exe"], "dir": status["home"], "status": status }))
 }
 
 /// Manifest, code and approvals of a locally installed, fully approved plugin.

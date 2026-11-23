@@ -44,7 +44,15 @@ pub const F_EOF: u8 = 7;
 pub const F_SIGNAL: u8 = 8;
 /// Operations advertised in `hello` beyond ABI 1, so a desktop routes through them only when present.
 pub const FEATURES: &[&str] = &["exec", "pty.exec"];
-const MAX_FRAME: usize = 16 * 1024 * 1024;
+pub(crate) const MAX_FRAME: usize = 16 * 1024 * 1024;
+
+pub(crate) fn frame_header(h: &[u8; 5]) -> io::Result<(u8, usize)> {
+    let len = u32::from_be_bytes([h[1], h[2], h[3], h[4]]) as usize;
+    if len > MAX_FRAME {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "frame too large"));
+    }
+    Ok((h[0], len))
+}
 
 pub fn write_frame(w: &mut impl Write, t: u8, data: &[u8]) -> io::Result<()> {
     let mut h = [0u8; 5];
@@ -68,13 +76,10 @@ pub fn read_frame(r: &mut impl Read) -> io::Result<Option<(u8, Vec<u8>)>> {
             Err(e) => return Err(e),
         }
     }
-    let len = u32::from_be_bytes([h[1], h[2], h[3], h[4]]) as usize;
-    if len > MAX_FRAME {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "frame too large"));
-    }
+    let (kind, len) = frame_header(&h)?;
     let mut buf = vec![0u8; len];
     r.read_exact(&mut buf)?;
-    Ok(Some((h[0], buf)))
+    Ok(Some((kind, buf)))
 }
 
 /// Daemon home: `--dir`, `$HATO_DAEMON_DIR`, or `~/.hato`.

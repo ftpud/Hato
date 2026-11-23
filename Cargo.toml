@@ -53,6 +53,9 @@ russh = { version = "0.65.1", default-features = false, features = ["ring", "rsa
 hmac = "0.13"
 sha1 = "0.11"
 tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "sync", "time", "macros"] }
+tokio-tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
+snow = "0.10"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-app-kit = { version = "=0.2.2", features = ["NSApplication", "NSImage"], optional = true }
@@ -96,3 +99,7 @@ path = "kernel/tests/ssh_daemon_route.rs"
 [[test]]
 name = "plugin_runtime"
 path = "kernel/tests/plugin_runtime.rs"
+
+[[test]]
+name = "cloud_relay"
+path = "kernel/tests/cloud_relay.rs"

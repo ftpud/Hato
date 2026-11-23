@@ -608,9 +608,8 @@ impl Conn {
             let (mut out_tx, mut err_tx) = (Some(out_tx), Some(err_tx));
             'read: loop {
                 while buf.len() >= 5 {
-                    let len = u32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]) as usize;
+                    let Ok((t, len)) = crate::daemon::frame_header(buf.first_chunk().unwrap()) else { break 'read };
                     if buf.len() < 5 + len { break; }
-                    let t = buf[0];
                     let data: Vec<u8> = buf[5..5 + len].to_vec();
                     buf.drain(..5 + len);
                     match t {

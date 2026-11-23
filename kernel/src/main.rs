@@ -6,6 +6,9 @@ use hato_kernel::kernel::Kernel;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    if args.get(1).is_some_and(|arg| arg == "cloud") {
+        std::process::exit(hato_kernel::host::cloud::cli(&args[2..]));
+    }
     if args.get(1).map(|a| a == "daemon").unwrap_or(false) {
         std::process::exit(daemon_main(&args[2..]));
     }

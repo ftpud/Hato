@@ -285,7 +285,7 @@ pub fn request(table: &DaemonTable, info: &DaemonInfo, master: Option<&Arc<SshMa
     }
 }
 
-fn reply_value(v: &Value) -> HResult<Value> {
+pub(super) fn reply_value(v: &Value) -> HResult<Value> {
     if v["ok"] == true {
         Ok(v["value"].clone())
     } else {
