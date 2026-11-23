@@ -38,7 +38,7 @@ fn cloud_path(value: Value) -> HResult<String> {
 pub fn cloud_root(connection: &Connection, root: &str) -> HResult<String> {
     let result = Connection::wait(connection.request(&json!({"op":"fs.root","args":{"root":root}})));
     match result {
-        Err(error) if error.code == "EINVAL" && error.message == "unknown daemon op 'fs.root'" => {
+        Err(error) if error.message == "unknown daemon op 'fs.root'" => {
             Err(HostError::new("ENOTSUP", "Update and restart hatod on the Cloud host to use Files and Git"))
         }
         other => cloud_path(other?),

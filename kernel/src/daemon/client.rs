@@ -98,22 +98,29 @@ pub fn ctl_stream(home: &Path) -> anyhow::Result<()> {
 /// Start the daemon if needed (detached from this session) and print its status.
 pub fn ensure(home: &Path, force: bool) -> anyhow::Result<()> {
     if let Ok(info) = request(home, &json!({"op": "hello"})) {
-        // Same build = same version, ABI and binary (uploaded binaries are named by content hash).
+        // Uploaded binaries are named by content hash, but local builds may replace the same path.
         let exe = std::env::current_exe().ok().map(|p| p.to_string_lossy().into_owned());
-        let same = info["version"] == VERSION && info["abi"] == ABI && info["exe"].as_str() == exe.as_deref();
+        let same_path = info["version"] == VERSION && info["abi"] == ABI && info["exe"].as_str() == exe.as_deref();
+        let supports_features = FEATURES.iter().all(|feature| {
+            info["features"].as_array().is_some_and(|features| features.iter().any(|f| f == *feature))
+        });
         let live = info["resources"]["ptys"].as_array().map(|a| !a.is_empty()).unwrap_or(false)
             || info["resources"]["procs"].as_array().map(|a| !a.is_empty()).unwrap_or(false);
-        if same || (live && !force) {
+        if !force && (same_path || live) {
             let mut out = info;
-            out["stale"] = json!(!same);
+            out["stale"] = json!(!same_path || !supports_features);
             println!("{out}");
             return Ok(());
         }
-        // Different build and nothing to lose (or forced): replace it.
-        let _ = request(home, &json!({"op": "shutdown"}));
+        // A forced restart also replaces a daemon whose executable was rebuilt in place.
+        request(home, &json!({"op": "shutdown"}))?;
         let t = Instant::now();
-        while socket_path(home).exists() && t.elapsed() < Duration::from_secs(5) {
+        let socket = socket_path(home);
+        while socket.exists() && t.elapsed() < Duration::from_secs(5) {
             std::thread::sleep(Duration::from_millis(50));
+        }
+        if socket.exists() {
+            anyhow::bail!("the previous daemon did not stop at {}", socket.display());
         }
     }
     std::fs::create_dir_all(run_dir(home))?;
