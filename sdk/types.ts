@@ -10,7 +10,8 @@ export type Handle = string;
 
 export type ExecutionTarget =
   | { kind: "local" }
-  | { kind: "ssh"; connection: Handle; machineId: string };
+  | { kind: "ssh"; connection: Handle; machineId: string }
+  | CloudDaemonTarget;
 
 export interface HostError extends Error { code: string }
 

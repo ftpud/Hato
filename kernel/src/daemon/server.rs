@@ -274,8 +274,11 @@ impl Daemon {
         let mut w = stream.try_clone()?;
         let mut reader = BufReader::new(stream);
         let mut line = String::new();
-        if reader.read_line(&mut line)? == 0 {
+        if reader.by_ref().take(MAX_FRAME as u64).read_line(&mut line)? == 0 {
             return Ok(());
+        }
+        if !line.ends_with('\n') {
+            return write_line(&mut w, &err_json(&HostError::invalid("daemon request exceeds the message limit or has no newline")));
         }
         let req: Value = serde_json::from_str(line.trim()).unwrap_or(Value::Null);
         let op = req["op"].as_str().unwrap_or("").to_string();
@@ -324,6 +327,9 @@ impl Daemon {
                 "features": FEATURES, "socket": absolute(&socket_path(&self.home)),
             })),
             "resources.list" => Ok(self.resources()),
+            "fs.root" | "fs.resolve" | "fs.stat" | "fs.list" | "fs.read" | "fs.mkdir" | "fs.write" => {
+                files::request(&self.kernel.cfg, &self.home, op, args)
+            }
             "pty.read" => {
                 let p = self.ptys.lock().get(s("key")?).cloned().ok_or_else(|| HostError::not_found("no terminal"))?;
                 let cursor = args.get("cursor").and_then(Value::as_u64);

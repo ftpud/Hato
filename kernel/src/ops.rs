@@ -271,9 +271,20 @@ fn grant(k: &Kernel, gen: &Generation, args: &Value) -> HResult<Arc<ScopeGrant>>
 
 fn ssh_for(k: &Kernel, t: &Target) -> Option<Arc<SshMaster>> {
     match t {
-        Target::Local => None,
+        Target::Local | Target::Cloud { .. } => None,
         Target::Ssh { machine_id, .. } => k.ssh.by_machine(machine_id),
     }
+}
+
+fn cloud_for(k: &Kernel, g: &ScopeGrant) -> HResult<Option<Arc<cloud::Connection>>> {
+    match &g.target {
+        Target::Cloud { connection, .. } => k.handles.get(connection, "cloud-connection", &g.owner).map(Some),
+        _ => Ok(None),
+    }
+}
+
+fn file_backend(k: &Kernel, g: &ScopeGrant) -> HResult<hfs::FsBackend> {
+    hfs::backend(g, ssh_for(k, &g.target), cloud_for(k, g)?)
 }
 
 fn protected(k: &Kernel, path: &str) -> bool {
@@ -317,7 +328,8 @@ fn dispatch(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: &Value) -> H
                 return Err(HostError::denied("grant does not allow file access"));
             }
             let ssh = ssh_for(k, &g.target);
-            let be = hfs::backend(&g, ssh.clone())?;
+            let cloud = cloud_for(k, &g)?;
+            let be = hfs::backend(&g, ssh.clone(), cloud.clone())?;
             let real = hfs::resolve(&g, &be, arg_opt_str(args, "path").unwrap_or("."), true)?;
             if g.target == Target::Local && protected(k, &real) {
                 return Err(HostError::denied("path is inside kernel-protected application state"));
@@ -325,12 +337,15 @@ fn dispatch(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: &Value) -> H
             let bin = if let Some(master) = &ssh {
                 gen.caps.require("remote.daemon")?;
                 daemon_link::ensure_ssh(&k.daemons, master, &k.cfg.data_dir, &k.cfg.repo_root)?.bin
+            } else if let Some(connection) = &cloud {
+                cloud_status(connection)?["bin"].as_str().map(str::to_owned)
+                    .ok_or_else(|| HostError::new("ECLOUD", "Cloud daemon did not provide its executable"))?
             } else { std::env::current_exe()?.to_string_lossy().into_owned() };
             let mut argv = vec!["daemon".into(), "watch".into(), "--path".into(), real.clone()];
             if args.get("recursive").and_then(Value::as_bool) == Some(false) { argv.push("--non-recursive".into()); }
             for pattern in watch_excludes(args)? { argv.push("--exclude".into()); argv.push(pattern); }
             let p = process::spawn(SpawnSpec {
-                target: g.target.clone(), ssh, executable: bin, args: argv, cwd: g.root.clone(),
+                target: g.target.clone(), ssh, cloud, executable: bin, args: argv, cwd: g.root.clone(),
                 env: vec![], env_remove: vec![], login_shell: false, persist: None,
             })?;
             let handle = k.handles.insert("process", owner, format!("watch {real}"), p);
@@ -341,7 +356,7 @@ fn dispatch(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: &Value) -> H
             if !matches!(g.kind, ScopeKind::Fs | ScopeKind::Source) {
                 return Err(HostError::denied("grant does not allow file access"));
             }
-            let be = hfs::backend(&g, ssh_for(k, &g.target))?;
+            let be = file_backend(k, &g)?;
             let rel = arg_opt_str(args, "path").unwrap_or(".");
             let real = hfs::resolve(&g, &be, rel, true)?;
             if g.target == Target::Local && protected(k, &real) {
@@ -381,7 +396,7 @@ fn dispatch(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: &Value) -> H
             if !k.ui.connected() {
                 return Err(HostError::new("ENOTSUP", "no window (headless)"));
             }
-            let be = hfs::backend(&g, ssh_for(k, &g.target))?;
+            let be = file_backend(k, &g)?;
             let path = arg_str(args, "path")?;
             let workspace_path = hfs::resolve(&g, &be, path, true)?;
             if g.target == Target::Local && protected(k, &workspace_path) {
@@ -439,7 +454,7 @@ fn dispatch(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: &Value) -> H
             if !g.write || !matches!(g.kind, ScopeKind::Fs | ScopeKind::Source) {
                 return Err(HostError::denied("grant is read-only"));
             }
-            let be = hfs::backend(&g, ssh_for(k, &g.target))?;
+            let be = file_backend(k, &g)?;
             let rel = arg_str(args, "path")?;
             let real = hfs::resolve(&g, &be, rel, false)?;
             if g.target == Target::Local && protected(k, &real) {
@@ -533,8 +548,33 @@ fn dispatch(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: &Value) -> H
             let rows = req.get("rows").and_then(|c| c.as_u64()).unwrap_or(30) as u16;
             let shell = req.get("shell").and_then(|c| c.as_str());
             check_target(&g, req)?;
+            if let Some(connection) = cloud_for(k, &g)? {
+                let real = hfs::resolve(&g, &file_backend(k, &g)?, cwd, true)?;
+                let key = req["persist"]["key"].as_str();
+                let program = if let Some(key) = key {
+                    gen.caps.require("remote.daemon")?;
+                    let key = daemon_link::scoped_key(owner, key)?;
+                    cloud::Connection::wait(connection.terminal(json!({
+                        "cwd":real, "key":key, "columns":cols, "rows":rows, "shell":shell
+                    })))?
+                } else {
+                    let sh = crate::quoting::remote_shell(&real, shell);
+                    cloud::Connection::wait(connection.program(cloud::Kind::Pty,
+                        json!({"sh":sh, "columns":cols, "rows":rows})))?
+                };
+                let sess = pty::open_cloud(PtySpec {
+                    remote: None, program: String::new(), args: vec![], cwd: None, env: vec![],
+                    cols, rows, machine_id: connection.machine_id(), display_cwd: real, answer_queries: key.is_none(),
+                }, program)?;
+                let handle = k.handles.insert("pty", owner, format!("pty {}", sess.cwd), sess.clone());
+                let ui = k.ui.clone();
+                let h = handle.clone();
+                *sess.notify.lock() = Some(Arc::new(move || ui.send(UiMsg::TerminalDirty(h.clone()))));
+                return Ok(json!({ "handle":handle, "machineId":sess.machine_id, "cwd":sess.cwd }));
+            }
             let persist = persist_target(k, gen, req, &g.target)?;
             let spec = match &g.target {
+                Target::Cloud { .. } => return Err(HostError::new("ECLOUD", "Cloud terminal route unavailable")),
                 Target::Local => {
                     let real = canonical_string(std::path::Path::new(cwd)).map_err(HostError::from)?;
                     if !path_within(&g.root, &real) {
@@ -962,7 +1002,9 @@ fn dispatch(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: &Value) -> H
             let c = k.handles.get::<cloud::Connection>(connection, "cloud-connection", owner)?;
             let recipient = arg_str(args, "recipient")?;
             let recipient_gen = k.router.active(recipient).ok_or_else(|| HostError::not_found("Cloud recipient is not active"))?;
-            recipient_gen.caps.require("remote.daemon")?;
+            if !["remote.daemon", "fs.scope", "process.scope", "pty.scope"].iter().any(|cap| recipient_gen.caps.has(cap)) {
+                return Err(HostError::denied("Cloud recipient has no workspace capability"));
+            }
             let key = format!("cloud-route:{}", c.machine_id());
             if let Some(existing) = k.handles.lookup(recipient, &key) {
                 if let Ok(old) = k.handles.get::<cloud::Connection>(&existing, "cloud-connection", recipient) {
@@ -1218,10 +1260,19 @@ fn env_pairs(req: &Value) -> HResult<Vec<(String, String)>> {
 fn check_target(g: &ScopeGrant, req: &Value) -> HResult<()> {
     if let Some(t) = req.get("target") {
         let kind = t.get("kind").and_then(|x| x.as_str()).unwrap_or("");
+        if kind == "cloud" {
+            return match &g.target {
+                Target::Cloud { connection, .. } if t["connection"].as_str() == Some(connection) => Ok(()),
+                _ => Err(HostError::denied("Cloud execution target does not match the grant")),
+            };
+        }
+        if matches!(g.target, Target::Cloud { .. }) {
+            return Err(HostError::denied("this grant requires a Cloud target"));
+        }
         let requested = match kind {
             "local" => "local".to_string(),
             "ssh" => t.get("machineId").and_then(|x| x.as_str()).unwrap_or("").to_string(),
-            _ => return Err(HostError::invalid("target.kind must be 'local' or 'ssh'")),
+            _ => return Err(HostError::invalid("target.kind must be local, ssh or cloud")),
         };
         if requested != g.target.machine_id() {
             return Err(HostError::denied(format!("execution target {requested} does not match the grant's machine {} (no fallback)", g.target.machine_id())));
@@ -1275,6 +1326,7 @@ fn spawn_spec(k: &Kernel, g: &ScopeGrant, req: &Value) -> HResult<SpawnSpec> {
             }
             real
         }
+        Target::Cloud { .. } => hfs::resolve(g, &file_backend(k, g)?, &cwd, true)?,
         Target::Ssh { machine_id, .. } => {
             let master = k.ssh.by_machine(machine_id).ok_or_else(|| HostError::new("ENOTCONN", "SSH connection unavailable (no local fallback)"))?;
             master.ensure_alive()?;
@@ -1287,7 +1339,7 @@ fn spawn_spec(k: &Kernel, g: &ScopeGrant, req: &Value) -> HResult<SpawnSpec> {
         }
     };
     let ssh = ssh_for(k, &g.target);
-    Ok(SpawnSpec { target: g.target.clone(), ssh, executable: exe, args, cwd, env, env_remove, login_shell, persist: None })
+    Ok(SpawnSpec { target: g.target.clone(), ssh, cloud: cloud_for(k, g)?, executable: exe, args, cwd, env, env_remove, login_shell, persist: None })
 }
 
 /// `persist: {key}` on a PTY/process request → (daemon binary, owner-scoped key).
@@ -1300,6 +1352,7 @@ fn persist_target(k: &Kernel, gen: &Generation, req: &Value, target: &Target) ->
             Some(i) => i,
             None => daemon_link::ensure_local(&k.daemons)?,
         },
+        Target::Cloud { .. } => return Err(HostError::invalid("Persistent Cloud process attachment is unavailable")),
         Target::Ssh { machine_id, .. } => k.daemons.get(machine_id)
             .ok_or_else(|| HostError::new("EDAEMON", format!("no daemon on {machine_id}; call daemon.ensure first")))?,
     };
@@ -1419,7 +1472,15 @@ fn request_grant(k: &Arc<Kernel>, gen: &Arc<Generation>, args: &Value) -> HResul
                     }
                     (Target::Ssh { machine_id: c.master.profile.machine_id(), master_key: c.master.profile.machine_id() }, real)
                 }
-                _ => return Err(HostError::invalid("target.kind must be local or ssh")),
+                Some("cloud") => {
+                    let handle = arg_str(&t, "connection")?;
+                    let connection: Arc<cloud::Connection> = k.handles.get(handle, "cloud-connection", owner)?;
+                    let machine_id = connection.machine_id();
+                    let real = hfs::cloud_root(&connection, root)?;
+                    let requested_root = normalize_posix(root).ok_or_else(|| HostError::invalid("Cloud root must be absolute"))?;
+                    (Target::Cloud { machine_id, connection: handle.to_string(), requested_root }, real)
+                }
+                _ => return Err(HostError::invalid("target.kind must be local, ssh or cloud")),
             }
         }
     };

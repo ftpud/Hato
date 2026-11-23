@@ -238,13 +238,14 @@ pub enum Target {
     Local,
     /// Remote machine reached through a live SSH master; `machine_id` is kernel-derived.
     Ssh { machine_id: String, master_key: String },
+    Cloud { machine_id: String, connection: String, requested_root: String },
 }
 
 impl Target {
     pub fn machine_id(&self) -> String {
         match self {
             Target::Local => "local".into(),
-            Target::Ssh { machine_id, .. } => machine_id.clone(),
+            Target::Ssh { machine_id, .. } | Target::Cloud { machine_id, .. } => machine_id.clone(),
         }
     }
 }

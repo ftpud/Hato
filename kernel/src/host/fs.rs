@@ -1,6 +1,7 @@
 //! Filesystem primitives for scope grants: local (std::fs with canonicalization) and remote (SFTP).
 //! Every path is resolved (symlinks included) and checked against the grant's canonical root.
 use crate::grants::{join_local, join_relative, path_within, ScopeGrant, Target};
+use crate::host::cloud::Connection;
 use crate::host::ssh::SshMaster;
 use crate::util::{canonical_string, HResult, HostError};
 use serde_json::{json, Value};
@@ -10,12 +11,37 @@ use std::sync::Arc;
 pub enum FsBackend {
     Local,
     Remote(Arc<SshMaster>),
+    Cloud { connection: Arc<Connection>, root: String },
 }
 
-pub fn backend(g: &ScopeGrant, ssh: Option<Arc<SshMaster>>) -> HResult<FsBackend> {
+pub fn backend(g: &ScopeGrant, ssh: Option<Arc<SshMaster>>, cloud: Option<Arc<Connection>>) -> HResult<FsBackend> {
     match &g.target {
         Target::Local => Ok(FsBackend::Local),
         Target::Ssh { .. } => ssh.map(FsBackend::Remote).ok_or_else(|| HostError::new("ENOTCONN", "SSH connection unavailable (no local fallback)")),
+        Target::Cloud { .. } => Ok(FsBackend::Cloud {
+            connection: cloud.ok_or_else(|| HostError::new("ECLOUD", "Cloud connection unavailable"))?,
+            root: g.root.clone(),
+        }),
+    }
+}
+
+fn cloud_call(connection: &Connection, root: &str, op: &str, path: &str, mut args: Value) -> HResult<Value> {
+    args["root"] = json!(root);
+    args["path"] = json!(path);
+    Connection::wait(connection.request(&json!({"op":op,"args":args})))
+}
+
+fn cloud_path(value: Value) -> HResult<String> {
+    value.as_str().map(str::to_owned).ok_or_else(|| HostError::new("ECLOUD", "Invalid Cloud path reply"))
+}
+
+pub fn cloud_root(connection: &Connection, root: &str) -> HResult<String> {
+    let result = Connection::wait(connection.request(&json!({"op":"fs.root","args":{"root":root}})));
+    match result {
+        Err(error) if error.code == "EINVAL" && error.message == "unknown daemon op 'fs.root'" => {
+            Err(HostError::new("ENOTSUP", "Update and restart hatod on the Cloud host to use Files and Git"))
+        }
+        other => cloud_path(other?),
     }
 }
 
@@ -25,6 +51,15 @@ pub fn resolve(g: &ScopeGrant, be: &FsBackend, rel: &str, must_exist: bool) -> H
     let lexical = match be {
         FsBackend::Local => join_local(&g.root, rel)?,
         FsBackend::Remote(_) => join_relative(&g.root, rel)?,
+        FsBackend::Cloud { .. } => {
+            let rel = match &g.target {
+                Target::Cloud { requested_root, .. } if path_within(requested_root, rel) => {
+                    rel.strip_prefix(requested_root.trim_end_matches('/')).unwrap_or(rel).trim_start_matches('/')
+                }
+                _ => rel,
+            };
+            join_relative(&g.root, rel)?
+        }
     };
     let real = match be {
         FsBackend::Local => match canonical_string(Path::new(&lexical)) {
@@ -52,6 +87,8 @@ pub fn resolve(g: &ScopeGrant, be: &FsBackend, rel: &str, must_exist: bool) -> H
                 Err(e) => return Err(e),
             }
         }
+        FsBackend::Cloud { connection, root } => cloud_path(cloud_call(connection, root, "fs.resolve", &lexical,
+            json!({"mustExist":must_exist}))?)?,
     };
     if !path_within(&g.root, &real) {
         return Err(HostError::denied(format!("{rel:?} resolves outside the granted root (symlink escape)")));
@@ -75,6 +112,7 @@ pub fn stat(be: &FsBackend, path: &str) -> HResult<Value> {
             let kind = if a.is_dir() { "dir" } else if a.is_file() { "file" } else { "other" };
             Ok(json!({"kind": kind, "size": a.size, "mtime": a.mtime}))
         }
+        FsBackend::Cloud { connection, root } => cloud_call(connection, root, "fs.stat", path, json!({})),
     }
 }
 
@@ -115,6 +153,7 @@ pub fn list(be: &FsBackend, path: &str) -> HResult<Value> {
                 out.push(json!({"name": name, "kind": kind, "size": size, "symlink": a.is_symlink()}));
             }
         }
+        FsBackend::Cloud { connection, root } => return cloud_call(connection, root, "fs.list", path, json!({})),
     }
     Ok(Value::Array(out))
 }
@@ -131,6 +170,15 @@ pub fn read(be: &FsBackend, path: &str, limit: usize) -> HResult<(Vec<u8>, bool)
             Ok((buf, truncated))
         }
         FsBackend::Remote(ssh) => ssh.sftp()?.read(path, limit),
+        FsBackend::Cloud { connection, root } => {
+            use base64::Engine;
+            let result = cloud_call(connection, root, "fs.read", path, json!({"limit":limit}))?;
+            let bytes = base64::engine::general_purpose::STANDARD.decode(
+                result["base64"].as_str().ok_or_else(|| HostError::new("ECLOUD", "Missing Cloud file data"))?
+            ).map_err(|_| HostError::new("ECLOUD", "Invalid Cloud file data"))?;
+            if bytes.len() > limit { return Err(HostError::new("ECLOUD", "Cloud file exceeded the requested limit")); }
+            Ok((bytes, result["truncated"] == true))
+        }
     }
 }
 
@@ -150,6 +198,7 @@ pub fn write_atomic(be: &FsBackend, path: &str, data: &[u8], mode: u32) -> HResu
             })
         }
         FsBackend::Remote(ssh) => ssh.sftp()?.write_atomic(path, data, mode),
+        FsBackend::Cloud { connection, root } => cloud_write(connection, root, path, data, Some(mode), true),
     }
 }
 
@@ -166,6 +215,7 @@ pub fn write_transfer(be: &FsBackend, path: &str, data: &[u8], replace: bool) ->
             Ok(())
         }
         FsBackend::Remote(ssh) => ssh.sftp()?.write_atomic_with_replace(path, data, 0o644, replace),
+        FsBackend::Cloud { connection, root } => cloud_write(connection, root, path, data, None, replace),
     }
 }
 
@@ -184,5 +234,13 @@ pub fn mkdir_p(be: &FsBackend, root: &str, path: &str) -> HResult<()> {
             }
             Ok(())
         }
+        FsBackend::Cloud { connection, root } => cloud_call(connection, root, "fs.mkdir", path, json!({})).map(|_| ()),
     }
+}
+
+fn cloud_write(connection: &Connection, root: &str, path: &str, data: &[u8], mode: Option<u32>, replace: bool) -> HResult<()> {
+    use base64::Engine;
+    cloud_call(connection, root, "fs.write", path, json!({
+        "base64":base64::engine::general_purpose::STANDARD.encode(data), "replace":replace, "mode":mode,
+    })).map(|_| ())
 }

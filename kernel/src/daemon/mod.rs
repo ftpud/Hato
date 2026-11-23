@@ -20,6 +20,8 @@
 #[cfg(unix)]
 pub mod client;
 #[cfg(unix)]
+mod files;
+#[cfg(unix)]
 pub mod server;
 
 use std::io::{self, Read, Write};
@@ -43,7 +45,7 @@ pub const F_EOF: u8 = 7;
 /// Desktop → daemon (`exec`/`pty.exec`): signal name (`TERM`, `KILL`, `INT`, `HUP`) for the program's process group.
 pub const F_SIGNAL: u8 = 8;
 /// Operations advertised in `hello` beyond ABI 1, so a desktop routes through them only when present.
-pub const FEATURES: &[&str] = &["exec", "pty.exec"];
+pub const FEATURES: &[&str] = &["exec", "pty.exec", "fs"];
 pub(crate) const MAX_FRAME: usize = 16 * 1024 * 1024;
 
 pub(crate) fn frame_header(h: &[u8; 5]) -> io::Result<(u8, usize)> {

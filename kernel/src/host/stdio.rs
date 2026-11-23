@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 pub enum ProcHandle {
     Local(Child),
     Channel(Arc<ChannelCtl>),
+    Cloud(Arc<crate::host::cloud::CloudChild>),
 }
 
 impl ProcHandle {
@@ -18,7 +19,7 @@ impl ProcHandle {
     pub fn id(&self) -> u32 {
         match self {
             ProcHandle::Local(c) => c.id(),
-            ProcHandle::Channel(_) => 0,
+            ProcHandle::Channel(_) | ProcHandle::Cloud(_) => 0,
         }
     }
 
@@ -26,6 +27,7 @@ impl ProcHandle {
         match self {
             ProcHandle::Local(c) => Ok(c.try_wait()?.map(|s| exit_info(&s))),
             ProcHandle::Channel(c) => Ok(c.try_wait()),
+            ProcHandle::Cloud(c) => c.try_wait(),
         }
     }
 
@@ -36,6 +38,7 @@ impl ProcHandle {
                 let _ = c.wait();
             }
             ProcHandle::Channel(c) => c.close(),
+            ProcHandle::Cloud(c) => c.terminate("KILL"),
         }
     }
 
@@ -43,11 +46,11 @@ impl ProcHandle {
     pub fn wait(&mut self, timeout: Option<Duration>) -> Option<ExitInfo> {
         match self {
             ProcHandle::Channel(c) => c.wait(timeout),
-            ProcHandle::Local(c) => {
+            _ => {
                 let deadline = timeout.map(|t| Instant::now() + t);
                 loop {
-                    match c.try_wait() {
-                        Ok(Some(s)) => return Some(exit_info(&s)),
+                    match self.try_wait() {
+                        Ok(Some(s)) => return Some(s),
                         Ok(None) => {}
                         Err(_) => return Some(ExitInfo { code: None, signal: None }),
                     }

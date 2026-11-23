@@ -44,6 +44,7 @@ pub struct Persist { pub bin: String, pub dir: String, pub key: String }
 pub struct SpawnSpec {
     pub target: Target,
     pub ssh: Option<Arc<SshMaster>>,
+    pub cloud: Option<Arc<crate::host::cloud::Connection>>,
     pub executable: String,
     pub args: Vec<String>,
     pub cwd: String,
@@ -94,6 +95,12 @@ pub fn spawn(spec: SpawnSpec) -> HResult<Arc<ProcessRes>> {
                 remote = format!("{} daemon proc-attach --dir {} --key {} --cwd {} --sh {}", quoting::sh_quote(&p.bin), quoting::sh_quote(&p.dir), quoting::sh_quote(&p.key), quoting::sh_quote(&spec.cwd), quoting::sh_quote(&remote));
             }
             ssh.exec(&remote)?
+        }
+        Target::Cloud { .. } => {
+            let connection = spec.cloud.as_ref().ok_or_else(|| HostError::new("ECLOUD", "Cloud connection unavailable"))?;
+            let command = quoting::remote_command(&spec.cwd, &spec.executable, &spec.args, &spec.env, &spec.env_remove, spec.login_shell)
+                .map_err(HostError::invalid)?;
+            crate::host::cloud::CloudChild::spawn(connection, command)?
         }
     };
     let pid = p.handle.id();
@@ -164,6 +171,14 @@ impl ProcessRes {
     }
     pub fn close_stdin(&self) { self.stdin.lock().take(); }
     pub fn terminate(&self, signal: Option<&str>) -> HResult<()> {
+        let cloud = match self.child.lock().as_ref() {
+            Some(ProcHandle::Cloud(c)) => Some(c.clone()),
+            _ => None,
+        };
+        if let Some(child) = cloud {
+            if self.exit.lock().is_none() { child.terminate(signal.unwrap_or("TERM")); }
+            return Ok(());
+        }
         // A program on an SSH channel: signal it, then close the channel (as ending the old
         // per-process `ssh` client did), which also detaches a daemon-held process.
         let channel = match self.child.lock().as_ref() {
@@ -236,7 +251,11 @@ impl ProcessRes {
 /// Run to completion collecting output (bounded), with a timeout. Used for short commands such as git.
 pub fn run_collect(p: &Arc<ProcessRes>, stdin: Option<&[u8]>, timeout: Duration, limit: usize) -> HResult<Value> {
     if let Some(data) = stdin {
-        let _ = p.write(data);
+        if matches!(p.child.lock().as_ref(), Some(ProcHandle::Cloud(_))) {
+            p.write(data)?;
+        } else {
+            let _ = p.write(data);
+        }
     }
     p.close_stdin();
     let started = Instant::now();
@@ -270,6 +289,9 @@ pub fn run_collect(p: &Arc<ProcessRes>, stdin: Option<&[u8]>, timeout: Duration,
         if (p.stdout.is_eof() && p.stderr.is_eof()) || t0.elapsed() >= Duration::from_millis(1500) { break; }
         std::thread::sleep(Duration::from_millis(5));
     }
+    if exit.code.is_none() && exit.signal.is_none() && matches!(p.child.lock().as_ref(), Some(ProcHandle::Cloud(_))) {
+        return Err(HostError::new("ECLOUD", "Cloud process disconnected before its exit status. The command may have run."));
+    }
     Ok(json!({
         "code": exit.code, "signal": exit.signal,
         "stdout": String::from_utf8_lossy(&out), "stderr": String::from_utf8_lossy(&err), "truncated": truncated,
@@ -282,7 +304,7 @@ mod tests {
     use super::*;
 
     fn command(script: &str) -> Arc<ProcessRes> {
-        spawn(SpawnSpec { target: Target::Local, ssh: None, executable: "/bin/sh".into(),
+        spawn(SpawnSpec { target: Target::Local, ssh: None, cloud: None, executable: "/bin/sh".into(),
             args: vec!["-c".into(), script.into()], cwd: "/tmp".into(), env: vec![],
             env_remove: vec![], login_shell: false, persist: None }).unwrap()
     }

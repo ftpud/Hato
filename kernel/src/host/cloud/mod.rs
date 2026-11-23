@@ -6,6 +6,8 @@ mod channel;
 mod enrol;
 mod noise;
 mod program;
+mod process;
+pub use process::CloudChild;
 #[cfg(unix)]
 mod supervise;
 mod wire;

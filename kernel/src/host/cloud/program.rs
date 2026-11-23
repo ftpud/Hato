@@ -135,6 +135,10 @@ pub struct Program {
 }
 
 impl Program {
+    pub(super) async fn next_frame(&self) -> HResult<Option<(u8, Vec<u8>)>> {
+        self.reader.lock().await.frame().await.map_err(disconnected)
+    }
+
     pub async fn terminal_frame(&self) -> HResult<Option<(u8, Vec<u8>)>> {
         if self.failed.load(Ordering::Acquire) {
             return Err(disconnected("Cloud terminal closed"));

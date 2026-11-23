@@ -1,6 +1,7 @@
 // Shared helpers bundled (statically, at build time) into modules. Not a live module: nothing
 // here is imported at runtime from another module's generation.
 import type { DaemonTarget, ExecutionTarget, Handle, ModuleContext, ScopeGrant, SshProfileSpec } from "./types";
+import { sha256Hex } from "./sha256";
 
 /** Workspace descriptor produced by the `workspace` service (the kernel never parses it). */
 export interface WorkspaceDescriptor {
@@ -10,7 +11,7 @@ export interface WorkspaceDescriptor {
   name: string;
   location: "local" | "ssh" | "cloud";
   cloudHostId?: string;
-  machineId: string; // local | ssh:<profileId>
+  machineId: string; // local | ssh:<profileId> | cloud:<origin and host hash>
   rootAbsolutePath: string; // path ON that machine
   connectionRef?: string | null; // ssh profile id (no credentials)
   ssh?: { profileId: string; host: string; port: number; user: string; identityFile?: string | null; transport?: "ssh" | "wsl"; auth?: "password" } | null;
@@ -20,6 +21,14 @@ export interface WorkspaceDescriptor {
 
 const grantCache = new Map<string, Promise<ScopeGrant>>();
 const sshCache = new Map<string, Promise<{ connection: Handle; machineId: string; home: string | null }>>();
+
+export function cloudMachineId(server: string, hostId: string): string {
+  return "cloud:" + sha256Hex(hostId + " on " + server.replace(/^http/, "ws"));
+}
+
+export function projectWorkspaceId(project: { id: string; kind: string }): string {
+  return project.kind === "cloud" ? `cloud:${project.id}` : `project:${project.id}:root`;
+}
 
 /** Connection parameters of a workspace's machine. */
 export function sshProfileSpec(ssh: NonNullable<WorkspaceDescriptor["ssh"]>): SshProfileSpec {
@@ -64,7 +73,9 @@ export async function daemonTargetFor(ctx: ModuleContext, desc: WorkspaceDescrip
     case "ssh": return { kind: "ssh", connection: (await sshConnect(ctx, desc)).connection };
     case "cloud": {
       if (!desc.cloudHostId) throw new Error("Cloud workspace is missing its host.");
-      const target = await ctx.modules.call<DaemonTarget>("cloud", "target", { hostId: desc.cloudHostId }, { timeoutMs: 620000 });
+      const target = await ctx.modules.call<DaemonTarget>("cloud", "target", {
+        hostId: desc.cloudHostId, machineId: desc.machineId,
+      }, { timeoutMs: 620000 });
       if (target?.kind !== "cloud" || !target.connection) throw new Error("Invalid Cloud daemon route.");
       return target;
     }
@@ -74,7 +85,7 @@ export async function daemonTargetFor(ctx: ModuleContext, desc: WorkspaceDescrip
 
 export async function targetFor(ctx: ModuleContext, desc: WorkspaceDescriptor): Promise<ExecutionTarget> {
   if (desc.location === "local") return { kind: "local" };
-  if (desc.location === "cloud") throw new Error("Files and Git are not available over Cloud yet.");
+  if (desc.location === "cloud") return daemonTargetFor(ctx, desc) as Promise<Extract<ExecutionTarget, { kind: "cloud" }>>;
   const c = await sshConnect(ctx, desc);
   return { kind: "ssh", connection: c.connection, machineId: c.machineId };
 }
@@ -82,11 +93,12 @@ export async function targetFor(ctx: ModuleContext, desc: WorkspaceDescriptor): 
 /** Scoped grant for a workspace root on its own machine. Cached per module generation. */
 export async function workspaceGrant(ctx: ModuleContext, desc: WorkspaceDescriptor, kind: "fs" | "process" | "pty", root?: string): Promise<ScopeGrant> {
   const r = root || desc.rootAbsolutePath;
-  const key = kind + "|" + desc.machineId + "|" + r;
+  const cloud = desc.location === "cloud" ? await targetFor(ctx, desc) : null;
+  const key = kind + "|" + desc.machineId + "|" + r + "|" + (cloud?.kind === "cloud" ? cloud.connection : "");
   let p = grantCache.get(key);
   if (!p) {
     p = (async () => {
-      const target = await targetFor(ctx, desc);
+      const target = cloud ?? await targetFor(ctx, desc);
       return ctx.host.capabilities.request({ kind, root: r, target });
     })();
     grantCache.set(key, p);

@@ -26,7 +26,7 @@ export default {
         const activation = await T("test.activate", { id, stageId: stage.stageId });
         requireCheck(id + " stages and activates", activation.ok, activation);
       }
-      for (const id of ["terminals", "files", "git", "persistent-agents", "workflows"]) {
+      for (const id of ["terminals", "files", "git", "git-tasks", "projects-panel", "persistent-agents", "workflows"]) {
         const enabled = await T("test.pluginEnable", { id });
         requireCheck(id + " starts", enabled.active, enabled.error);
       }
@@ -48,15 +48,42 @@ export default {
       await call("cloud", "approveEnrollment", { userCode: data.code });
       const host = await until(async () => (await call("cloud", "inventory")).hosts.find(h => h.online), 15000);
       requireCheck("host comes online in Cloud inventory", host, await call("cloud", "inventory"));
-      const project = await call("cloud", "addProject", { hostId: host.id, name: "Fixture", path: data.root });
+      const project = await call("projects", "addCloud", { hostId: host.id, name: "Fixture", remotePath: data.root });
+      requireCheck("the regular Projects service registers the Cloud checkout", project?.kind === "cloud" && project.cloudHostId === host.id);
+      const duplicate = await call("projects", "addCloud", { hostId: host.id, name: "Fixture", remotePath: data.root });
+      requireCheck("adding the same Cloud checkout reuses the project", duplicate?.id === project.id);
       const workspace = await call("cloud", "openProject", { projectId: project.id });
       requireCheck("workspace uses the Cloud host and project path", workspace?.location === "cloud" &&
         workspace.rootAbsolutePath === data.root && workspace.cloudHostId === host.id && workspace.machineId.startsWith("cloud:"), workspace);
 
-      for (const [id, method] of [["files", "list"], ["git", "status"]]) {
-        const result = await call(id, method, { workspaceId: workspace.id, path: "." }).then(() => "", e => String(e.message || e));
-        requireCheck(id + " explicitly unavailable over Cloud", /not available over Cloud yet/.test(result), result);
-      }
+      const cloudRow = await until(async () => find(await T("test.render", { module: "projects-panel" }),
+        node => node.type === "tree" && node.rows?.some(row => row.key === workspace.id && row.detail?.includes("Cloud"))));
+      requireCheck("the normal Projects panel lists the Cloud project", cloudRow);
+      await ev("projects-panel", "selectWorkspace", { rowKey: workspace.id });
+      requireCheck("the Cloud project opens from the normal Projects panel",
+        (await call("workspace", "current")).id === workspace.id);
+      const listed = await call("files", "list", { workspaceId: workspace.id });
+      requireCheck("Cloud Files lists the host checkout", listed.machineId === workspace.machineId &&
+        listed.entries.some(entry => entry.name === "fixture.txt"), listed);
+      requireCheck("Cloud Files hides metadata outside the project grant",
+        listed.entries.some(entry => entry.name === "escaped.txt" && entry.kind === "symlink" && entry.size === 0));
+      const original = await call("files", "open", { workspaceId: workspace.id, relativePath: "fixture.txt", includeText: true });
+      requireCheck("Cloud Files opens host text in the native editor", original.text === "cloud original\n" && original.document);
+      const escaped = await call("files", "open", { workspaceId: workspace.id, relativePath: "escaped.txt", includeText: true })
+        .then(() => "", error => String(error.message || error));
+      requireCheck("Cloud Files rejects symlink escapes on the host", /outside the granted root/.test(escaped), escaped);
+      await call("files", "save", { workspaceId: workspace.id, relativePath: "fixture.txt", text: "cloud changed\n", expectedMtime: original.mtime });
+      const edited = await call("files", "open", { workspaceId: workspace.id, relativePath: "fixture.txt", includeText: true });
+      requireCheck("Cloud Files saves and rereads edits on the host", edited.text === "cloud changed\n");
+      const git = await call("git", "status", { workspaceId: workspace.id });
+      requireCheck("Cloud Git sees edited host files", git.files?.some(file => file.path === "fixture.txt"), git);
+      const task = await call("git-tasks", "create", { projectId: project.id, name: "Cloud worktree test", select: false });
+      const taskWorkspace = await call("workspace", "resolve", { workspaceId: "task:" + task.id });
+      requireCheck("Cloud Git creates a remote task worktree", taskWorkspace.location === "cloud" &&
+        taskWorkspace.machineId === workspace.machineId && taskWorkspace.rootAbsolutePath === task.worktreePath, task);
+      const taskFiles = await call("files", "list", { workspaceId: taskWorkspace.id });
+      requireCheck("Cloud Files reads the task worktree", taskFiles.entries.some(file => file.name === "fixture.txt"));
+      await call("git-tasks", "remove", { taskId: task.id, deleteBranch: "merged" });
       const entries = await T("test.handles");
       const route = entries.find(item => item.owner === "cloud" && item.kind === "cloud-connection");
       for (const kind of ["exec", "pty"]) {
@@ -73,6 +100,18 @@ export default {
         return view.screen.includes("cloud-revealed") && view.screen.includes(data.root) && view;
       }, 8000);
       requireCheck("native terminal receives relay output", screen, await T("test.ptyScreen", { handle: terminal.pty }));
+      // Wait for startup invalidations to settle before checking an out-of-band host edit.
+      await sleep(500);
+      let cloudChange = false;
+      const stopWatch = ctx.events.on("files.changed", event => {
+        if (event.workspaceId === workspace.id) cloudChange = true;
+      });
+      await T("test.ptyWrite", { handle: terminal.pty, text: "printf '%s\\n' watched > cloud-watch.txt\n" });
+      const watched = await until(async () => cloudChange && (await call("files", "list", {
+        workspaceId: workspace.id,
+      })).entries.some(entry => entry.name === "cloud-watch.txt"), 10000);
+      stopWatch();
+      requireCheck("Cloud watcher invalidates Files after a host-side edit", watched);
 
       const agents = await call("persistent-agents", "list", { workspaceId: workspace.id });
       requireCheck("agent gateway reads the Cloud daemon", Array.isArray(agents?.sessions) || Array.isArray(agents), agents);

@@ -37,11 +37,13 @@ test("Cloud workspace routing has no local or SSH fallback", async () => {
   const calls = [];
   const ctx = { modules: { async call(...args) { calls.push(args); throw new Error("Host offline"); } } };
   await assert.rejects(runtime.daemonTargetFor(ctx, descriptor), /Host offline/);
-  assert.deepEqual(calls[0].slice(0, 3), ["cloud", "target", { hostId: "host" }]);
-  await assert.rejects(runtime.targetFor(ctx, descriptor), /not available over Cloud yet/);
+  assert.deepEqual(calls[0].slice(0, 3), ["cloud", "target", { hostId: "host", machineId: "cloud:machine" }]);
+  await assert.rejects(runtime.targetFor(ctx, descriptor), /Host offline/);
   await assert.rejects(runtime.daemonTargetFor(ctx, { ...descriptor, cloudHostId: undefined }), /missing its host/);
   assert.deepEqual(await runtime.daemonTargetFor(ctx, { location: "local" }), { kind: "local" });
-  assert.equal(calls.length, 1);
+  assert.equal(calls.length, 2);
+  const target = { kind: "cloud", connection: "scoped-handle" };
+  assert.deepEqual(await runtime.targetFor({ modules: { call: async () => target } }, descriptor), target);
   const invalid = { modules: { call: async () => ({ kind: "local" }) } };
   await assert.rejects(runtime.daemonTargetFor(invalid, descriptor), /Invalid Cloud daemon route/);
 });

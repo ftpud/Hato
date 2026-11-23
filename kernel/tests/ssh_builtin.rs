@@ -141,7 +141,7 @@ fn built_in_client_against_openssh() {
 
     // Processes: a running program is ended by terminate().
     let p = process::spawn(SpawnSpec {
-        target: Target::Ssh { machine_id: m.profile.machine_id(), master_key: m.profile.machine_id() }, ssh: Some(m.clone()),
+        target: Target::Ssh { machine_id: m.profile.machine_id(), master_key: m.profile.machine_id() }, ssh: Some(m.clone()), cloud: None,
         executable: "sleep".into(), args: vec!["30".into()], cwd: "/tmp".into(), env: vec![], env_remove: vec![], login_shell: false, persist: None,
     }).unwrap();
     std::thread::sleep(Duration::from_millis(300));
