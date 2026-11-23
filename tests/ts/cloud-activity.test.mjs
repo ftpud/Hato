@@ -22,6 +22,9 @@ test("cloud-activity exports allowlisted states and detects completed turns", as
 
   // Idle session never seen working: omitted.
   assert.deepEqual(activityItems([s("ready")], remembered, t), []);
+  assert.deepEqual(activityItems([s("ready")], remembered, t), []);
+  assert.equal(activityItems([s("starting")], remembered, t)[0].state, "running");
+  assert.deepEqual(activityItems([s("ready")], remembered, t), []);
   let [item] = activityItems([s("busy", { updatedAt: "2026-11-23T10:01:00.000Z" })], remembered, t);
   assert.equal(item.state, "running");
   assert.equal(item.title, "Fix tests now");
@@ -32,9 +35,13 @@ test("cloud-activity exports allowlisted states and detects completed turns", as
   assert.equal(item.detail, "Waiting for you");
   [item] = activityItems([s("ready", { updatedAt: "2026-11-23T10:03:00.000Z" })], remembered, t);
   assert.equal(item.state, "completed");
+  assert.equal(activityItems([s("ready")], remembered, t)[0].updatedAt, item.updatedAt);
   [item] = activityItems([s("error", { error: "token sk-123 leaked" })], remembered, t);
   assert.equal(item.state, "failed");
   assert.doesNotMatch(JSON.stringify(item), /sk-123/);
+  [item] = activityItems([s("ready", { error: "private provider error" })], remembered, t);
+  assert.equal(item.state, "failed");
+  assert.doesNotMatch(JSON.stringify(item), /private provider error/);
   [item] = activityItems([s("busy", { workflow: { id: "w" } })], remembered, t);
   assert.equal(item.kind, "workflow");
   // Sessions that disappear are forgotten.

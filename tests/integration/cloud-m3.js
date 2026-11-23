@@ -76,6 +76,30 @@ export default {
 
       const agents = await call("persistent-agents", "list", { workspaceId: workspace.id });
       requireCheck("agent gateway reads the Cloud daemon", Array.isArray(agents?.sessions) || Array.isArray(agents), agents);
+      await call("persistence", "acpProfiles.upsert", {
+        profile: {
+          id: "cloud-fixture", machineId: workspace.machineId, provider: "custom",
+          name: "Fixture ACP", executable: data.node,
+          args: [repo + "/tests/integration/fixtures/persistent-agent.mjs"], envRefs: {}, enabled: true,
+        },
+      });
+      const agent = await call("persistent-agents", "create", {
+        workspaceId: workspace.id, profileId: "cloud-fixture", name: "Cloud fixture agent", mcps: [],
+      });
+      requireCheck("agent-runner starts a real daemon session", agent.status === "ready", agent);
+      const prompt = "ask-permission activity-fixture-private-text";
+      await call("persistent-agents", "send", { workspaceId: workspace.id, id: agent.id, text: prompt });
+      const report = await until(async () => {
+        const { items } = await api("/activity");
+        return items.find(item => item.id === host.id + ":" + agent.id && item.state === "attention");
+      }, 15000);
+      requireCheck("browser activity contains the daemon session after device-code enrolment",
+        report?.title === "Cloud fixture agent" && report?.source === "Fixture ACP" &&
+        report?.hostId === host.id && report?.kind === "agent" && report?.detail === "Waiting for you", report);
+      requireCheck("activity omits the prompt, tool input and workspace path",
+        !/activity-fixture-private-text|Fixture action/.test(JSON.stringify(report)) &&
+        !JSON.stringify(report).includes(data.root), report);
+      await call("persistent-agents", "stop", { workspaceId: workspace.id, id: agent.id });
       const definition = await call("workflows", "create", { workspaceId: workspace.id });
       const workflow = definition.definition || definition;
       workflow.name = "Cloud fixture workflow";

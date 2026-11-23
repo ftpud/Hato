@@ -566,6 +566,14 @@ pub async fn connect_host(config: Config, path: PathBuf) -> Result<()> {
 #[cfg(unix)]
 pub use supervise::{daemon_managed, watch as supervise_daemon};
 
+#[cfg(unix)]
+fn run_connector(config: Config, home: &Path) -> Result<()> {
+    if let Some(server) = config.server.clone() {
+        activity::spawn(home.to_path_buf(), server, config.token.clone());
+    }
+    Connection::wait(connect_host(config, crate::daemon::socket_path(home)))
+}
+
 pub fn cli(args: &[String]) -> i32 {
     let result = match args.first().map(String::as_str) {
         Some("keygen") if args.len() == 2 => keygen(Path::new(&args[1])),
@@ -585,12 +593,7 @@ pub fn cli(args: &[String]) -> i32 {
                 "service" => supervise::service(&home),
                 _ => {
                     if flags.has("parent-stdin") { supervise::close_on_parent_exit(); }
-                    Config::load(&path).and_then(|config| {
-                        if let Some(server) = config.server.clone() {
-                            activity::spawn(home.clone(), server, config.token.clone());
-                        }
-                        Connection::wait(connect_host(config, crate::daemon::socket_path(&home)))
-                    })
+                    Config::load(&path).and_then(|config| run_connector(config, &home))
                 }
             }
         }

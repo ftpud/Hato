@@ -178,10 +178,7 @@ pub fn service(home: &Path) -> Result<()> {
         let _ = wake();
     });
     let config = super::Config::load(&home.join("cloud/host.json"))?;
-    super::Connection::wait(super::connect_host(
-        config,
-        crate::daemon::socket_path(home),
-    ))
+    super::run_connector(config, home)
 }
 
 pub fn watch(home: PathBuf) {
