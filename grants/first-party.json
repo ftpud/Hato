@@ -13,6 +13,7 @@
     "agents-panel": { "kind": "ui", "capabilities": [], "calls": ["persistent-agents"] },
     "cloud": {"kind": "service", "capabilities": ["cloud.account", "net.loopback", "ui.openUrl", "remote.daemon", "remote.daemon.admin", "ssh.connect"], "calls": ["persistence", "workspace"]},
     "cloud-panel": {"kind": "ui", "capabilities": [], "calls": ["cloud"]},
+    "cloud-activity": {"kind": "service", "capabilities": [], "calls": ["agent-runner"]},
     "persistence":  { "kind": "service", "capabilities": ["db:persistence"], "calls": [] },
     "workspace":    { "kind": "service", "capabilities": ["events.publish"], "calls": ["persistence", "projects", "git-tasks"] },
     "projects":     { "kind": "service", "capabilities": ["fs.scope", "process.scope", "ssh.connect", "ui.dialog"], "calls": ["persistence", "workspace", "git-tasks"] },

@@ -1,5 +1,7 @@
 //! Kernel-owned, multiplexed transport to a same-user daemon socket.
 pub mod account;
+#[cfg(unix)]
+mod activity;
 mod channel;
 mod enrol;
 mod noise;
@@ -584,6 +586,9 @@ pub fn cli(args: &[String]) -> i32 {
                 _ => {
                     if flags.has("parent-stdin") { supervise::close_on_parent_exit(); }
                     Config::load(&path).and_then(|config| {
+                        if let Some(server) = config.server.clone() {
+                            activity::spawn(home.clone(), server, config.token.clone());
+                        }
                         Connection::wait(connect_host(config, crate::daemon::socket_path(&home)))
                     })
                 }
