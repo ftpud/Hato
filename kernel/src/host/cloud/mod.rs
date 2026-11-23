@@ -40,6 +40,10 @@ use wire::{Frame, CLOSE, CREDIT, DATA, MAX_CHANNELS, MAX_DATA, MAX_MESSAGE, OPEN
 
 const DEADLINE: Duration = Duration::from_secs(10);
 const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long a Cloud-confirmed desktop key is trusted without asking again.
+const TRUST_TTL: Duration = Duration::from_secs(60);
+/// Opens may wait this long in the desktop's queue for a free channel slot plus the handshake.
+const OPEN_DEADLINE: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Copy)]
 #[repr(u8)]
@@ -70,6 +74,10 @@ pub struct Config {
     keys: Keys,
     server: Option<String>,
     tls: Option<Arc<rustls::ClientConfig>>,
+    /// Desktop keys the Cloud recently confirmed for this host's owner. Revocation is enforced at
+    /// the relay (revoked devices can't connect and their live channels are closed), so a short
+    /// cache only avoids one HTTP round trip per channel during bursts.
+    trusted: Mutex<HashMap<Vec<u8>, std::time::Instant>>,
 }
 
 fn runtime() -> &'static tokio::runtime::Runtime {
@@ -169,6 +177,7 @@ impl Config {
             keys,
             server,
             tls,
+            trusted: Mutex::new(HashMap::new()),
         })
     }
 
@@ -189,16 +198,32 @@ impl Config {
         if let Some(key) = self.keys.peer() {
             return Ok(peer == key);
         }
+        if self
+            .trusted
+            .lock()
+            .get(peer)
+            .is_some_and(|at| at.elapsed() < TRUST_TTL)
+        {
+            return Ok(true);
+        }
         let config = self.clone();
-        let peer = peer.to_vec();
-        tokio::task::spawn_blocking(move || {
+        let key = peer.to_vec();
+        let trusted = tokio::task::spawn_blocking(move || {
             let server = config
                 .server
                 .as_deref()
                 .context("missing Cloud account authority")?;
-            enrol::trusted_device(server, &config.token, &peer)
+            enrol::trusted_device(server, &config.token, &key)
         })
-        .await?
+        .await??;
+        let mut cache = self.trusted.lock();
+        cache.retain(|_, at| at.elapsed() < TRUST_TTL);
+        if trusted {
+            cache.insert(peer.to_vec(), std::time::Instant::now());
+        } else {
+            cache.remove(peer);
+        }
+        Ok(trusted)
     }
 }
 
@@ -237,9 +262,27 @@ struct Session {
     channels: HashMap<u32, Active>,
     sender: mpsc::WeakSender<Command>,
     next_id: u32,
+    /// Desktop opens waiting for a free slot. The relay allows MAX_CHANNELS per host, so bursts
+    /// (Git, file watchers, terminals, polling) queue here instead of failing mid-handshake.
+    waiting: std::collections::VecDeque<(Kind, OpenReply)>,
 }
 
 impl Session {
+    /// Start queued opens while slots are free. Callers that gave up are skipped.
+    async fn drain(&mut self, socket: &mut Socket) -> Result<()> {
+        while self.channels.len() < MAX_CHANNELS && self.next_id < u32::MAX {
+            let Some((kind, reply)) = self.waiting.pop_front() else { break };
+            if reply.is_closed() {
+                continue;
+            }
+            self.next_id += 1;
+            let id = self.next_id;
+            self.start(id, Some(reply))?;
+            send(socket, Frame::control(OPEN, id, kind as u8).message()).await?;
+        }
+        Ok(())
+    }
+
     fn start(&mut self, id: u32, reply: Option<OpenReply>) -> Result<()> {
         let (tx, inbox) = channel::inbox();
         let credit = Arc::new(Semaphore::new(WINDOW));
@@ -320,14 +363,16 @@ impl Session {
     async fn command(&mut self, socket: &mut Socket, command: Command) -> Result<()> {
         match command {
             Command::Open(kind, reply) => {
-                if self.channels.len() >= MAX_CHANNELS || self.next_id == u32::MAX {
+                if self.next_id == u32::MAX {
                     let _ = reply.send(Err(anyhow!("Cloud channel limit reached")));
                     return Ok(());
                 }
-                self.next_id += 1;
-                let id = self.next_id;
-                self.start(id, Some(reply))?;
-                send(socket, Frame::control(OPEN, id, kind as u8).message()).await
+                if self.waiting.len() >= 4 * MAX_CHANNELS {
+                    let _ = reply.send(Err(anyhow!("Too many Cloud requests are waiting; try again")));
+                    return Ok(());
+                }
+                self.waiting.push_back((kind, reply));
+                self.drain(socket).await
             }
             Command::Frame(frame) => {
                 if self.channels.contains_key(&frame.id) {
@@ -340,7 +385,7 @@ impl Session {
                     active.done = true;
                     send(socket, Frame::control(CLOSE, id, reason).message()).await?;
                 }
-                Ok(())
+                self.drain(socket).await
             }
         }
     }
@@ -356,7 +401,10 @@ impl Session {
                 bail!("invalid relay open frame");
             }
             self.next_id = id;
-            return if self.channels.len() >= MAX_CHANNELS {
+            // The relay enforces MAX_CHANNELS live channels per host and frees a slot as soon as
+            // either side closes, while this side still drains the finished channel. Headroom
+            // keeps a burst the relay admitted from being refused here.
+            return if self.channels.len() >= 2 * MAX_CHANNELS {
                 send(socket, Frame::control(CLOSE, id, 2).message()).await
             } else {
                 self.start(id, None)
@@ -386,13 +434,14 @@ impl Session {
             }
             CLOSE => {
                 self.channels.remove(&id);
-                return Ok(());
+                return self.drain(socket).await;
             }
             _ => false,
         };
         if !valid {
             self.channels.remove(&id);
             send(socket, Frame::control(CLOSE, id, 2).message()).await?;
+            return self.drain(socket).await;
         }
         Ok(())
     }
@@ -507,6 +556,7 @@ impl Connection {
                     channels: HashMap::new(),
                     sender: sender.downgrade(),
                     next_id: 0,
+                    waiting: std::collections::VecDeque::new(),
                 };
                 let task = tokio::spawn(async move {
                     let _ = drive(socket, session, receiver).await;
@@ -520,9 +570,10 @@ impl Connection {
             .send(Command::Open(kind, reply))
             .await
             .map_err(|_| anyhow!("Cloud relay disconnected"))?;
-        timeout(DEADLINE, result)
-            .await?
-            .map_err(|_| anyhow!("Cloud channel closed during peer authentication"))?
+        timeout(OPEN_DEADLINE, result)
+            .await
+            .map_err(|_| anyhow!("Cloud host did not answer in time"))?
+            .map_err(|_| anyhow!("Cloud host closed the channel before it was ready (link dropped or host refused this device)"))?
     }
 
     pub async fn disconnect(&self) {
@@ -560,6 +611,7 @@ pub async fn connect_host(config: Config, path: PathBuf) -> Result<()> {
                 channels: HashMap::new(),
                 sender: sender.downgrade(),
                 next_id: 0,
+                waiting: std::collections::VecDeque::new(),
             };
             let _ = drive(socket, session, receiver).await;
         }

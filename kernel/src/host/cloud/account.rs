@@ -210,6 +210,7 @@ impl Account {
             token: self.token()?,
             server: None,
             tls: None,
+            trusted: Default::default(),
         }))
     }
 

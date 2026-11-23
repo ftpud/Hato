@@ -334,6 +334,13 @@ async fn exercise() -> Result<()> {
     )?;
     let status = hello(&client).await?;
     ensure!(status["abi"] == 1);
+
+    // A burst well above the relay's per-host channel cap queues on the desktop instead of
+    // failing mid-handshake (Git, file watchers and polling open many channels at once).
+    let hello_burst = json!({ "op": "hello" });
+    let burst = futures::future::join_all((0..100).map(|_| client.request(&hello_burst))).await;
+    let failed: Vec<String> = burst.iter().filter_map(|r| r.as_ref().err().map(|e| e.to_string())).collect();
+    ensure!(failed.is_empty(), "burst requests failed: {:?}", &failed[..failed.len().min(3)]);
     if std::env::var_os("HATO_CLOUD_HOST_DRIVER").is_some() {
         ensure!(
             status["os"] == "linux",
