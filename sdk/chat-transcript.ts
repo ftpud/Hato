@@ -3,6 +3,7 @@
 // Cards, labels, colors and copy buttons are all module data — restyle them here.
 import type { ChatMessage, UiNode, UiStyle } from "./types";
 import { uiIcons } from "./ui-icons";
+import { stripProgressMarkers } from "./persistent-agents";
 
 export interface TranscriptOptions {
   /** Header label for assistant messages, e.g. "Claude · Sonnet". */
@@ -72,6 +73,9 @@ export function messageNode(m: ChatMessage, opts: TranscriptOptions = {}): UiNod
 }
 
 /** Items for a `transcript` node: optional history control, then one node per message. */
+/** A report_progress tool call, whatever prefix the provider gives MCP tool titles. */
+export const isProgressReport = (m: ChatMessage) => m.role === "tool" && /report[_.\s-]?progress/i.test(m.title || "");
+
 export function transcriptItems(messages: ChatMessage[], opts: TranscriptOptions = {}): UiNode[] {
   const items: UiNode[] = [];
   if (opts.hasOlder) {
@@ -80,7 +84,14 @@ export function transcriptItems(messages: ChatMessage[], opts: TranscriptOptions
       action: opts.loadOlderAction || "", disabled: !!opts.loadingOlder || !opts.loadOlderAction, tooltip: opts.historyError || "Load the previous message batch" });
   }
   // Permission decisions are logged, not shown; this also hides ones saved before that change.
-  for (const m of messages) if (!(m.role === "system" && /^Permission for "/.test(m.text || ""))) items.push(messageNode(m, opts));
+  // report_progress calls feed the sidebar's progress bars and never appear in the chat.
+  for (const raw of messages) {
+    if ((raw.role === "system" && /^Permission for "/.test(raw.text || "")) || isProgressReport(raw)) continue;
+    // Agents without Hato's tools report progress as an HTML comment in their reply.
+    const m = raw.role === "assistant" && raw.text?.includes("<!--") ? { ...raw, text: stripProgressMarkers(raw.text) } : raw;
+    if (m !== raw && !m.text && !m.images?.length) continue;
+    items.push(messageNode(m, opts));
+  }
   return items;
 }
 

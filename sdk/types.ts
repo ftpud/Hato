@@ -351,9 +351,35 @@ export interface UiStyle {
   width?: number; height?: number; minHeight?: number; maxWidth?: number; fullWidth?: boolean; noShrink?: boolean; wrap?: boolean;
   fontWeight?: number; fontSize?: number; lineHeight?: number; font?: "ui" | "mono"; italic?: boolean;
   justify?: "start" | "center" | "end" | "between"; shadow?: "sm" | "md" | "lg"; opacity?: number;
-  /** "relative" makes this box the positioning parent of popovers inside it. */ position?: "relative";
+  /** Absolute children use logical pixel insets. Insets may be negative. */
+  position?: "relative" | "absolute";
+  top?: number; right?: number; bottom?: number; left?: number;
+  /** SVG icon rotation in degrees. */ rotate?: number;
+  /** Additional spacing between label characters, in logical pixels. */ letterSpacing?: number;
+  /** Override the container's default overflow clipping. */ clip?: boolean;
+  /** Two-stop linear gradient; replaces `background`. Angle in degrees (0 = towards the top, clockwise), stops 0–1. */
+  gradient?: { angle?: number; from: UiColor; to: UiColor; fromAt?: number; toAt?: number };
+  /** Up to 4 box shadows (colored glows, inset highlights); replaces the `shadow` preset. */
+  shadows?: { x?: number; y?: number; blur?: number; spread?: number; color: UiColor; inset?: boolean }[];
 }
-interface Base { /** Drag this region to move its native window. Use a dedicated noninteractive handle. */ windowDrag?: boolean; style?: UiStyle; key: string; grow?: boolean; width?: number; height?: number; /** Cap height (px); the node may shrink below it and should scroll. */ maxHeight?: number; minWidth?: number; padding?: number; gap?: number; bg?: "panel" | "muted" | "accent" | "none"; border?: boolean; borderSide?: "left" | "right"; tooltip?: string }
+interface Base {
+  /** Drag this region to move its native window. Use a dedicated noninteractive handle. */
+  windowDrag?: boolean; style?: UiStyle; key: string; grow?: boolean; width?: number; height?: number;
+  /** Cap height (px); the node may shrink below it and should scroll. */
+  maxHeight?: number; minWidth?: number; padding?: number; gap?: number;
+  bg?: "panel" | "muted" | "accent" | "none"; border?: boolean; borderSide?: "left" | "right";
+  tooltip?: string; tooltipKeys?: string[]; tooltipPlacement?: "top" | "right" | "bottom" | "left";
+  /** Interpolate fixed dimensions and position, and the natural height of ungrown rows and columns. */
+  layoutTransition?: UiMotionTiming;
+  /** Render only while the node's window is windowed or fullscreen; hidden nodes take no space. */
+  visibleWhen?: "windowed" | "fullscreen";
+  /** Shared geometry identity, unique within the rendering module and window. */
+  layoutId?: string;
+  /** Enter and exit for keyed children in native containers. */
+  presence?: UiTransition;
+  /** Delay before the enter leg, in milliseconds. */
+  presenceDelayMs?: number;
+}
 /** A canvas item: fixed box with ordinary child nodes. `port` shows a connection handle on its right edge. */
 export interface CanvasItem { key: string; x: number; y: number; width: number; height: number; port?: boolean; style?: UiStyle;
   /** Breathing glow ring in this color (e.g. a running step). */ pulse?: UiColor; children: UiNode[] }
@@ -365,8 +391,8 @@ export interface CanvasEdge { key: string; from: string; to: string; fromSide?: 
 export type MenuItem = { separator: true } | { text: string; action: string; value?: Json; disabled?: boolean; checked?: boolean; /** Copied natively when the menu item is chosen. */ copyText?: string } | { text: string; children: MenuItem[] };
 /** Window-relative logical pixels for positioning an anchored popover. */
 export interface WindowAnchor { x: number; y: number }
-/** System follows the desktop preference. On enables full motion. Off settles immediately. */
-export type UiMotionMode = "system" | "on" | "off";
+/** System follows the desktop preference. Reduced keeps opacity transitions. Off settles immediately. */
+export type UiMotionMode = "system" | "on" | "reduced" | "off";
 
 /** Cubic Bézier control points, in x1, y1, x2, y2 order. X coordinates must be in [0, 1]. */
 export type UiMotionEasing = readonly [number, number, number, number];
@@ -381,10 +407,22 @@ export interface UiMotionLeg extends UiMotionTiming {
   offsetPx?: readonly [number, number];
   /** Requested surface scale. The initial native surfaces support opacity and offset. */
   scale?: number;
+  /** Animate the child's height between its natural extent and zero. */
+  heightCollapse?: boolean;
 }
 
 /** Keyed surface motion. Omit a leg to mount or unmount immediately on that leg. */
 export interface UiTransition { enter?: UiMotionLeg; exit?: UiMotionLeg }
+
+export interface UiScramble { effect: "scramble"; durationMs?: number; charMs?: number; delayMs?: number; charset?: string }
+/** The leading number in text is animated; any suffix is preserved. Percent uses 0–100. */
+export interface UiNumberTween { from?: number; format: "int" | "fixed1" | "percent"; durationMs: number }
+export interface UiAmbient {
+  /** Glow centers are fractions of the container. Radius and particle sizes are logical pixels. */
+  glow?: { color: UiColor; x: number; y: number; radius: number }[];
+  /** Speed is in logical pixels per second. The seed makes placement repeatable. */
+  particles?: { count: number; color: UiColor; minSize: number; maxSize: number; speed: number; seed: number };
+}
 
 /** Window chrome motion supplied by the root UI module. Settings and presets can change live. */
 export interface UiMotion {
@@ -399,6 +437,13 @@ export interface UiMotion {
   experimentalDockReveal?: boolean;
 }
 
+export interface UiWindowChrome {
+  /** Hides the primary window’s titleBar nodes. Windows and Linux retain caption controls. */
+  titlebar: "hidden";
+  /** macOS only. Top-left of the close button in window-relative logical pixels. */
+  trafficLights?: { x: number; y: number };
+}
+
 export type UiNode =
   /** Window-wide theme (normally from the root plugin). `mode` is the appearance preference;
    *  `terminal` overrides the 16 ANSI colors; `chrome` configures kernel chrome such as toasts. */
@@ -408,9 +453,11 @@ export type UiNode =
       terminal?: { light?: string[]; dark?: string[] };
       /** Syntax color scheme per appearance (see sdk/syntax-schemes.ts); omit for built-in colors. */
       syntax?: { light?: SyntaxPalette; dark?: SyntaxPalette };
-      chrome?: { toasts?: { position?: "bottom-right" | "bottom-left" | "top-right" | "top-left"; width?: number; durationMs?: number; max?: number; transition?: UiTransition } } })
+      chrome?: { window?: UiWindowChrome; toasts?: { position?: "bottom-right" | "bottom-left" | "top-right" | "top-left"; width?: number; durationMs?: number; max?: number; transition?: UiTransition } } })
   | (Base & { type: "titleBar"; children: UiNode[] })
   | (Base & { type: "row" | "column"; children: UiNode[]; /** Embedded wallpaper, cover-cropped behind children. */ backgroundImage?: ImageAttachment;
+      action?: string; value?: Json; hoverStyle?: UiStyle; pressedStyle?: UiStyle;
+      ambient?: UiAmbient;
       /** Applies only to the wallpaper; foreground children retain full opacity. Defaults: opacity 1, scale 1. */
       backgroundImageStyle?: { opacity?: number; /** Centered zoom, clamped to 1–4. */ scale?: number;
         /** Fixed artwork width in px, preserving its aspect ratio independently of container height. Otherwise cover-fit. */ width?: number;
@@ -457,10 +504,12 @@ export type UiNode =
   /** Button-anchored popup rendered outside clipped toolbars/panels. Escape/outside click send action=false. */
   | (Base & { type: "dropdown"; transition?: UiTransition; text: string; iconSvg?: string; open: boolean; action: string; disabled?: boolean; variant?: "primary" | "ghost" | "danger" | "default";
       menuWidth?: number; maxHeight?: number; children: UiNode[] })
-  | (Base & { type: "label"; text: string; size?: "xs" | "sm" | "md" | "lg"; weight?: "normal" | "medium" | "semibold" | "bold"; /** "default" or any UiColor. */ color?: UiColor; mono?: boolean; wrap?: boolean; /** Let the user select and copy the text. */ selectable?: boolean })
+  | (Base & { type: "label"; text: string; size?: "xs" | "sm" | "md" | "lg"; weight?: "normal" | "medium" | "semibold" | "bold"; /** "default" or any UiColor. */ color?: UiColor; mono?: boolean; wrap?: boolean; /** Let the user select and copy the text. */ selectable?: boolean;
+      reveal?: UiScramble & { on?: "mount" | "change" }; conceal?: UiScramble; tween?: UiNumberTween })
+  | (Base & { type: "icon"; svg: string; size?: number; color?: UiColor })
   | (Base & { type: "button"; menuTransition?: UiTransition; text: string; /** Inline SVG drawing, bundled and hot reloaded with the module (see sdk/ui-icons.ts). */ iconSvg?: string; iconSize?: number; iconColor?: UiColor; /** Compact count overlay on the button. Empty or absent hides it. */ badge?: string; action: string; variant?: "primary" | "ghost" | "danger" | "default"; disabled?: boolean; value?: Json; small?: boolean;
       /** Copied to the clipboard natively on click (no round trip); `action` may be "". */ copyText?: string; /** Secondary mouse gestures use the same value as action. */ doubleClickAction?: string; middleClickAction?: string; contextAction?: string; contextMenu?: MenuItem[] })
-  | (Base & { type: "textInput"; placeholder?: string; value?: string; submitAction?: string; changeAction?: string; cancelAction?: string; autoFocus?: boolean; /** Inline SVG shown before single-line input text. */ prefixSvg?: string; pasteImageAction?: string; /** Limits for pasted pictures. */ maxFiles?: number; maxBytes?: number; secret?: boolean; multiline?: boolean; /** Fill the available height instead of using a fixed row count. */ fillHeight?: boolean; rows?: number; rowHeight?: number; disabled?: boolean })
+  | (Base & { type: "textInput"; placeholder?: string; value?: string; submitAction?: string; changeAction?: string; cancelAction?: string; autoFocus?: boolean; /** Inline SVG shown before single-line input text. */ prefixSvg?: string; /** Single-line only: drop the field's own background and border (the module draws the surface). */ bare?: boolean; pasteImageAction?: string; /** Limits for pasted pictures. */ maxFiles?: number; maxBytes?: number; secret?: boolean; multiline?: boolean; /** Fill the available height instead of using a fixed row count. */ fillHeight?: boolean; rows?: number; rowHeight?: number; disabled?: boolean })
   | (Base & { type: "select"; transition?: UiTransition; options: { value: string; label: string; disabled?: boolean }[]; value: string | null; action: string; disabled?: boolean; placeholder?: string; label?: string; disabledReason?: string; /** Style of the dropdown button itself (`style` styles its wrapper). */ buttonStyle?: UiStyle })
   | (Base & { type: "choice"; text: string; description?: string; disabled?: boolean; selected?: boolean; action: string; value: string; /** Glyph shown when selected (default ✓). */ mark?: string })
   | (Base & { type: "switch"; label: string; checked: boolean; action: string; disabled?: boolean; /** Track color when on. */ accent?: UiColor })
@@ -472,9 +521,19 @@ export type UiNode =
   /** Native color picker: a swatch button opening featured `swatches`, a hex field and HSLA sliders.
    *  `action` fires with "#RRGGBB" (or "#RRGGBBAA" when translucent), or null when cleared. */
   | (Base & { type: "colorPicker"; value: string | null; action: string; swatches?: string[]; label?: string; disabled?: boolean })
-  /** Click-outside-to-close overlay. Anchored from `top` (default 52), or upward from `bottom`
-   *  (content height then, unless `heightFraction` is set). */
-  | (Base & { type: "popover"; transition?: UiTransition; children: UiNode[]; closeAction: string; /** Anchor in window coordinates; takes precedence over inset positioning. */ windowAnchor?: WindowAnchor; top?: number; bottom?: number; left?: number; right?: number; /** Height as a fraction of the parent (0.1–1). */ heightFraction?: number; maxHeight?: number })
+  /** Click outside or press Escape to dismiss. A bottom inset opens upward. Fixed width is
+   *  capped by available space. With both horizontal insets, left anchors and right caps width. */
+  | (Base & { type: "popover"; transition?: UiTransition; clipReveal?: boolean;
+      /** Defaults to the nearest relative ancestor in the current slot, then the slot, when
+       *  left and right are omitted or clipReveal is enabled. Explicit insets otherwise use
+       *  the window. Set "container" to use local insets with a fixed width. */
+      anchorScope?: "container" | "window";
+      children: UiNode[]; closeAction: string;
+      /** Anchor in window coordinates; takes precedence over inset positioning and scope. */
+      windowAnchor?: WindowAnchor;
+      top?: number; bottom?: number; left?: number; right?: number;
+      /** Height as a fraction of the chosen scope (0.1–1). */
+      heightFraction?: number; maxHeight?: number })
   | (Base & { type: "toggle"; label: string; checked: boolean; action: string; disabled?: boolean })
   | (Base & { type: "tree"; rows: TreeRow[]; selectAction: string; expandAction: string; /** Fired with the row key as the pointer enters a row, and without one when it leaves the list. */ hoverAction?: string; /** Double click or Enter activates the row. Also enables arrow-key selection. */ activateAction?: string;
       /** Fixed row height (px); omit for content height. */ rowHeight?: number;
@@ -484,7 +543,13 @@ export type UiNode =
   /** Native diff view of a unified patch (e.g. `git diff` output) held in a document handle. */
   | (Base & { type: "diff"; document: Handle | null; /** Initially fold file patches; later user expansion is preserved. */ filesCollapsed?: boolean; /** Floating navigation between changed regions; labels supplied by the module. */ changeNavigation?: { previous: string; next: string }; mode?: "split" | "unified"; softWrap?: boolean; header?: boolean; placeholder?: string; emptyText?: string })
   | (Base & { type: "status"; text: string; level?: "info" | "warn" | "error" | "success" })
-  | (Base & { type: "progress"; value?: number; indeterminate?: boolean; label?: string })
+  | (Base & { type: "progress"; value?: number; indeterminate?: boolean; label?: string; transition?: UiMotionTiming; color?: UiColor; trackColor?: UiColor })
+  | (Base & { type: "meter"; value: number; max: number; segments: number; filledColor: UiColor; emptyColor: UiColor; highlightColor?: UiColor; /** Minimum value, in the same units as max, eligible for the flash. */ highlightFrom?: number;
+      segmentWidth: number; segmentHeight: number; gap: number; radius: number; transition?: UiMotionTiming })
+  | (Base & { type: "spinner"; size: number; color: UiColor; thickness: number })
+  /** Clockwise gauge starting at 12 o'clock. Size and thickness are logical pixels. */
+  | (Base & { type: "ring"; value: number; max: number; size: number; thickness: number; color: UiColor; trackColor: UiColor;
+      transition?: UiMotionTiming; label?: string })
   /** Markdown from a document handle (scrolls) or inline `text`; `inline` renders without its own scroll area. */
   | (Base & { type: "markdown"; /** Presentation of fenced code blocks. */ codeBlockStyle?: UiStyle; document?: Handle; text?: string; inline?: boolean; lineHeight?: number; /** rem */ paragraphGap?: number; /** Non-web link clicks fire this action with the raw href as `value`; http(s)/mailto open natively. */ linkAction?: string })
   /** Native syntax-highlighted editor over a document handle (read-only unless `editable`).
@@ -611,6 +676,13 @@ export interface SurfaceWheelEvent { x: number; y: number; deltaX: number; delta
  *  `paste` carries clipboard text for Cmd/Ctrl+V. */
 export type SurfaceKeyEvent = { kind: "down" | "up"; key: string; text: string | null; modifiers: SurfaceModifiers } | { kind: "paste"; text: string };
 export interface ImageAttachment { name: string; mimeType: string; data: string }
+/** An active turn published by the ai-sessions service. */
+export interface WorkingConversation {
+  id: string;
+  title: string;
+  workspaceId: string;
+  status: "starting" | "busy";
+}
 export interface ChatMessage { images?: ImageAttachment[]; key: string; role: "user" | "assistant" | "thought" | "tool" | "system" | "error" | "plan"; text: string; title?: string; status?: string }
 
 /** Published at <moduleId>.settings; only the owning module can write it. */

@@ -133,7 +133,7 @@ test('completed Chatboxes keep polling live activity and retain drafts while the
   t.after(() => mod.deactivate());
   const def = { id: 'chatflow', name: 'Chat', blocks: [block('chat', 'chatbox')], edges: [] };
   let status = 'ready', detailCalls = 0, sent = 0;
-  const ctx = { events: { on() {} }, state: { get: k => k === 'workspace.selected' ? { id: 'ws' } : { workflows: true }, watch() {} }, ui: { invalidate() {} }, modules: { call: async (_id, method) => {
+  const ctx = { events: { on() {} }, state: { set() {}, get: k => k === 'workspace.selected' ? { id: 'ws' } : { workflows: true }, watch() {} }, ui: { invalidate() {} }, modules: { call: async (_id, method) => {
     if (method === 'catalog') return {};
     if (method === 'list') return [{ id: 'chatflow', name: 'Chat', blocks: 1 }];
     if (method === 'runs') return [{ id: 'run', workflowId: 'chatflow', status: 'succeeded', createdAt: new Date().toISOString() }];
@@ -260,7 +260,7 @@ test('an unstarted Chatbox exposes its composer after an empty run', async t => 
   const def = { id: 'chatflow', name: 'Chat', blocks: [block('chat', 'chatbox')], edges: [] };
   let started = false, sent = '';
   const summary = { id: 'empty-chat-run', workflowId: 'chatflow', status: 'succeeded', createdAt: new Date().toISOString() };
-  const ctx = { events: { on() {} }, state: { get: k => k === 'workspace.selected' ? { id: 'ws' } : { workflows: true }, watch() {} }, ui: { invalidate() {} }, modules: { call: async (_id, method, args) => {
+  const ctx = { events: { on() {} }, state: { set() {}, get: k => k === 'workspace.selected' ? { id: 'ws' } : { workflows: true }, watch() {} }, ui: { invalidate() {} }, modules: { call: async (_id, method, args) => {
     if (method === 'catalog') return {};
     if (method === 'list') return [{ id: def.id, name: def.name, blocks: 1 }];
     if (method === 'runs') return started ? [summary] : [];

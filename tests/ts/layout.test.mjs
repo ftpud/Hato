@@ -160,8 +160,13 @@ test('anime appearance restores preferences and switches without changing panel 
   events.get('settings.change')({ module: ctx.moduleId, section: 'appearance', key: 'panelOpacity', value: '5' });
   await new Promise(resolve => setTimeout(resolve, 0));
   assert.match(state.get('workspace-layout.settings').error, /20 to 100/);
-  await edit('theme', 'classic');
+  await edit('theme', 'ember');
   assert.equal(mod.render().backgroundImage, undefined);
+  assert.equal(mod.render().ambient.particles.color, 'ambientDust');
+  assert.equal(mod.render().children[0].palette.dark.primary, '#dc5734');
+  assert.equal(mod.render().children[0].chrome.window.titlebar, 'hidden');
+  // One shell: no top or bottom bars are rendered.
+  assert.ok(!JSON.stringify(mod.render()).includes('"bar-top"'));
   assert.equal(JSON.stringify(mod.methods.getLayout()), original);
   await edit('theme', 'anime');
   assert.ok(mod.render().backgroundImage.data.length > 1000);

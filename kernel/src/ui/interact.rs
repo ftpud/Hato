@@ -514,6 +514,7 @@ impl Shell {
                 self.motion.begin();
                 let kids = self.children(&module, &n, &path, 1, window, cx);
                 let popovers = self.render_popovers(window, cx);
+                self.prune_presence(window);
                 v_flex().relative().size_full().min_h_0().overflow_hidden().children(kids).children(popovers).into_any_element()
             }
             None => div().p_3().text_sm().child("This panel was re-docked.").into_any_element(),
@@ -567,6 +568,9 @@ fn open_detached(shell: Entity<Shell>, _kernel: Arc<Kernel>, id: String, module:
         let id2 = id.clone();
         let window_shell = shell.clone();
         let r = gpui_kit::open_window(opts, cx, move |window, cx| {
+            window.observe_window_visibility(|visibility, window, _| {
+                if visibility.is_visible() { window.refresh(); }
+            }).detach();
             let (sh, id3, m, k, a) = (window_shell.clone(), id2.clone(), module.clone(), key.clone(), close_action.clone());
             window.on_window_should_close(cx, move |window, cx| {
                 let b = window.bounds();

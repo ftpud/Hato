@@ -1,0 +1,420 @@
+{
+  "type": "column",
+  "key": "motion-demo",
+  "grow": true,
+  "padding": 12,
+  "children": [
+    {
+      "type": "theme",
+      "key": "theme",
+      "mode": "dark",
+      "palette": {
+        "dark": {
+          "background": "#101116",
+          "panel": "#1a1c24",
+          "text": "#e8ecf5",
+          "border": "#363944",
+          "muted": "#373945",
+          "primary": "#fa885b"
+        },
+        "light": {
+          "background": "#101116",
+          "panel": "#1a1c24",
+          "text": "#e8ecf5",
+          "border": "#363944",
+          "muted": "#373945",
+          "primary": "#fa885b"
+        }
+      },
+      "motion": {
+        "mode": "on",
+        "interaction": {
+          "durationMs": 240,
+          "easing": [
+            0.22,
+            1,
+            0.36,
+            1
+          ]
+        }
+      }
+    },
+    {
+      "type": "row",
+      "key": "layout",
+      "align": "stretch",
+      "grow": true,
+      "style": {
+        "clip": true
+      },
+      "children": [
+        {
+          "type": "column",
+          "key": "side",
+          "width": 64,
+          "layoutTransition": {
+            "durationMs": 240,
+            "easing": [
+              0.22,
+              1,
+              0.36,
+              1
+            ]
+          },
+          "padding": 8,
+          "children": [
+            {
+              "type": "label",
+              "key": "width",
+              "text": "64 px",
+              "mono": true,
+              "color": "text",
+              "style": {
+                "fontSize": 11
+              }
+            }
+          ]
+        },
+        {
+          "type": "column",
+          "key": "panel",
+          "grow": true,
+          "padding": 14,
+          "gap": 12,
+          "style": {
+            "background": "panel",
+            "borderWidth": 1,
+            "borderColor": "border",
+            "radius": 12,
+            "clip": false
+          },
+          "ambient": {
+            "glow": [
+              {
+                "x": 0.5,
+                "y": 0,
+                "radius": 120,
+                "color": "#f5ddff22"
+              }
+            ],
+            "particles": {
+              "count": 20,
+              "color": "#ffffff28",
+              "minSize": 1,
+              "maxSize": 2,
+              "speed": 3,
+              "seed": 17
+            }
+          },
+          "children": [
+            {
+              "type": "label",
+              "key": "title",
+              "text": "NATIVE MOTION",
+              "mono": true,
+              "style": {
+                "fontSize": 10,
+                "letterSpacing": 2
+              }
+            },
+            {
+              "type": "row",
+              "key": "interactive",
+              "height": 36,
+              "action": "select",
+              "value": {
+                "selection": 2
+              },
+              "tooltip": "Open panel",
+              "tooltipKeys": [
+                "⇧",
+                "⌘2"
+              ],
+              "tooltipPlacement": "right",
+              "hoverStyle": {
+                "background": "#323746"
+              },
+              "pressedStyle": {
+                "background": "#424857"
+              },
+              "style": {
+                "clip": false,
+                "position": "relative",
+                "paddingX": 8,
+                "radius": 7,
+                "gap": 8
+              },
+              "children": [
+                {
+                  "type": "column",
+                  "key": "marker",
+                  "layoutId": "shared-marker",
+                  "layoutTransition": {
+                    "durationMs": 240,
+                    "easing": [
+                      0.22,
+                      1,
+                      0.36,
+                      1
+                    ]
+                  },
+                  "style": {
+                    "position": "absolute",
+                    "left": -5,
+                    "top": 11,
+                    "width": 3,
+                    "height": 14,
+                    "radius": 2,
+                    "background": "primary"
+                  },
+                  "children": []
+                },
+                {
+                  "type": "icon",
+                  "key": "chevron",
+                  "size": 16,
+                  "color": "text",
+                  "layoutTransition": {
+                    "durationMs": 240,
+                    "easing": [
+                      0.22,
+                      1,
+                      0.36,
+                      1
+                    ]
+                  },
+                  "style": {
+                    "rotate": 90
+                  },
+                  "svg": "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='currentColor' stroke-width='1.5'><path d='m6 3 5 5-5 5'/></svg>"
+                },
+                {
+                  "type": "label",
+                  "key": "open",
+                  "text": "A collapsible row",
+                  "reveal": {
+                    "effect": "scramble",
+                    "durationMs": 280,
+                    "on": "mount"
+                  },
+                  "conceal": {
+                    "effect": "scramble",
+                    "durationMs": 120
+                  }
+                }
+              ]
+            },
+            {
+              "type": "column",
+              "key": "inserted",
+              "presence": {
+                "enter": {
+                  "durationMs": 240,
+                  "easing": [
+                    0.22,
+                    1,
+                    0.36,
+                    1
+                  ],
+                  "opacity": 0,
+                  "offsetPx": [
+                    0,
+                    4
+                  ],
+                  "heightCollapse": true
+                },
+                "exit": {
+                  "durationMs": 240,
+                  "easing": [
+                    0.22,
+                    1,
+                    0.36,
+                    1
+                  ],
+                  "opacity": 0,
+                  "heightCollapse": true
+                }
+              },
+              "presenceDelayMs": 60,
+              "layoutTransition": {
+                "durationMs": 240,
+                "easing": [
+                  0.22,
+                  1,
+                  0.36,
+                  1
+                ]
+              },
+              "gap": 8,
+              "children": [
+                {
+                  "type": "row",
+                  "key": "info",
+                  "gap": 8,
+                  "children": [
+                    {
+                      "type": "spinner",
+                      "key": "busy",
+                      "size": 14,
+                      "color": "primary",
+                      "thickness": 1.6
+                    },
+                    {
+                      "type": "label",
+                      "key": "value",
+                      "text": "72%",
+                      "tween": {
+                        "from": 0,
+                        "format": "percent",
+                        "durationMs": 450
+                      }
+                    }
+                  ]
+                },
+                {
+                  "type": "progress",
+                  "key": "fill",
+                  "value": 0.72,
+                  "color": "primary",
+                  "trackColor": "muted",
+                  "height": 2,
+                  "transition": {
+                    "durationMs": 240,
+                    "easing": [
+                      0.22,
+                      1,
+                      0.36,
+                      1
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "type": "meter",
+              "key": "meter",
+              "value": 68.4,
+              "max": 100,
+              "segments": 32,
+              "filledColor": "text",
+              "emptyColor": "muted",
+              "highlightColor": "primary",
+              "highlightFrom": 60,
+              "segmentWidth": 4,
+              "segmentHeight": 10,
+              "gap": 2,
+              "radius": 2,
+              "transition": {
+                "durationMs": 240,
+                "easing": [
+                  0.22,
+                  1,
+                  0.36,
+                  1
+                ]
+              }
+            },
+            {
+              "type": "spacer",
+              "key": "space"
+            },
+            {
+              "type": "column",
+              "key": "anchor",
+              "height": 32,
+              "style": {
+                "position": "relative"
+              },
+              "children": [
+                {
+                  "type": "label",
+                  "key": "opener",
+                  "text": "Anchor"
+                },
+                {
+                  "type": "popover",
+                  "key": "popup",
+                  "clipReveal": true,
+                  "bottom": 38,
+                  "left": 0,
+                  "right": 0,
+                  "transition": {
+                    "enter": {
+                      "durationMs": 240,
+                      "easing": [
+                        0.22,
+                        1,
+                        0.36,
+                        1
+                      ],
+                      "opacity": 0,
+                      "offsetPx": [
+                        0,
+                        4
+                      ],
+                      "heightCollapse": true
+                    },
+                    "exit": {
+                      "durationMs": 240,
+                      "easing": [
+                        0.22,
+                        1,
+                        0.36,
+                        1
+                      ],
+                      "opacity": 0,
+                      "heightCollapse": true
+                    }
+                  },
+                  "closeAction": "close",
+                  "style": {
+                    "background": "#252832",
+                    "padding": 8,
+                    "radius": 7
+                  },
+                  "children": [
+                    {
+                      "type": "label",
+                      "key": "first",
+                      "text": "Bottom-anchored popover",
+                      "presence": {
+                        "enter": {
+                          "durationMs": 240,
+                          "easing": [
+                            0.22,
+                            1,
+                            0.36,
+                            1
+                          ],
+                          "opacity": 0
+                        }
+                      }
+                    },
+                    {
+                      "type": "label",
+                      "key": "second",
+                      "text": "Staggered child",
+                      "presence": {
+                        "enter": {
+                          "durationMs": 240,
+                          "easing": [
+                            0.22,
+                            1,
+                            0.36,
+                            1
+                          ],
+                          "opacity": 0
+                        }
+                      },
+                      "presenceDelayMs": 30
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

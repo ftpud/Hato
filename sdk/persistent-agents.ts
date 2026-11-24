@@ -24,12 +24,14 @@ export interface AgentSpec {
   /** True once the user named the agent; automatic "Provider/Model" naming then stops. */
   customName?: boolean;
   /** Workflow session ownership used for scoped tool activity tracing. */
-  workflow?: { runId: string; blockId: string };
+  workflow?: { runId: string; blockId: string; workflowId?: string };
   /** Request provider-initiated turn lifecycle events for a Claude workflow session. */
   trackAutonomousClaudeTurns?: boolean;
 }
 export interface AgentSession extends AgentSpec {
   status: "starting" | "ready" | "busy" | "waiting" | "stopped" | "interrupted" | "error";
+  /** The agent's own estimate for the current turn (report_progress tool); cleared when a turn starts. */
+  progress?: AgentProgress | null;
   handoffPending?: boolean; contextSent?: boolean;
   /** Fingerprints of the instruction/skill texts already sent in this provider conversation (path → digest). */
   sentDigests?: Record<string, string>; sessionId: string | null; createdAt: string; updatedAt: string; error: string | null;
@@ -38,6 +40,62 @@ export interface AgentSession extends AgentSpec {
   modes?: any; usage?: { used: number; size: number } | null; promptImages?: boolean;
   /** Desktop list projection of the latest activity; never drives the agent. */
   activity?: string;
+}
+/** A working daemon session published by the persistent-agents service. */
+/** Self-reported progress of an agent's current request, 0–100. Shown in Hato's sidebar, not in the chat. */
+export interface AgentProgress { percent: number; note?: string; at: number }
+/** Validate a report_progress call: percent is clamped and rounded; the note is optional and short. */
+export function agentProgress(args: any): AgentProgress {
+  const n = Number(args?.percent);
+  if (!Number.isFinite(n)) throw new Error("percent must be a number from 0 to 100");
+  const note = typeof args?.note === "string" ? args.note.trim().slice(0, 80) : "";
+  return { percent: Math.round(Math.max(0, Math.min(100, n))), ...(note ? { note } : {}), at: Date.now() };
+}
+export const REPORT_PROGRESS_TOOL = {
+  name: "report_progress",
+  description: "Report roughly how much of the current user request is done (0–100) and optionally a few words on the current step. Hato shows it as a progress bar in its sidebar; it never appears in the chat. Call it when you start (e.g. 5), after major milestones, and with 100 when you finish. Cheap: never wait for or mention it.",
+  inputSchema: { type: "object", properties: { percent: { type: "number", minimum: 0, maximum: 100 }, note: { type: "string", maxLength: 80, description: "Current step, a few words" } }, required: ["percent"], additionalProperties: false },
+  annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
+};
+/** Starting instruction for agents without Hato's MCP tools: an HTML comment in the reply, which
+ *  Hato reads for the sidebar and strips from every transcript (Markdown hides it anyway). */
+export const PROGRESS_MARKER_INSTRUCTION = "Progress: while working on a request, put an HTML comment like <!-- hato-progress 40 | Reading tests --> on its own line in your reply: at the start (≈5), after major milestones, and 100 when finished. Hato reads it for its sidebar and hides it — don't mention it.";
+const MARKER = /<!--\s*hato-progress\s+(\d{1,3}(?:\.\d+)?)\s*%?\s*(?:\|\s*([^>]*?))?\s*-->/gi;
+/** The latest complete progress marker in reply text, or null. */
+export function lastProgressMarker(text: string): AgentProgress | null {
+  let last: RegExpExecArray | null = null;
+  for (const m of String(text || "").matchAll(MARKER)) last = m as RegExpExecArray;
+  return last ? agentProgress({ percent: Number(last[1]), note: last[2] || "" }) : null;
+}
+/** Remove progress markers, including a still-streaming one at the end of the text. */
+export function stripProgressMarkers(text: string): string {
+  if (!text || !text.includes("<!--")) return text;
+  // A marker on its own line takes the line with it; inline ones leave the text around them.
+  let out = text.replace(new RegExp(`^[ \\t]*(?:${MARKER.source})[ \\t]*(?:\\r?\\n|$)`, "gim"), "").replace(MARKER, "");
+  const open = out.lastIndexOf("<!--");
+  if (open >= 0 && !out.includes("-->", open)) {
+    // Unfinished comment at the end: drop it if it is (or could still become) a progress marker.
+    const head = out.slice(open + 4).replace(/^\s+/, "").toLowerCase();
+    const word = head.split(/[\s|]/)[0]!;
+    if ("hato-progress".startsWith(word) || /^hato-progress\b/.test(head)) out = out.slice(0, open);
+  }
+  return out.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+/** Rolling scan of streamed reply chunks: keeps a short tail so a marker split across chunks is found. */
+export function scanProgressChunk(tail: string, chunk: string): { progress: AgentProgress | null; tail: string } {
+  const text = tail + chunk;
+  return { progress: lastProgressMarker(text), tail: text.slice(-240) };
+}
+
+/** Starting instruction for agents that have Hato's MCP tools. */
+export const PROGRESS_INSTRUCTION = "Progress: while working on a request, call the report_progress tool with your rough percent done (start ≈5, major milestones, 100 when finished). It feeds Hato's sidebar only — don't mention it in replies.";
+export interface WorkingAgent {
+  id: string;
+  progress?: { percent: number; note?: string; at?: number } | null;
+  name: string;
+  workspaceId: string;
+  status: Extract<AgentSession["status"], "starting" | "busy" | "waiting">;
+  workflow: { workflowId?: string; runId?: string; blockId?: string } | null;
 }
 export interface AgentPermission { id: string; request: any; createdAt: string }
 export interface AgentView { session: AgentSession; messages: ChatMessage[]; before: number | null; permissions: AgentPermission[]; queued: string[] }

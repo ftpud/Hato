@@ -438,7 +438,7 @@ test('workflows panel renders the designer canvas and edits a draft', async () =
   const calls = [], emitted = [], watchers = new Map();
   let delayedGet;
   const def = { id: 'wf', name: 'WF', version: 1, createdAt: '', updatedAt: '', blocks: [B('start', 'start_button', { prompt: 'go', position: { x: 10, y: 10 } }), B('lead', 'ai', { prompt: '{{input}}', position: { x: 300, y: 10 } })], edges: [] };
-  const ctx = { events: { on() {}, emit: (t, v) => emitted.push([t, v]) }, state: { get: k => k === 'workspace.selected' ? { id: 'ws', name: 'WS', location: 'local' } : { workflows: true }, watch(k, fn) { watchers.set(k, fn); } }, ui: { invalidate() {} },
+  const ctx = { events: { on() {}, emit: (t, v) => emitted.push([t, v]) }, state: { set() {}, get: k => k === 'workspace.selected' ? { id: 'ws', name: 'WS', location: 'local' } : { workflows: true }, watch(k, fn) { watchers.set(k, fn); } }, ui: { invalidate() {} },
     modules: { async call(module, method, args) {
       calls.push([module, method, args]); assert.equal(module, 'workflows');
       if (method === 'providerOptions') return { models: [{ value: 'model-one', label: 'Model one' }], reasoning: [{ value: 'high', label: 'High' }] };
@@ -602,7 +602,7 @@ test('library selection shows logs for idle Meeting and Terminal blocks', async 
     { blockId: 'room', status: 'idle', runs: 0, log: [{ at, kind: 'tool', text: 'meeting call' }], meeting: { messages: [{ seq: 1, at, blockId: 'alice', author: 'Alice', text: 'proposal' }] } },
     { blockId: 'term', status: 'idle', runs: 0, log: [{ at, kind: 'response', text: 'terminal list evidence' }] },
   ] };
-  const ctx = { events: { on() {} }, state: { get: k => k === 'workspace.selected' ? { id: 'ws' } : { workflows: true }, watch() {} }, ui: { invalidate() {} }, modules: { call: async (_module, method) => {
+  const ctx = { events: { on() {} }, state: { set() {}, get: k => k === 'workspace.selected' ? { id: 'ws' } : { workflows: true }, watch() {} }, ui: { invalidate() {} }, modules: { call: async (_module, method) => {
     if (method === 'catalog') return {};
     if (method === 'list') return [{ id: 'logs', name: 'Logs', blocks: 2 }];
     if (method === 'runs') return [run];

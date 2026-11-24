@@ -1,24 +1,180 @@
 use super::*;
+use std::{cell::Cell, rc::Rc};
+
+type AnchorBounds = Rc<Cell<Option<Bounds<Pixels>>>>;
 use gpui_kit::base::{
-    MotionMode,
     motion::{
         Easing, SurfaceLeg, SurfaceMotion, SurfaceOffset, SurfacePose, SurfacePresence,
         SurfaceStyles, SurfaceTiming, SurfaceTransition,
     },
-    set_motion_mode, surface_motion,
+    set_motion_mode, surface_motion, MotionMode,
 };
 
 #[derive(Default)]
 pub(super) struct Motion {
     theme: Value,
     overlays: HashMap<(WindowId, String, String), Overlay>,
-    frame: u64,
+    pub(super) frame: u64,
+    pub(super) revision: u64,
+    pub(super) children: HashMap<(WindowId, SharedString), node_motion::PresenceList>,
+    anchors: Vec<Anchor>,
     order: u64,
+}
+
+struct Anchor {
+    bounds: AnchorBounds,
+    used: bool,
+}
+
+impl Motion {
+    pub(super) fn push_anchor(
+        &mut self,
+        id: SharedString,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> AnchorBounds {
+        let bounds = window
+            .use_keyed_state((ElementId::from(id), "popover-anchor"), cx, |_, _| {
+                AnchorBounds::default()
+            })
+            .read(cx)
+            .clone();
+        self.anchors.push(Anchor {
+            bounds: bounds.clone(),
+            used: false,
+        });
+        bounds
+    }
+
+    pub(super) fn pop_anchor(&mut self) -> bool {
+        self.anchors.pop().is_some_and(|anchor| anchor.used)
+    }
+
+    fn popover_bounds(&mut self, node: &Value) -> Option<AnchorBounds> {
+        let scope = match node["anchorScope"].as_str() {
+            Some("window") => return None,
+            Some("container") => true,
+            _ => {
+                node["clipReveal"] == true
+                    || (!node["left"].is_number() && !node["right"].is_number())
+            }
+        };
+        if !scope
+            || (node["windowAnchor"]["x"].is_number() && node["windowAnchor"]["y"].is_number())
+        {
+            return None;
+        }
+        // The closest entry is the nearest relative ancestor, or the slot boundary before
+        // encountering an ancestor belonging to the parent module.
+        self.anchors.last_mut().map(|anchor| {
+            anchor.used = true;
+            anchor.bounds.clone()
+        })
+    }
+}
+
+pub(super) fn measure_anchor(child: AnyElement, bounds: AnchorBounds) -> AnyElement {
+    AnchorMeasure { child, bounds }.into_any_element()
+}
+
+struct AnchorMeasure {
+    child: AnyElement,
+    bounds: AnchorBounds,
+}
+
+impl IntoElement for AnchorMeasure {
+    type Element = Self;
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl Element for AnchorMeasure {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
+        (self.child.request_layout(window, cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        if self.bounds.replace(Some(bounds)) != Some(bounds) {
+            window.request_animation_frame();
+        }
+        self.child.prepaint(window, cx);
+    }
+
+    fn paint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut (),
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.child.paint(window, cx);
+    }
+}
+
+/// Resolve stretch and fixed-width cards consistently, including the right-aligned case.
+fn horizontal_card(n: &Value, span: Pixels) -> (Pixels, Pixels) {
+    let left = n["left"].as_f64();
+    let right = n["right"].as_f64();
+    let fixed = (n["style"]["fullWidth"] != true)
+        .then(|| n["style"]["width"].as_f64().or_else(|| n["width"].as_f64()))
+        .flatten();
+    let start = px(left
+        .unwrap_or(if fixed.is_some() && right.is_some() {
+            0.
+        } else {
+            8.
+        })
+        .clamp(0., 4096.) as f32)
+    .min(span);
+    let end = px(right
+        .unwrap_or(if fixed.is_some() { 0. } else { 8. })
+        .clamp(0., 4096.) as f32)
+    .min(span - start);
+    let available = span - start - end;
+    let width = fixed.map_or(available, |width| {
+        px(width.clamp(0., 8192.) as f32).min(available)
+    });
+    let x = if fixed.is_some() && left.is_none() && right.is_some() {
+        span - end - width
+    } else {
+        start
+    };
+    (x, width)
 }
 
 struct Overlay {
     node: Value,
     presence: SurfacePresence,
+    extent: SurfacePresence,
+    anchor: Option<AnchorBounds>,
     seen: u64,
     focus: FocusHandle,
     previous_focus: Option<FocusHandle>,
@@ -46,11 +202,11 @@ impl Toast {
     }
 }
 
-fn number(value: &Value, default: f64, min: f64, max: f64) -> f32 {
+pub(super) fn number(value: &Value, default: f64, min: f64, max: f64) -> f32 {
     value.as_f64().unwrap_or(default).clamp(min, max) as f32
 }
 
-fn timing(value: &Value) -> Option<SurfaceTiming> {
+pub(super) fn timing(value: &Value) -> Option<SurfaceTiming> {
     let duration = value["durationMs"].as_f64()?.clamp(0., 30_000.);
     let curve = value["easing"].as_array()?;
     let [a, b, c, d] = curve.as_slice() else {
@@ -107,6 +263,7 @@ impl Motion {
         let mode = match value["mode"].as_str() {
             Some("on") => MotionMode::On,
             Some("off") => MotionMode::Off,
+            Some("reduced") => MotionMode::Reduced,
             _ => MotionMode::System,
         };
         set_motion_mode(mode, cx);
@@ -115,6 +272,21 @@ impl Motion {
 
     pub(super) fn forget_window(&mut self, id: WindowId) {
         self.overlays.retain(|key, _| key.0 != id);
+        self.children.retain(|key, _| key.0 != id);
+    }
+
+    pub(super) fn has_presence(
+        &self,
+        module: &str,
+        path: &str,
+        nodes: &[Value],
+        window: &Window,
+    ) -> bool {
+        nodes.iter().any(|node| node["presence"].is_object())
+            || (!self.children.is_empty()
+                && self
+                    .children
+                    .contains_key(&(window.window_handle().window_id(), sid(module, path))))
     }
 
     pub(super) fn dock_enabled(&self) -> bool {
@@ -224,16 +396,22 @@ impl Shell {
             module.to_owned(),
             path.to_owned(),
         );
+        let anchor = self.motion.popover_bounds(n);
         let overlay = self.motion.overlays.entry(key).or_insert_with(|| Overlay {
             node: Value::Null,
             presence: SurfacePresence::default(),
+            extent: SurfacePresence::default(),
+            anchor: None,
             seen: 0,
             focus: cx.focus_handle(),
             previous_focus: None,
             order: 0,
             live: false,
         });
-        overlay.node = n.clone();
+        overlay.anchor = anchor;
+        if overlay.node != *n {
+            overlay.node = n.clone();
+        }
         overlay.seen = self.motion.frame;
         if !overlay.live {
             self.motion.order = self.motion.order.wrapping_add(1);
@@ -273,33 +451,69 @@ impl Shell {
                 overlay.focus.focus(window, cx);
             }
             overlay.live = live;
-            let transition = transition(&overlay.node["transition"]).unwrap_or_default();
+            let mut transition = transition(&overlay.node["transition"]).unwrap_or_else(|| {
+                if overlay.node["clipReveal"] != true {
+                    return SurfaceTransition::default();
+                }
+                let leg = |ms| SurfaceLeg {
+                    timing: node_motion::default_timing(ms),
+                    pose: SurfacePose {
+                        opacity: 0.,
+                        offset: Point::default(),
+                    },
+                };
+                SurfaceTransition {
+                    enter: Some(leg(180)),
+                    exit: Some(leg(126)),
+                }
+            });
             let (pose, active) = overlay.presence.sample(
                 live,
                 &transition,
                 surface_motion(cx),
                 cx.background_executor().now(),
             );
-            if active {
+            let (extent, revealing) = node_motion::extent_pose(
+                &mut overlay.extent,
+                live,
+                &mut transition,
+                surface_motion(cx),
+                cx.background_executor().now(),
+                Duration::ZERO,
+                |leg| {
+                    overlay.node["clipReveal"] == true
+                        || overlay.node["transition"][leg]["heightCollapse"] == true
+                },
+            );
+            if active || revealing {
                 window.request_animation_frame();
             }
-            if live || active {
-                elements.push(self.render_popover_surface(
-                    &key.1,
-                    &key.2,
-                    &overlay.node,
-                    &overlay.focus,
-                    live,
-                    pose,
-                    window,
-                    cx,
-                ));
+            if live || active || revealing {
+                let bounds = overlay.anchor.as_ref().and_then(|anchor| anchor.get());
+                if overlay.anchor.is_none()
+                    || bounds.is_some()
+                    || overlay.node["windowAnchor"].is_object()
+                {
+                    elements.push(self.render_popover_surface(
+                        &key.1,
+                        &key.2,
+                        &overlay.node,
+                        &overlay.focus,
+                        live,
+                        pose,
+                        extent,
+                        bounds,
+                        window,
+                        cx,
+                    ));
+                }
                 self.motion.overlays.insert(key, overlay);
             }
         }
         elements
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn render_popover_surface(
         &mut self,
         module: &str,
@@ -308,6 +522,8 @@ impl Shell {
         focus: &FocusHandle,
         live: bool,
         pose: SurfacePose,
+        extent: f32,
+        parent: Option<Bounds<Pixels>>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -340,6 +556,14 @@ impl Shell {
                 .occlude()
                 .on_mouse_down(MouseButton::Left, move |_, _, cx| close(cx))
         });
+        let wrap = |card: AnyElement| {
+            let surface = SurfaceOffset::new(card, pose.offset);
+            if extent < 1. {
+                surface.reveal(extent, false, n["bottom"].is_number(), px(0.))
+            } else {
+                surface
+            }
+        };
         let max_height = px(number(&n["maxHeight"], 420., 40., 4096.));
         let card = self
             .apply_base(v_flex(), n, cx)
@@ -379,33 +603,48 @@ impl Shell {
                 card.overflow_hidden().children(kids).into_any_element()
             };
             return overlay
-                .child(deferred(
-                    anchored()
-                        .position(position)
-                        .child(SurfaceOffset::new(card, pose.offset)),
-                ))
+                .child(deferred(anchored().position(position).child(wrap(card))))
                 .into_any_element();
         }
-        overlay
-            .child(SurfaceOffset::new(
-                card.absolute()
-                    .when(n["bottom"].is_number(), |card| {
-                        card.bottom(px(number(&n["bottom"], 0., 0., 4096.)))
-                    })
-                    .when(n["bottom"].is_null(), |card| {
-                        card.top(px(number(&n["top"], 52., 0., 4096.)))
-                    })
-                    .left(px(number(&n["left"], 8., 0., 4096.)))
-                    .right(px(number(&n["right"], 8., 0., 4096.)))
-                    .when(
-                        n["bottom"].is_null() || n["heightFraction"].is_number(),
-                        |card| card.h(relative(number(&n["heightFraction"], 0.55, 0.1, 1.))),
-                    )
-                    .overflow_hidden()
-                    .children(kids),
-                pose.offset,
-            ))
-            .into_any_element()
+        let (left, width) = horizontal_card(
+            n,
+            parent.map_or(window.viewport_size().width, |bounds| bounds.size.width),
+        );
+        let card = wrap(
+            card.absolute()
+                .when(n["bottom"].is_number(), |card| {
+                    card.bottom(px(number(&n["bottom"], 0., 0., 4096.)))
+                })
+                .when(n["bottom"].is_null(), |card| {
+                    card.top(px(number(&n["top"], 52., 0., 4096.)))
+                })
+                .left(left)
+                .w(width)
+                .min_w_0()
+                .max_w(width)
+                .when(
+                    n["bottom"].is_null() || n["heightFraction"].is_number(),
+                    |card| card.h(relative(number(&n["heightFraction"], 0.55, 0.1, 1.))),
+                )
+                .overflow_hidden()
+                .children(kids)
+                .into_any_element(),
+        );
+        if let Some(parent) = parent {
+            overlay
+                .child(
+                    div()
+                        .absolute()
+                        .top(parent.origin.y)
+                        .left(parent.origin.x)
+                        .w(parent.size.width)
+                        .h(parent.size.height)
+                        .child(card),
+                )
+                .into_any_element()
+        } else {
+            overlay.child(card).into_any_element()
+        }
     }
 
     pub(super) fn render_toasts(&mut self, window: &Window, cx: &App) -> AnyElement {

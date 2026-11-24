@@ -66,6 +66,7 @@ pub fn apply_system_reduce_motion(cx: &mut App) {
 pub enum MotionMode {
     System,
     On,
+    Reduced,
     Off,
 }
 
@@ -110,7 +111,7 @@ fn apply_preference(preference: Option<bool>, cx: &mut App) {
     let (raw, requested, applied) = (state.raw, state.requested, state.applied);
     let reduce = match requested {
         Some(MotionMode::On) => false,
-        Some(MotionMode::Off) => true,
+        Some(MotionMode::Off | MotionMode::Reduced) => true,
         Some(MotionMode::System) => raw.unwrap_or(false),
         None if preference.is_some() && cx.reduce_motion() == applied.unwrap_or(false) => {
             preference.unwrap_or(false)

@@ -8,6 +8,8 @@ import { resetText, type LimitProvider, type LimitsSnapshot, type LimitWindow } 
 const INTERVALS = [{ value: "0", label: "Manual only" }, { value: "5", label: "Every 5 minutes" }, { value: "15", label: "Every 15 minutes" },
   { value: "30", label: "Every 30 minutes" }, { value: "60", label: "Every hour" }];
 const BAR_WIDTH = 28;
+/** After an agent finishes: wait for the provider's counters to settle, and refresh at most this often. */
+const FINISH_DEBOUNCE_MS = 4000, FINISH_MIN_INTERVAL_MS = 60000;
 
 export function usageMeter(id: string, provider: LimitProvider, title: string, options: { command: string; liveHint?: string } = { command: "/usage" }): AppModule {
   let snap: LimitsSnapshot | null = null;
@@ -69,6 +71,27 @@ export function usageMeter(id: string, provider: LimitProvider, title: string, o
         await ctx.modules.call("persistence", "settings.set", { key: `${id}.${key}`, value });
         if (key === "refreshMinutes") { minutes = String(value); schedule(ctx); } else show = value === "used" ? "used" : "left";
       });
+      // Recalculate after agent work finishes: an agent leaving the working lists ended a turn.
+      // Lists don't name providers, so each meter refreshes its own; debounced and throttled.
+      const seen = new Set<string>();
+      let lastFinishRefresh = 0, finishTimer: ReturnType<typeof setTimeout> | null = null;
+      const afterWork = () => {
+        if (finishTimer) clearTimeout(finishTimer);
+        const wait = Math.max(FINISH_DEBOUNCE_MS, lastFinishRefresh + FINISH_MIN_INTERVAL_MS - Date.now());
+        finishTimer = setTimeout(() => { finishTimer = null; lastFinishRefresh = Date.now(); void refresh(ctx, true); }, wait);
+      };
+      const track = (prefix: string) => (list: unknown) => {
+        const now = new Set(Array.isArray(list) ? list.map((w: any) => `${prefix}:${w?.id}`) : []);
+        let finished = false;
+        for (const id of [...seen]) if (id.startsWith(prefix + ":") && !now.has(id)) { seen.delete(id); finished = true; }
+        for (const id of now) seen.add(id);
+        if (finished) afterWork();
+      };
+      for (const [key, prefix] of [["ai-sessions.working", "chat"], ["persistent-agents.working", "agent"]] as const) {
+        const onList = track(prefix); onList(ctx.state.get(key)); ctx.state.watch(key, onList);
+      }
+      // The Assistant rail's usage gauges ask for a refresh by event (rails hold no acp grant).
+      for (const rail of ["left-sidebar", "sidebar"]) ctx.events.on(`${rail}.refreshUsage`, (e: any) => { if (e?.provider === provider) void refresh(ctx, true); });
       snap = (ctx.state.get("acp.limits") as any)?.[provider] || null;
       ctx.state.watch("acp.limits", (v: any) => { snap = v?.[provider] || null; ctx.ui.invalidate(); });
       ws = ctx.state.get("workspace.selected") || null;

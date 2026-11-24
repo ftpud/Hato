@@ -26,7 +26,7 @@ pub use presence::{Presence, PresencePhase, PresenceSample};
 pub use reveal::MotionReveal;
 pub use sequence::{Sequence, SequenceSample, SequenceStep};
 pub use stagger::{Stagger, StaggerOrigin};
-pub use surface::{SurfaceLeg, SurfaceMotion, SurfaceOffset, SurfacePose, SurfacePresence, SurfaceStyles, SurfaceTiming, SurfaceTransition};
+pub use surface::{SurfaceColor, SurfaceLeg, SurfaceMotion, SurfaceOffset, SurfacePose, SurfacePresence, SurfaceStyles, SurfaceTiming, SurfaceTransition};
 pub use timing::{
     IterationCount, MotionPhase, PlaybackDirection, SignedDuration, Timing, TimingSample,
 };

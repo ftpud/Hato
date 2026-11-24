@@ -49,16 +49,3 @@ test("bar item contributions are validated and offered once on their default bar
   assert.equal(M.repair({ ...fresh, showCollapsedTray: false }).showCollapsedTray, false);
   assert.equal(M.repair(old).showCollapsedTray, false);
 });
-
-test("sidebar draws a rule between adjacent buttons of different shared spaces, not over spacers", async () => {
-  const { pluginsHost } = await import("./plugin-fixture.mjs");
-  const left = (await load("Hato-plugins/modules/ui/left-sidebar/src/index.ts")).default;
-  const values = new Map([["workspace-layout.panelSharing", { files: "space-2", git: "space-2", remote: "space-2", viewer: "space-1", "git-changes": "space-1", workflows: "space-1" }],
-    ["workspace-layout.sidebarOrder", { "left-top": ["projects", "files", "git", "remote", "@spacer:x", "viewer", "git-changes", "workflows", "terminal"] }]]);
-  const ctx = { host: { plugins: pluginsHost() }, state: { get: k => values.get(k), watch() {} }, events: { on() { return () => {}; } }, ui: { invalidate() {} }, log: { warn() {} } };
-  await left.activate(ctx);
-  assert.deepEqual(left.render().children.map(n => n.key), ["projects", "group-rule:files", "files", "git", "remote", "@spacer:x", "viewer", "git-changes", "workflows", "group-rule:terminal", "terminal"]);
-  values.set("workspace-layout.sidebarGrouping", false);
-  const off = (await load("Hato-plugins/modules/ui/left-sidebar/src/index.ts")).default; await off.activate(ctx);
-  assert.ok(!off.render().children.some(n => n.key.startsWith("group-rule:")));
-});

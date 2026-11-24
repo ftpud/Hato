@@ -1,0 +1,133 @@
+{
+  "type": "column",
+  "key": "root",
+  "grow": true,
+  "children": [
+    {
+      "type": "theme",
+      "key": "theme",
+      "mode": "dark",
+      "palette": {
+        "light": {
+          "background": "#101014",
+          "panel": "#1c1c20",
+          "text": "#eeeef0",
+          "border": "#363639",
+          "muted": "#98989f",
+          "primary": "#f88460"
+        },
+        "dark": {
+          "background": "#101014",
+          "panel": "#1c1c20",
+          "text": "#eeeef0",
+          "border": "#363639",
+          "muted": "#98989f",
+          "primary": "#f88460"
+        }
+      },
+      "chrome": {
+        "window": {
+          "titlebar": "hidden",
+          "trafficLights": {
+            "x": 22,
+            "y": 22
+          }
+        }
+      }
+    },
+    {
+      "type": "titleBar",
+      "key": "title",
+      "children": [
+        {
+          "type": "label",
+          "key": "title-text",
+          "text": "Window title bar"
+        }
+      ]
+    },
+    {
+      "type": "column",
+      "key": "content",
+      "grow": true,
+      "style": {
+        "background": "#18181d"
+      },
+      "children": [
+        {
+          "type": "row",
+          "key": "drag",
+          "windowDrag": true,
+          "height": 54,
+          "style": {
+            "background": "#292933"
+          },
+          "children": []
+        },
+        {
+          "type": "column",
+          "key": "demo",
+          "padding": 18,
+          "gap": 12,
+          "children": [
+            {
+              "type": "label",
+              "key": "heading",
+              "text": "Ring gauges",
+              "weight": "semibold"
+            },
+            {
+              "type": "row",
+              "key": "gauges",
+              "gap": 16,
+              "children": [
+                {
+                  "type": "ring",
+                  "key": "empty",
+                  "value": 0,
+                  "max": 100,
+                  "size": 22,
+                  "thickness": 2,
+                  "color": "#f88460",
+                  "trackColor": "#34343a"
+                },
+                {
+                  "type": "ring",
+                  "key": "quarter",
+                  "value": 25,
+                  "max": 100,
+                  "size": 22,
+                  "thickness": 2,
+                  "color": "#f88460",
+                  "trackColor": "#34343a",
+                  "label": "25"
+                },
+                {
+                  "type": "ring",
+                  "key": "partial",
+                  "value": 64,
+                  "max": 100,
+                  "size": 22,
+                  "thickness": 2,
+                  "color": "#d8d9ff",
+                  "trackColor": "#34343a",
+                  "label": "64"
+                },
+                {
+                  "type": "ring",
+                  "key": "full",
+                  "value": 100,
+                  "max": 100,
+                  "size": 22,
+                  "thickness": 2,
+                  "color": "#98dfc0",
+                  "trackColor": "#34343a"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

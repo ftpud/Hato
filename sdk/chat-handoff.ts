@@ -1,7 +1,8 @@
 import { transcriptContent } from "./images";
+import { stripProgressMarkers } from "./persistent-agents";
 /** A bounded transfer of original dialogue, never a recursively generated handoff or tool log. */
 export function chatHandoff(messages: { role: string; text: string }[]): string {
-  const dialogue = messages.map(m => ({...m,text:transcriptContent(m.text).text})).filter(m => (m.role === "user" || m.role === "assistant") && m.text.trim());
+  const dialogue = messages.map(m => ({...m,text:stripProgressMarkers(transcriptContent(m.text).text)})).filter(m => (m.role === "user" || m.role === "assistant") && m.text.trim());
   if (!dialogue.length) return "";
   let budget = 14000;
   const recent: string[] = [];

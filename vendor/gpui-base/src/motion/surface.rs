@@ -1,11 +1,11 @@
 use std::time::{Duration, Instant};
 
 use gpui::{
-    AnyElement, App, Bounds, ContentMask, Element, ElementId, GlobalElementId, InspectorElementId,
-    IntoElement, LayoutId, Pixels, Point, Window, point, px,
+    AnyElement, App, Bounds, ContentMask, Element, ElementId, GlobalElementId, Hsla,
+    InspectorElementId, IntoElement, LayoutId, Pixels, Point, Rgba, Window, point, px,
 };
 
-use super::Easing;
+use super::{Easing, Interpolate};
 
 /// Optional presentation data supplied by the application.
 #[derive(Default)]
@@ -16,6 +16,46 @@ pub struct SurfaceStyles {
 }
 
 impl gpui::Global for SurfaceStyles {}
+
+/// A solid fill animated in premultiplied RGB so invisible colors cannot tint a fade.
+#[derive(Clone, Copy, PartialEq)]
+pub struct SurfaceColor(pub Hsla);
+
+impl Interpolate for SurfaceColor {
+    fn interpolate(&self, target: &Self, progress: f32) -> Self {
+        let (from, to) = (self.0, target.0);
+        if from == to || progress <= 0. {
+            return *self;
+        }
+        if progress >= 1. {
+            return *target;
+        }
+        // Preserve the exact visible color when fading to or from a clear background.
+        if from.a == 0. {
+            return Self(Hsla {
+                a: to.a * progress,
+                ..to
+            });
+        }
+        if to.a == 0. {
+            return Self(Hsla {
+                a: from.a * (1. - progress),
+                ..from
+            });
+        }
+        let a = from.a * (1. - progress);
+        let b = to.a * progress;
+        let alpha = a + b;
+        let (from, to) = (Rgba::from(from), Rgba::from(to));
+        let mix = |x, y| (x * a + y * b) / alpha;
+        Self(Hsla::from(Rgba {
+            r: mix(from.r, to.r),
+            g: mix(from.g, to.g),
+            b: mix(from.b, to.b),
+            a: alpha,
+        }))
+    }
+}
 
 /// An application-resolved policy. Reduced keeps opacity and drops spatial effects.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -81,6 +121,18 @@ impl SurfacePresence {
         mode: SurfaceMotion,
         now: Instant,
     ) -> (SurfacePose, bool) {
+        self.sample_delayed(visible, transition, mode, now, Duration::ZERO)
+    }
+
+    /// Hold the initial enter pose before beginning the flight.
+    pub fn sample_delayed(
+        &mut self,
+        visible: bool,
+        transition: &SurfaceTransition,
+        mode: SurfaceMotion,
+        now: Instant,
+        enter_delay: Duration,
+    ) -> (SurfacePose, bool) {
         let previous = self.flight.as_ref().map(|flight| flight.sample(now));
         if mode == SurfaceMotion::Off {
             self.visible = visible;
@@ -106,7 +158,7 @@ impl SurfacePresence {
                     Flight {
                         from,
                         to,
-                        started: now,
+                        started: if visible { now + enter_delay } else { now },
                         timing: leg.timing.clone(),
                     }
                 });
@@ -138,7 +190,7 @@ impl Flight {
             opacity: self.from.opacity + (self.to.opacity - self.from.opacity) * t,
             offset: self.from.offset + (self.to.offset - self.from.offset) * t,
         };
-        (pose, elapsed < self.timing.duration)
+        (pose, now < self.started || elapsed < self.timing.duration)
     }
 }
 
@@ -146,6 +198,7 @@ impl Flight {
 pub struct SurfaceOffset {
     child: AnyElement,
     offset: Point<Pixels>,
+    resolve_offset: Option<Box<dyn Fn(Point<Pixels>) -> Point<Pixels>>>,
     reveal: Option<(f32, bool, bool, Pixels)>,
     clip: Option<Bounds<Pixels>>,
 }
@@ -155,9 +208,19 @@ impl SurfaceOffset {
         Self {
             child: child.into_any_element(),
             offset,
+            resolve_offset: None,
             reveal: None,
             clip: None,
         }
+    }
+
+    /// Map the offset after the parent has resolved its placement.
+    pub fn map_offset(
+        mut self,
+        resolve: impl Fn(Point<Pixels>) -> Point<Pixels> + 'static,
+    ) -> Self {
+        self.resolve_offset = Some(Box::new(resolve));
+        self
     }
 
     /// Clip a stable viewport toward an edge and translate its content by up to `travel`.
@@ -204,7 +267,10 @@ impl Element for SurfaceOffset {
         window: &mut Window,
         cx: &mut App,
     ) {
-        let mut offset = self.offset;
+        let mut offset = self
+            .resolve_offset
+            .as_ref()
+            .map_or(self.offset, |resolve| resolve(self.offset));
         if let Some((progress, horizontal, end, travel)) = self.reveal {
             let mut clip = bounds;
             if horizontal {

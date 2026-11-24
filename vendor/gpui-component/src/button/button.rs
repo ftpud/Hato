@@ -409,6 +409,15 @@ impl Button {
         self
     }
 
+    /// Provide custom contents for the managed tooltip.
+    pub fn tooltip_content(
+        mut self,
+        build: impl Fn(&mut Window, &mut App) -> gpui::AnyView + 'static,
+    ) -> Self {
+        self.tooltip_builder = Some(Rc::new(build));
+        self
+    }
+
     /// Prefer a side for the tooltip, falling back when it does not fit.
     ///
     /// Applies to [`Self::tooltip`] and [`Self::tooltip_with_action`].
@@ -623,25 +632,6 @@ struct BackgroundInteraction {
     pressed: Cell<bool>,
 }
 
-#[derive(Clone, Copy, PartialEq)]
-struct ButtonFill(Hsla);
-
-impl gpui_base::motion::Interpolate for ButtonFill {
-    fn interpolate(&self, target: &Self, progress: f32) -> Self {
-        use gpui_base::animation::Lerp;
-        let (from, to) = (self.0, target.0);
-        // A fully transparent fill contributes no color. Keep the visible
-        // endpoint's hue throughout the fade (especially for ghost buttons).
-        Self(if from.a == 0. {
-            Hsla { a: to.a * progress, ..to }
-        } else if to.a == 0. {
-            Hsla { a: from.a * (1. - progress), ..from }
-        } else {
-            from.lerp(&to, progress)
-        })
-    }
-}
-
 impl RenderOnce for Button {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let style: ButtonVariant = self.variant;
@@ -693,7 +683,7 @@ impl RenderOnce for Button {
                 };
                 gpui_base::motion::transition(
                     (self.id.clone(), "background-color"),
-                    ButtonFill(target),
+                    gpui_base::motion::SurfaceColor(target),
                     gpui_base::motion::Transition::new(duration).easing(timing.easing),
                     window, cx,
                 ).0.into()

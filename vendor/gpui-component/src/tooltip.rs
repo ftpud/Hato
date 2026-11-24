@@ -243,7 +243,7 @@ struct TooltipTrigger {
     bounds: Bounds<Pixels>,
 }
 
-pub(crate) trait ManagedTooltipExt:
+pub trait ManagedTooltipExt:
     StatefulInteractiveElement + crate::ElementExt + Sized
 {
     fn managed_tooltip(

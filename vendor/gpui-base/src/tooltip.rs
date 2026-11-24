@@ -1,10 +1,9 @@
-use std::{rc::Rc, time::Duration};
+use std::{cell::Cell, rc::Rc, time::Duration};
 
 use gpui::{
     AnyElement, AnyView, App, Bounds, Context, Div, ElementId, Global, InteractiveElement,
     IntoElement, ParentElement, Pixels, Render, RenderOnce, Role, Stateful,
-    StatefulInteractiveElement, Styled, Task, Window, deferred, div, prelude::FluentBuilder as _,
-    px,
+    StatefulInteractiveElement, Styled, Task, Window, deferred, div, px,
 };
 
 use crate::{Placement, Positioner};
@@ -270,7 +269,14 @@ impl TooltipOverlay {
             cx.background_executor().timer(grace_period).await;
             let _ = this.update_in(cx, |this, _, cx| {
                 if this.epoch == epoch {
-                    if cx.try_global::<crate::motion::SurfaceStyles>().is_some_and(|s| s.tooltip.is_some()) {
+                    if cx
+                        .try_global::<crate::motion::SurfaceStyles>()
+                        .is_some_and(|s| s.tooltip.is_some())
+                        || this
+                            .content
+                            .as_ref()
+                            .is_some_and(|request| request.preferred_placement.is_some())
+                    {
                         this.closing = true;
                     } else {
                         this.content = None;
@@ -309,13 +315,41 @@ impl Default for TooltipOverlay {
     }
 }
 
+fn directional_motion() -> crate::motion::SurfaceTransition {
+    use crate::motion::{Easing, SurfaceLeg, SurfacePose, SurfaceTiming, SurfaceTransition};
+    let leg = |ms| SurfaceLeg {
+        timing: SurfaceTiming {
+            duration: Duration::from_millis(ms),
+            easing: Easing::cubic_bezier(0.2, 0., 0., 1.).expect("valid easing"),
+        },
+        pose: SurfacePose {
+            opacity: 0.,
+            offset: gpui::point(px(0.), px(4.)),
+        },
+    };
+    SurfaceTransition {
+        enter: Some(leg(180)),
+        exit: Some(leg(126)),
+    }
+}
+
 impl Render for TooltipOverlay {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        use crate::motion::{SurfaceStyles, SurfaceOffset};
-        let motion = cx.try_global::<SurfaceStyles>().and_then(|styles| styles.tooltip.clone());
-        let pose = motion.as_ref().map(|motion| {
+        use crate::motion::{SurfaceOffset, SurfaceStyles};
+        let motion = cx
+            .try_global::<SurfaceStyles>()
+            .and_then(|styles| styles.tooltip.clone())
+            .or_else(|| {
+                self.content
+                    .as_ref()
+                    .and_then(|request| request.preferred_placement)
+                    .map(|_| directional_motion())
+            });
+        let pose = motion.map(|motion| {
             let (pose, running) = self.presence.sample(
-                !self.closing && self.content.is_some(), motion, crate::surface_motion(cx),
+                !self.closing && self.content.is_some(),
+                &motion,
+                crate::surface_motion(cx),
                 cx.background_executor().now(),
             );
             if running {
@@ -325,9 +359,11 @@ impl Render for TooltipOverlay {
             }
             pose
         });
-        if motion.is_none() {
+        if pose.is_none() {
             self.presence = Default::default();
-            if self.closing { self.content = None; }
+            if self.closing {
+                self.content = None;
+            }
         }
         let Some(content) = self.content.as_ref() else {
             return div().into_any_element();
@@ -343,20 +379,41 @@ impl Render for TooltipOverlay {
                 epoch: self.animation_epoch,
             },
         };
+        let mut positioner = TooltipPositioner::new(content.trigger_bounds);
+        let resolved = content
+            .preferred_placement
+            .map(|placement| Rc::new(Cell::new(placement)));
+        if let Some((placement, resolved)) = content.preferred_placement.zip(resolved.as_ref()) {
+            let resolved = resolved.clone();
+            positioner = positioner
+                .placement(placement)
+                .on_position(move |position| {
+                    if let Some(side) = position.placement {
+                        resolved.set(side);
+                    }
+                });
+        }
         let rendered = if let Some(pose) = pose {
-            SurfaceOffset::new(div().opacity(pose.opacity).child(view), pose.offset).into_any_element()
+            let mut surface =
+                SurfaceOffset::new(div().opacity(pose.opacity).child(view), pose.offset);
+            if let Some(side) = resolved {
+                surface = surface.map_offset(move |offset| {
+                    let travel = offset.x.abs().max(offset.y.abs());
+                    match side.get() {
+                        Placement::Top => gpui::point(px(0.), travel),
+                        Placement::Right => gpui::point(-travel, px(0.)),
+                        Placement::Bottom => gpui::point(px(0.), -travel),
+                        Placement::Left => gpui::point(travel, px(0.)),
+                    }
+                });
+            }
+            surface.into_any_element()
         } else {
             (self.renderer)(view, transition, window, cx)
         };
-        deferred(
-            TooltipPositioner::new(content.trigger_bounds)
-                .when_some(content.preferred_placement, |this, placement| {
-                    this.placement(placement)
-                })
-                .child(rendered),
-        )
-        .with_priority(TOOLTIP_PRIORITY)
-        .into_any_element()
+        deferred(positioner.child(rendered))
+            .with_priority(TOOLTIP_PRIORITY)
+            .into_any_element()
     }
 }
 
@@ -373,6 +430,14 @@ impl TooltipPositioner {
 
     pub fn placement(mut self, placement: Placement) -> Self {
         self.0 = self.0.placement(placement);
+        self
+    }
+
+    fn on_position(
+        mut self,
+        callback: impl Fn(crate::positioner::ResolvedPosition) + 'static,
+    ) -> Self {
+        self.0 = self.0.on_position(callback);
         self
     }
 }

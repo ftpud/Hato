@@ -73,6 +73,9 @@ pub struct Approvals {
     auto_approve: AtomicBool,
     #[cfg(any(feature = "gui", test))]
     security_file: Option<PathBuf>,
+    /// Also serializes writes to the shared native security settings file.
+    #[cfg(any(feature = "gui", test))]
+    show_warning_banner: Mutex<bool>,
     /// Headless test hook: auto-decisions (only settable from the kernel's own headless runner).
     pub headless_policy: Mutex<Option<Arc<dyn Fn(&ApprovalRequest) -> Option<String> + Send + Sync>>>,
     /// Headless test hook: what a secret prompt "types". Without it, secret prompts are cancelled.
@@ -90,14 +93,16 @@ pub enum Decision {
 #[serde(rename_all = "camelCase")]
 struct SecuritySettings {
     auto_approve: bool,
+    #[serde(default = "show_warning_banner_by_default")]
+    show_auto_approve_warning_banner: bool,
 }
 
+fn show_warning_banner_by_default() -> bool { true }
+
 impl SecuritySettings {
-    fn load_auto_approve(path: &Path) -> bool {
-        if !std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_file()) { return false; }
-        std::fs::read(path).ok()
-            .and_then(|bytes| serde_json::from_slice::<Self>(&bytes).ok())
-            .is_some_and(|settings| settings.auto_approve)
+    fn load(path: &Path) -> Option<Self> {
+        if !std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_file()) { return None; }
+        serde_json::from_slice(&std::fs::read(path).ok()?).ok()
     }
 
     #[cfg(any(feature = "gui", test))]
@@ -124,11 +129,14 @@ impl Approvals {
         Approvals { pending: Mutex::new(Vec::new()), ui, audit: None, auto_approve: AtomicBool::new(false),
             #[cfg(any(feature = "gui", test))]
             security_file: None,
+            #[cfg(any(feature = "gui", test))]
+            show_warning_banner: Mutex::new(show_warning_banner_by_default()),
             headless_policy: Mutex::new(None), headless_secret: Mutex::new(None) }
     }
 
     pub(crate) fn with_audit(ui: UiBridge, audit: Audit, security_file: Option<PathBuf>) -> Self {
-        let auto_approve = security_file.as_deref().is_some_and(SecuritySettings::load_auto_approve);
+        let settings = security_file.as_deref().and_then(SecuritySettings::load);
+        let auto_approve = settings.as_ref().is_some_and(|settings| settings.auto_approve);
         if auto_approve {
             audit.record("kernel", 0, "security.autoApprove", "Native security setting",
                 "restored from saved setting", Some("native-startup"));
@@ -136,6 +144,8 @@ impl Approvals {
         Self { audit: Some(audit), auto_approve: AtomicBool::new(auto_approve),
             #[cfg(any(feature = "gui", test))]
             security_file,
+            #[cfg(any(feature = "gui", test))]
+            show_warning_banner: Mutex::new(settings.map_or_else(show_warning_banner_by_default, |settings| settings.show_auto_approve_warning_banner)),
             ..Self::new(ui) }
     }
 
@@ -145,11 +155,12 @@ impl Approvals {
 
     #[cfg(any(feature = "gui", test))]
     pub(crate) fn set_auto_approve_from_native_ui(&self, enabled: bool) -> std::io::Result<()> {
+        let banner = self.show_warning_banner.lock();
         let previous = self.auto_approve_enabled();
         // Turn off in-memory approval even if the saved preference cannot be updated.
         if !enabled { self.auto_approve.store(false, Ordering::Release); }
         let saved = self.security_file.as_deref().map_or(Ok(()), |path| {
-            SecuritySettings { auto_approve: enabled }.save(path)
+            SecuritySettings { auto_approve: enabled, show_auto_approve_warning_banner: *banner }.save(path)
         });
         if enabled {
             if saved.is_err() { return saved; }
@@ -163,6 +174,23 @@ impl Approvals {
             self.ui.send(UiMsg::ApprovalsChanged);
         }
         saved
+    }
+
+    #[cfg(any(feature = "gui", test))]
+    pub(crate) fn show_auto_approve_warning_banner(&self) -> bool {
+        *self.show_warning_banner.lock()
+    }
+
+    #[cfg(any(feature = "gui", test))]
+    pub(crate) fn set_auto_approve_warning_banner_from_native_ui(&self, enabled: bool) -> std::io::Result<()> {
+        let mut banner = self.show_warning_banner.lock();
+        if *banner == enabled { return Ok(()); }
+        if let Some(path) = self.security_file.as_deref() {
+            SecuritySettings { auto_approve: self.auto_approve_enabled(), show_auto_approve_warning_banner: enabled }.save(path)?;
+        }
+        *banner = enabled;
+        self.ui.send(UiMsg::ApprovalsChanged);
+        Ok(())
     }
 
     pub fn allow_deny() -> Vec<ApprovalOption> {
@@ -306,7 +334,7 @@ mod tests {
         approvals.set_auto_approve_from_native_ui(false).unwrap();
         assert!(matches!(ask(), Decision::Expired));
         let settings: serde_json::Value = serde_json::from_slice(&std::fs::read(&security_file).unwrap()).unwrap();
-        assert_eq!(settings, serde_json::json!({"autoApprove": false}));
+        assert_eq!(settings, serde_json::json!({"autoApprove": false, "showAutoApproveWarningBanner": true}));
         assert!(!reopen().auto_approve_enabled());
 
         let audit = std::fs::read_to_string(path).unwrap();
@@ -321,6 +349,25 @@ mod tests {
             entry["op"].as_str().unwrap(), entry["result"].as_str().unwrap(), entry["approver"].as_str().unwrap(),
         )).collect();
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn banner_setting_defaults_on_for_existing_files_and_round_trips_independently() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("security.json");
+        std::fs::write(&file, r#"{"autoApprove":true}"#).unwrap();
+        let reopen = || Approvals::with_audit(UiBridge::disconnected(),
+            Audit::new(dir.path().join("audit.log")), Some(file.clone()));
+        let approvals = reopen();
+        assert!(approvals.show_auto_approve_warning_banner());
+        approvals.set_auto_approve_warning_banner_from_native_ui(false).unwrap();
+        assert!(approvals.auto_approve_enabled());
+        let approvals = reopen();
+        assert!(!approvals.show_auto_approve_warning_banner());
+        assert!(approvals.auto_approve_enabled());
+        approvals.set_auto_approve_from_native_ui(false).unwrap();
+        assert!(!reopen().show_auto_approve_warning_banner());
+        assert!(!reopen().auto_approve_enabled());
     }
 
     #[test]

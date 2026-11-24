@@ -4,6 +4,11 @@
 //! asynchronously through the UI bridge and are cached.
 pub mod interact;
 mod motion;
+mod node_motion;
+#[cfg(all(test, feature = "snapshot", unix))]
+mod node_motion_tests;
+mod node_paint;
+mod window_chrome;
 mod canvas;
 mod controls;
 mod editor;
@@ -15,6 +20,7 @@ mod images;
 mod lazy_list;
 mod style;
 mod transcript_scroll;
+mod scroll_chain;
 mod tree;
 mod tab_strip;
 mod security;
@@ -35,7 +41,7 @@ use gpui_component::diff::{Diff, DiffFile, DiffMode, DiffState};
 use gpui_component::spinner::Spinner;
 use gpui_component::text::{TextView, TextViewStyle};
 use gpui_component::scroll::{Scrollbar, ScrollbarMode};
-use gpui_kit::base::SelectableText;
+use gpui_kit::base::{GlobalState, SelectableText};
 use gpui_component::{h_flex, v_flex, ActiveTheme, Disableable, Sizable, TitleBar};
 use gpui_kit::*;
 use gpui_kit::prelude::FluentBuilder;
@@ -114,6 +120,7 @@ pub struct Shell {
     scrolls: HashMap<String, transcript_scroll::TranscriptScroll>,
     toasts: Vec<motion::Toast>,
     motion: motion::Motion,
+    window_chrome: window_chrome::WindowChrome,
     modals: Vec<(String, String, Value)>,
     control_style: Value,
     in_title_bar: bool,
@@ -153,6 +160,9 @@ impl Shell {
             }
         })
         .detach();
+        window.observe_window_visibility(|visibility, window, _| {
+            if visibility.is_visible() { window.refresh(); }
+        }).detach();
         #[cfg(target_os = "windows")]
         cx.observe_window_activation(window, |_, window, cx| {
             if window.is_window_active() { gpui_kit::base::apply_system_reduce_motion(cx); }
@@ -197,6 +207,7 @@ impl Shell {
             scrolls: HashMap::new(),
             toasts: Vec::new(),
             motion: Default::default(),
+            window_chrome: window_chrome::WindowChrome::new(window),
             modals: Vec::new(),
             control_style: Value::Null,
             in_title_bar: false,
@@ -216,6 +227,7 @@ impl Shell {
                 self.render_errors.remove(&module);
                 self.tree_nodes.retain(|(owner, _), _| owner != &module);
                 self.trees.insert(module, tree);
+                self.motion.revision = self.motion.revision.wrapping_add(1);
                 cx.notify();
             }
             UiMsg::RenderError { module, error } => {
@@ -526,35 +538,75 @@ impl Shell {
         };
         if n["windowDrag"].as_bool().unwrap_or(false) {
             d = d.cursor_move().on_mouse_down(MouseButton::Left, |_, window, cx| {
-                window.start_window_move();
-                cx.stop_propagation();
+                GlobalState::suppress_text_selection(cx);
+                if !cfg!(target_os = "windows") {
+                    window.start_window_move();
+                    cx.stop_propagation();
+                }
             });
+            #[cfg(target_os = "windows")]
+            { d = d.window_control_area(WindowControlArea::Drag); }
         }
         style::apply(d, &n["style"], cx)
     }
 
     fn children(&mut self, module: &str, n: &Value, path: &str, depth: usize, window: &mut Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        let mut out = Vec::new();
-        if let Some(arr) = n.get("children").and_then(|c| c.as_array()) {
-            for c in arr.iter().take(2000) {
-                out.push(self.node(module, c, path, depth, window, cx));
+        let nodes = n["children"].as_array().map(Vec::as_slice).unwrap_or_default();
+        let nodes = &nodes[..nodes.len().min(2000)];
+        // `visibleWhen` drops a child (no space, no gap) outside its window state. Fullscreen
+        // enter/exit resizes the window, which re-renders, so no module round trip is needed.
+        let fullscreen = window.is_fullscreen();
+        let filtered: Vec<Value>;
+        let nodes = if nodes.iter().any(|node| !visible_in(node, fullscreen)) {
+            filtered = nodes.iter().filter(|node| visible_in(node, fullscreen)).cloned().collect();
+            filtered.as_slice()
+        } else {
+            nodes
+        };
+        let stack_absolute = n["type"] == "row" && n["style"]["position"] == "relative";
+        let absolute = |node: &Value| node["style"]["position"] == "absolute";
+        if self.motion.has_presence(module, path, nodes, window) {
+            let mut children = self.presence_children(module, nodes, path, depth, window, cx);
+            if stack_absolute {
+                children.sort_by_key(|(absolute, _)| *absolute);
             }
+            children.into_iter().map(|(_, element)| element).collect()
+        } else if stack_absolute && nodes.iter().any(absolute) {
+            nodes.iter().filter(|node| !absolute(node)).chain(nodes.iter().filter(|node| absolute(node)))
+                .map(|node| self.node(module, node, path, depth, window, cx)).collect()
+        } else {
+            nodes.iter().map(|node| self.node(module, node, path, depth, window, cx)).collect()
         }
-        out
     }
 
     fn node(&mut self, module: &str, n: &Value, parent: &str, depth: usize, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let ty = n.get("type").and_then(|t| t.as_str()).unwrap_or("");
-        if !self.in_title_bar || !blocks_title_bar_drag(ty) {
-            return self.render_node(module, n, parent, depth, window, cx);
+        if !visible_in(n, window.is_fullscreen()) {
+            return div().into_any_element();
         }
-        // The title bar is a window drag area: on Windows the OS would take the press as a window
-        // move unless something in front of it blocks the mouse. One blocker covers its whole subtree.
-        self.in_title_bar = false;
-        let el = self.render_node(module, n, parent, depth, window, cx);
-        self.in_title_bar = true;
-        let grow = n["grow"].as_bool().unwrap_or(false);
-        div().occlude().when(grow, |d| d.flex_1().min_w_0()).when(!grow, |d| d.flex_none()).child(el).into_any_element()
+        let ty = n["type"].as_str().unwrap_or("");
+        let anchor = if ty == "slot" || n["style"]["position"] == "relative" {
+            let key = n["key"].as_str().unwrap_or("_");
+            Some(self.motion.push_anchor(sid(module, &format!("{parent}/{key}")), window, cx))
+        } else {
+            None
+        };
+        let blocks_drag = self.in_title_bar && (blocks_title_bar_drag(ty) || n["action"].is_string());
+        if blocks_drag {
+            self.in_title_bar = false;
+        }
+        let mut el = self.motion_node(module, n, parent, depth, window, cx);
+        if let Some(anchor) = anchor {
+            if self.motion.pop_anchor() {
+                el = motion::measure_anchor(el, anchor);
+            }
+        }
+        if blocks_drag {
+            self.in_title_bar = true;
+            let grow = n["grow"].as_bool().unwrap_or(false);
+            // Keep interactive children out of Windows' system drag region.
+            el = div().occlude().when(grow, |d| d.flex_1().min_w_0()).when(!grow, |d| d.flex_none()).child(el).into_any_element();
+        }
+        el
     }
 
     fn render_node(&mut self, module: &str, n: &Value, parent: &str, depth: usize, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
@@ -565,7 +617,7 @@ impl Shell {
         let b = |k: &str| n.get(k).and_then(|v| v.as_bool()).unwrap_or(false);
         let theme_muted = cx.theme().muted_foreground;
         match ty {
-            "theme" => { if self.kernel.root_module().as_deref() == Some(module) { self.motion.theme(&n["motion"], cx); } self.control_style = n["controls"].clone(); images::application_icon(cx, &n["applicationIcon"]); theme::configure(cx, n, &self.kernel.cfg.data_dir); div().into_any_element() }
+            "theme" => { if self.kernel.root_module().as_deref() == Some(module) || (cfg!(feature = "snapshot") && module == "__snapshot") { self.motion.theme(&n["motion"], cx); } self.control_style = n["controls"].clone(); images::application_icon(cx, &n["applicationIcon"]); theme::configure(cx, n, &self.kernel.cfg.data_dir); div().into_any_element() }
             "row" | "column" => {
                 let mut d = if ty == "row" { h_flex() } else { v_flex() };
                 if ty == "row" {
@@ -577,37 +629,48 @@ impl Shell {
                         _ => d.items_center(),
                     };
                 }
-                d = self.apply_base(d, n, cx).min_w_0().overflow_hidden();
+                d = self.apply_base(d, n, cx).min_w_0();
+                let overlays = n["children"].as_array().is_some_and(|children| children.iter().any(|child| {
+                    child["style"]["position"] == "absolute"
+                }));
+                if n["style"]["clip"].as_bool().unwrap_or(!overlays) {
+                    d = d.overflow_hidden();
+                }
+                if let Some(background) = node_paint::ambient(&n["ambient"], sid(module, &path), window, cx) {
+                    d = d.child(background);
+                }
                 if let Some(image) = images::preview(&n["backgroundImage"]) {
                     d = d.relative().child(images::background(image, &n["backgroundImageStyle"]));
                 }
                 if ty == "column" {
                     d = d.min_h_0();
                 }
-                if b("scroll") {
-                    if let Some(h) = n["itemHeight"].as_f64() {
-                        let list = self.lazy_list(module, n, &path, depth, h, cx);
-                        return d.child(list).into_any_element();
-                    }
+                if b("scroll") && n["itemHeight"].is_number() {
+                    let list = self.lazy_list(module, n, &path, depth, window, cx);
+                    return d.child(list).into_any_element();
                 }
                 let kids = self.children(module, n, &path, depth, window, cx);
                 if b("scroll") {
                     let gap = n.get("gap").and_then(|g| g.as_f64()).unwrap_or(0.0) as f32;
-                    d.child(div().id(sid(module, &path)).flex_1().min_h_0().w_full().overflow_y_scroll().child(v_flex().w_full().gap(px(gap)).children(kids))).into_any_element()
+                    d = d.child(scroll_chain::viewport(sid(module, &format!("{path}/scroll")), v_flex().w_full().gap(px(gap)).children(kids), window, cx));
                 } else {
-                    d.children(kids).into_any_element()
+                    d = d.children(kids);
                 }
+                self.interactive_container(d, n, module, &path, window, cx)
             }
             "scroll" => {
                 let d = self.apply_base(v_flex(), n, cx).min_h_0().min_w_0().overflow_hidden();
-                if let Some(h) = n["itemHeight"].as_f64() {
-                    let list = self.lazy_list(module, n, &path, depth, h, cx);
+                if n["itemHeight"].is_number() {
+                    let list = self.lazy_list(module, n, &path, depth, window, cx);
                     return d.child(list).into_any_element();
                 }
                 let kids = self.children(module, n, &path, depth, window, cx);
-                d.child(div().id(sid(module, &path)).flex_1().min_h_0().w_full().overflow_y_scroll().child(v_flex().w_full().children(kids))).into_any_element()
+                d.child(scroll_chain::viewport(sid(module, &path), v_flex().w_full().children(kids), window, cx)).into_any_element()
             }
             "titleBar" => {
+                if self.window_chrome.hides_titlebar(window) {
+                    return Empty.into_any_element();
+                }
                 self.in_title_bar = true;
                 let kids = self.children(module, n, &path, depth, window, cx);
                 self.in_title_bar = false;
@@ -659,39 +722,20 @@ impl Shell {
                 self.apply_base(v_flex().flex_1().size_full().min_w_0().min_h_0().overflow_hidden(), n, cx).child(el).into_any_element()
             }
             "label" => {
-                let text = s("text");
-                let mut d = div();
-                d = match n.get("size").and_then(|v| v.as_str()) {
-                    Some("xs") => d.text_xs(),
-                    Some("sm") => d.text_sm(),
-                    Some("md") => d.text_base(),
-                    Some("lg") => d.text_lg(),
-                    _ => d.text_sm(),
-                };
-                d = match n["weight"].as_str() {
-                    Some("bold") => d.font_weight(FontWeight::BOLD),
-                    Some("semibold") => d.font_weight(FontWeight::SEMIBOLD),
-                    Some("medium") => d.font_weight(FontWeight::MEDIUM),
-                    Some("normal") => d.font_weight(FontWeight::NORMAL),
-                    _ => d,
-                };
-                if let Some(c) = n.get("color").and_then(|v| v.as_str()).filter(|c| *c != "default") {
-                    d = d.text_color(theme::color(cx, c, cx.theme().foreground));
-                }
-                if b("mono") {
-                    d = d.font_family(cx.theme().mono_font_family.clone());
-                }
-                if !b("wrap") {
-                    d = d.overflow_hidden().whitespace_nowrap().text_ellipsis();
-                } else {
-                    d = d.min_w_0();
-                }
-                let d = self.apply_base(d, n, cx);
+                let id = sid(module, &path);
+                let text = node_motion::label_text(n, id.clone(), window, cx);
+                let d = self.apply_base(node_motion::label_style(div(), n, cx, b("wrap")), n, cx);
                 if b("selectable") {
-                    d.child(SelectableText::new(sid(module, &path), text)).into_any_element()
+                    d.child(SelectableText::new(id, text)).into_any_element()
                 } else {
-                    d.child(text).into_any_element()
+                    node_motion::spaced_label(d, n, text).into_any_element()
                 }
+            }
+            "icon" => {
+                let angle = node_motion::rotation(n, sid(module, &path), window, cx);
+                self.apply_base(div(), n, cx).child(node_motion::icon(
+                    n["svg"].as_str().unwrap_or(""), n["size"].as_f64(), n["color"].as_str(), angle, cx,
+                )).into_any_element()
             }
             "button" => {
                 let k = self.kernel.clone();
@@ -714,7 +758,9 @@ impl Shell {
                 }
                 let icon_size = px(n["iconSize"].as_f64().unwrap_or(16.0).clamp(10.0, 48.0) as f32);
                 if let Some(svg) = n["iconSvg"].as_str() {
-                    let mut icon = gpui_component::Icon::default().data(svg.as_bytes()).with_size(icon_size);
+                    let angle = node_motion::rotation(n, sid(module, &path), window, cx);
+                    let mut icon = gpui_component::Icon::default().data(svg.as_bytes()).with_size(icon_size)
+                        .rotate(radians(angle.to_radians()));
                     if let Some(color) = n["iconColor"].as_str() { icon = icon.text_color(theme::color(cx, color, cx.theme().foreground)); }
                     btn = btn.icon(icon);
                 }
@@ -724,8 +770,11 @@ impl Shell {
                 if let Some(height) = n["height"].as_f64() { btn = btn.h(px(height as f32)); }
                 if b("grow") { btn = btn.w_full().min_w_0(); }
 
-                if let Some(t) = n.get("tooltip").and_then(|t| t.as_str()) {
-                    btn = btn.tooltip(t.to_string());
+                if let Some(tip) = node_motion::tooltip(n) {
+                    if let Some(placement) = tip.placement {
+                        btn = btn.tooltip_placement(placement);
+                    }
+                    btn = btn.tooltip_content(move |window, cx| tip.build(window, cx));
                 }
                 let copy = n["copyText"].as_str().map(str::to_owned);
                 let mut wrapper = div().id(sid(module, &format!("{path}/gestures"))).relative();
@@ -912,9 +961,11 @@ impl Shell {
                 let area2 = area.clone();
                 let el = match &slot.input {
                     AnyInput::Line(e) => {
-                        let bg = n["style"]["background"].as_str().map(|c| theme::color(cx, c, cx.theme().background)).unwrap_or_else(|| theme::color(cx, "field", cx.theme().background));
+                        let bg = if b("bare") { gpui_kit::transparent_black() } else { n["style"]["background"].as_str().map(|c| theme::color(cx, c, cx.theme().background)).unwrap_or_else(|| theme::color(cx, "field", cx.theme().background)) };
                         Input::new(e).small().bg(bg).when_some(n["height"].as_f64(), |input, height| Styled::h(input, px(height.clamp(20.0, 80.0) as f32)))
                             .when_some(n["prefixSvg"].as_str(), |input, svg| input.prefix(gpui_component::Icon::default().data(svg.as_bytes()).with_size(px(16.0))))
+                            // `bare`: no field chrome; the module draws the surrounding surface.
+                            .when(b("bare"), |input| input.appearance(false))
                             .disabled(b("disabled")).into_any_element()
                     }
                     AnyInput::Area(e) => {
@@ -1063,43 +1114,9 @@ impl Shell {
                         .on_change(move |v, _, cx| Self::fire(&k, &m, &inputs, &action, &key2, None, json!(*v), cx)))
                     .into_any_element()
             }
-            "popover" if n["transition"].is_object() => {
-                self.queue_popover(module, &path, n, window, cx);
-                div().into_any_element()
-            }
             "popover" => {
-                let kids = self.children(module, n, &path, depth, window, cx);
-                let k = self.kernel.clone();
-                let m = module.to_string();
-                let inputs = self.module_inputs(module);
-                let action = s("closeAction");
-                let key2 = key.to_string();
-                let overlay = div().absolute().inset_0().occlude()
-                    .on_mouse_down(MouseButton::Left, move |_, _, cx| Self::fire(&k, &m, &inputs, &action, &key2, None, Value::Null, cx));
-                let max_height = px(n["maxHeight"].as_f64().unwrap_or(420.0).clamp(40.0, 4096.0) as f32);
-                let card = self.apply_base(v_flex(), n, cx).max_h(max_height)
-                    .shadow_lg().occlude().on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation());
-                if let (Some(x), Some(y)) = (n["windowAnchor"]["x"].as_f64(), n["windowAnchor"]["y"].as_f64()) {
-                    let viewport = window.viewport_size();
-                    let position = point(
-                        px(x.clamp(0.0, f64::from(f32::from(viewport.width))) as f32),
-                        px(y.clamp(0.0, f64::from(f32::from(viewport.height))) as f32),
-                    );
-                    let card = card.id(sid(module, &format!("{path}/anchored"))).max_w(viewport.width)
-                        .max_h(viewport.height.min(max_height)).overflow_y_scroll().children(kids);
-                    return overlay.child(deferred(anchored().position(position).child(card))).into_any_element();
-                }
-                overlay.child(card.absolute()
-                        // `bottom` anchors upward (e.g. above a composer); content height unless `heightFraction`.
-                        .map(|d| match n["bottom"].as_f64() {
-                            Some(b) => d.bottom(px(b.clamp(0.0, 4096.0) as f32)),
-                            None => d.top(px(n["top"].as_f64().unwrap_or(52.0).clamp(0.0, 4096.0) as f32)),
-                        })
-                        .left(px(n["left"].as_f64().unwrap_or(8.0).clamp(0.0, 4096.0) as f32))
-                        .right(px(n["right"].as_f64().unwrap_or(8.0).clamp(0.0, 4096.0) as f32))
-                        .when(n["bottom"].is_null() || n["heightFraction"].is_number(), |d| d.h(relative(n["heightFraction"].as_f64().unwrap_or(0.55).clamp(0.1, 1.0) as f32)))
-                        .overflow_hidden().children(kids))
-                    .into_any_element()
+                self.queue_popover(module, &path, n, window, cx);
+                Empty.into_any_element()
             }
             "toggle" => {
                 let k = self.kernel.clone();
@@ -1122,14 +1139,13 @@ impl Shell {
                 };
                 self.apply_base(div(), n, cx).px_2().py_1().rounded(px(4.0)).text_xs().bg(color.opacity(0.12)).text_color(color).child(s("text")).into_any_element()
             }
-            "progress" => {
-                let label = s("label");
-                let bar = match n.get("value").and_then(|v| v.as_f64()) {
-                    Some(v) => div().h(px(4.0)).w_full().bg(cx.theme().muted).child(div().h_full().w(relative(v.clamp(0.0, 1.0) as f32)).bg(cx.theme().primary)),
-                    None => div().h(px(2.0)).w_full().bg(cx.theme().primary.opacity(0.5)),
-                };
-                self.apply_base(v_flex(), n, cx).gap_1().child(bar).when(!label.is_empty(), |d| d.child(div().text_xs().text_color(theme_muted).child(label))).into_any_element()
-            }
+            "progress" => self.render_progress(n, sid(module, &path), window, cx),
+            "meter" => self.apply_base(div(), n, cx)
+                .child(node_paint::meter(n, sid(module, &path), window, cx)).into_any_element(),
+            "spinner" => self.apply_base(div(), n, cx)
+                .child(node_paint::spinner(n, sid(module, &path), window, cx)).into_any_element(),
+            "ring" => self.apply_base(div(), n, cx)
+                .child(node_paint::ring(n, sid(module, &path), window, cx)).into_any_element(),
             "markdown" => {
                 // Inline text (e.g. a chat message) or a kernel document handle (large files).
                 let inline = n["text"].as_str().map(str::to_owned);
@@ -1614,19 +1630,20 @@ impl Shell {
                 }
                 // The transcript must take only the space its parent gives it and scroll internally;
                 // flex_1 + min_h_0 (rather than a percentage height) keeps it bounded when messages grow.
+                let viewport = div().id(sid(module, &path)).flex_1().min_w_0().min_h_0().w_full().relative()
+                    .overflow_x_hidden().overflow_y_scroll().track_scroll(&handle).child(list);
+                let viewport = scroll_chain::chain(viewport, handle.clone(), move |event, _, cx| {
+                    let up = event.delta.pixel_delta(px(18.0)).y > px(0.0);
+                    wheel_up.set(up);
+                    if up {
+                        wheel_following.set(false);
+                        if f32::from(wheel_handle.offset().y) >= -48.0 && has_older && !loading_older && !wheel_action.is_empty() && !wheel_requested.replace(true) {
+                            Self::fire(&wheel_kernel, &wheel_module, &[], &wheel_action, &wheel_key, None, Value::Null, cx);
+                        }
+                    }
+                });
                 self.apply_base(v_flex(), n, cx).relative().min_w_0().min_h_0().overflow_hidden()
-                    .child(div().id(sid(module, &path)).flex_1().min_w_0().min_h_0().w_full().relative().overflow_x_hidden().overflow_y_scroll().track_scroll(&handle)
-                        .on_scroll(move |event, _, cx| {
-                            let up = event.delta.pixel_delta(px(18.0)).y > px(0.0);
-                            wheel_up.set(up);
-                            if up {
-                                wheel_following.set(false);
-                                if f32::from(wheel_handle.offset().y) >= -48.0 && has_older && !loading_older && !wheel_action.is_empty() && !wheel_requested.replace(true) {
-                                    Self::fire(&wheel_kernel, &wheel_module, &[], &wheel_action, &wheel_key, None, Value::Null, cx);
-                                }
-                            }
-                        })
-                        .child(list))
+                    .child(viewport)
                     .child(follow_layout)
                     .child(Scrollbar::vertical(&handle).mode(scrollbar_mode).viewport_from_layout())
                     .into_any_element()
@@ -1831,6 +1848,13 @@ impl Render for Shell {
         self.rendered_editor_hovers.clear();
         let root = self.kernel.root_module();
         let layout_ok = root.as_ref().map(|r| self.trees.contains_key(r) || self.kernel.router.active(r).is_some()).unwrap_or(false);
+        let chrome_tree = match self.only_module.as_deref() {
+            Some("__snapshot") => self.trees.get("__snapshot"),
+            Some(_) => None,
+            None if layout_ok && !self.show_safe_mode => root.as_ref().and_then(|id| self.trees.get(id)),
+            None => None,
+        };
+        self.window_chrome.update(chrome_tree, window, cx);
         let body = if let Some(m) = self.only_module.clone() {
             self.render_slot(&m, 0, window, cx)
         } else if let (true, false, Some(root)) = (layout_ok, self.show_safe_mode, root) {
@@ -1851,10 +1875,11 @@ impl Render for Shell {
         let modal_els: Vec<AnyElement> = modals.iter().map(|(m, p, n)| self.render_modal(m, p, n, window, cx)).collect();
         self.prune_editor_hovers();
         let approvals = self.render_approvals(window, cx);
-        let security_indicator = self.auto_approve_indicator(cx);
+        let security_indicator = self.auto_approve_indicator(window, cx);
         let security_confirmation = self.security_confirmation(cx);
         let toasts = self.render_toasts(window, cx);
         let popovers = self.render_popovers(window, cx);
+        self.prune_presence(window);
         let _ = &self.submit_queue;
         div().size_full().relative().flex().flex_col().overflow_hidden().bg(cx.theme().background).text_color(cx.theme().foreground).font_family(cx.theme().font_family.clone()).font_weight(theme::font_weight(cx))
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
@@ -1863,12 +1888,13 @@ impl Render for Shell {
                     cx.stop_propagation();
                 }
             }))
-            .children(security_indicator)
+            .children(self.window_chrome.caption_fallback(window))
             .child(div().flex_1().min_h_0().min_w_0().overflow_hidden().flex().flex_col().child(body))
             .children(float_els)
             .children(modal_els)
             .children(popovers)
             .child(toasts)
+            .children(security_indicator)
             .children(approvals)
             .children(security_confirmation)
             .children(drag_layer)
@@ -1941,4 +1967,30 @@ pub fn run(cfg: Config) {
         });
         cx.activate(true);
     });
+}
+
+/// `visibleWhen: "windowed" | "fullscreen"`; absent or unknown values are always visible.
+pub(crate) fn visible_in(node: &Value, fullscreen: bool) -> bool {
+    match node["visibleWhen"].as_str() {
+        Some("windowed") => !fullscreen,
+        Some("fullscreen") => fullscreen,
+        _ => true,
+    }
+}
+
+#[cfg(test)]
+mod visible_when_tests {
+    use super::visible_in;
+    use serde_json::json;
+
+    #[test]
+    fn visible_when_follows_window_state() {
+        let windowed = json!({"type": "row", "visibleWhen": "windowed"});
+        let full = json!({"type": "row", "visibleWhen": "fullscreen"});
+        let plain = json!({"type": "row"});
+        assert!(visible_in(&windowed, false) && !visible_in(&windowed, true));
+        assert!(!visible_in(&full, false) && visible_in(&full, true));
+        assert!(visible_in(&plain, false) && visible_in(&plain, true));
+        assert!(visible_in(&json!({"visibleWhen": "sometimes"}), true));
+    }
 }

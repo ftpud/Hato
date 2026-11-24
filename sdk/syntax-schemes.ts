@@ -18,7 +18,7 @@ export interface SyntaxScheme { id: string; name: string; light?: SyntaxPalette;
 // "Weird": the ftpud Java palette from VibeEditor — token backgrounds for types, strings,
 // annotations and constants, bold navy keywords.
 const weirdLight: SyntaxPalette = {
-  editor: { background: "#f8faff", foreground: "#25324d" },
+  editor: { foreground: "#25324d" },
   tokens: {
     variable: { color: "#000000" },
     keyword: { color: "#000080", bold: true },
@@ -52,7 +52,7 @@ const weirdLight: SyntaxPalette = {
   },
 };
 const weirdDark: SyntaxPalette = {
-  editor: { background: "#171e2e", foreground: "#dce4f5" },
+  editor: { foreground: "#dce4f5" },
   tokens: {
     variable: { color: "#d4d4d4" },
     keyword: { color: "#7aa2f7" },
