@@ -25,6 +25,8 @@ export interface AgentSpec {
   customName?: boolean;
   /** Workflow session ownership used for scoped tool activity tracing. */
   workflow?: { runId: string; blockId: string };
+  /** Request provider-initiated turn lifecycle events for a Claude workflow session. */
+  trackAutonomousClaudeTurns?: boolean;
 }
 export interface AgentSession extends AgentSpec {
   status: "starting" | "ready" | "busy" | "waiting" | "stopped" | "interrupted" | "error";

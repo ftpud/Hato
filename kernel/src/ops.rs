@@ -113,7 +113,7 @@ pub fn host_sync(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: Value) 
             "uptimeMs": k.started.elapsed().as_millis() as u64,
             "headless": k.cfg.headless,
             // Node types added after abiVersion 1, so modules can fall back on older hosts.
-            "uiNodes": ["slider", "colorPicker", "tabStrip", "securityPreferences"],
+            "uiNodes": ["slider", "colorPicker", "tabStrip", "securityPreferences", "surface"],
         })),
         "state.get" => {
             let key = arg_str(&args, "key")?;
@@ -733,8 +733,23 @@ fn dispatch(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: &Value) -> H
             let h = k.handles.insert("listener", owner, format!("127.0.0.1:{}", l.port), l.clone());
             Ok(json!({"handle": h, "port": l.port}))
         }
+        "net.websocket" => {
+            gen.caps.require("net.websocket")?;
+            let summary = crate::host::websocket::check_url(arg_str(args, "url")?)?;
+            let r = crate::host::websocket::connect(args);
+            k.audit.record(owner, gen.gen_id, "net.websocket", &summary, &r.as_ref().map(|_| "ok".to_string()).unwrap_or_else(|e| e.code.clone()), None);
+            let conn = r?;
+            let h = k.handles.insert("websocket", owner, summary, conn);
+            Ok(json!({"handle": h}))
+        }
         "net.write" => {
-            let c: Arc<NetConn> = k.handles.get(arg_str(args, "handle")?, "netconn", owner)?;
+            let h = arg_str(args, "handle")?;
+            if k.handles.kind_of(h) == Some("websocket") {
+                let c: Arc<crate::host::websocket::WebSocketConn> = k.handles.get(h, "websocket", owner)?;
+                c.send_text(arg_str(args, "text")?.to_string())?;
+                return Ok(Value::Null);
+            }
+            let c: Arc<NetConn> = k.handles.get(h, "netconn", owner)?;
             c.write(&decode_text_arg(args)?)?;
             Ok(Value::Null)
         }
@@ -749,6 +764,7 @@ fn dispatch(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: &Value) -> H
                     let l: Arc<NetListener> = k.handles.get(h, "listener", owner)?;
                     l.close();
                 }
+                Some("websocket") => k.handles.get::<crate::host::websocket::WebSocketConn>(h, "websocket", owner)?.close(),
                 _ => return Err(HostError::new("EBADF", "not a network handle")),
             }
             k.handles.remove(h, owner)?;
@@ -793,6 +809,7 @@ fn dispatch(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: &Value) -> H
                 }
                 Some("cloud-events") => k.handles.get::<cloud::account::Events>(h, "cloud-events", owner)?.0.clone(),
                 Some("netconn") => k.handles.get::<NetConn>(h, "netconn", owner)?.stream.clone(),
+                Some("websocket") => k.handles.get::<crate::host::websocket::WebSocketConn>(h, "websocket", owner)?.stream.clone(),
                 Some("listener") => k.handles.get::<NetListener>(h, "listener", owner)?.events.clone(),
                 _ => return Err(HostError::new("EBADF", "handle has no stream")),
             };
@@ -859,6 +876,7 @@ fn dispatch(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: &Value) -> H
                     let p: Arc<ProcessRes> = k.handles.get(h, "process", owner)?;
                     let _ = p.terminate(None);
                 }
+                Some("websocket") => k.handles.get::<crate::host::websocket::WebSocketConn>(h, "websocket", owner)?.close(),
                 _ => {}
             }
             k.handles.remove(h, owner)?;
@@ -1244,6 +1262,29 @@ fn dispatch(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: &Value) -> H
             let label = format!("{} {}", doc.workspace_key, doc.path);
             let h = k.handles.insert("document", owner, label, doc);
             Ok(json!(h))
+        }
+        "ui.surfaceOpen" => {
+            gen.caps.require("ui.surface")?;
+            let surface = Arc::new(crate::host::surface::Surface::default());
+            let h = k.handles.insert("surface", owner, arg_opt_str(args, "label").unwrap_or("surface").chars().take(80).collect::<String>(), surface.clone());
+            let ui = k.ui.clone();
+            let h2 = h.clone();
+            *surface.notify.lock() = Some(Arc::new(move || ui.send(UiMsg::SurfaceDirty(h2.clone()))));
+            Ok(json!({"handle": h}))
+        }
+        "ui.surfaceFrame" => {
+            let s: Arc<crate::host::surface::Surface> = k.handles.get(arg_str(args, "handle")?, "surface", owner)?;
+            Ok(json!({"seq": s.push_frame(args)?}))
+        }
+        "ui.surfaceCursor" => {
+            let s: Arc<crate::host::surface::Surface> = k.handles.get(arg_str(args, "handle")?, "surface", owner)?;
+            s.set_cursor(args)?;
+            Ok(Value::Null)
+        }
+        "ui.surfaceClear" => {
+            let s: Arc<crate::host::surface::Surface> = k.handles.get(arg_str(args, "handle")?, "surface", owner)?;
+            s.clear();
+            Ok(Value::Null)
         }
         "ui.openUrl" => {
             gen.caps.require("ui.openUrl")?;

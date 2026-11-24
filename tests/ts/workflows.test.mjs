@@ -16,6 +16,7 @@ function fakeDb() {
     if (/^SELECT id, data FROM runs/.test(sql)) return [...t.runs.values()].map(r => ({ id: r.id, data: r.data }));
     if (/^SELECT data, env FROM runs WHERE id=\?/.test(sql)) { const r = t.runs.get(p[0]); return r ? [{ data: r.data, env: r.env }] : []; }
     if (/^SELECT id FROM runs WHERE project=\? AND workflow=\? ORDER BY created DESC LIMIT -1 OFFSET (\d+)/.test(sql)) { const n = Number(sql.match(/OFFSET (\d+)/)[1]); return [...t.runs.values()].filter(r => r.project === p[0] && r.workflow === p[1]).sort((a, b) => b.created.localeCompare(a.created)).slice(n).map(r => ({ id: r.id })); }
+    if (sql === 'SELECT id FROM runs WHERE project=? AND workflow=?') return [...t.runs.values()].filter(r => r.project === p[0] && r.workflow === p[1]).map(r => ({ id: r.id }));
     if (/^SELECT data FROM runs WHERE project=\? AND workflow=\?/.test(sql)) return [...t.runs.values()].filter(r => r.project === p[0] && r.workflow === p[1]).sort((a, b) => b.created.localeCompare(a.created)).map(r => ({ data: r.data }));
     if (/^SELECT data FROM runs WHERE project=\?/.test(sql)) return [...t.runs.values()].filter(r => r.project === p[0]).map(r => ({ data: r.data }));
     if (/^SELECT data, revision FROM definitions WHERE id=\? AND project=\?/.test(sql)) { const d = t.definitions.get(p[0]); return d && d.project === p[1] ? [d] : []; }
@@ -29,6 +30,7 @@ function fakeDb() {
     if (/^DELETE FROM scopes/.test(sql)) return void t.scopes.delete(p[0]);
     if (/^INSERT INTO runs/.test(sql)) return void t.runs.set(p[0], { id: p[0], project: p[1], workflow: p[2], created: p[3], data: p[4], env: p[5] });
     if (/^UPDATE runs SET data=\? WHERE id=\?/.test(sql)) { const r = t.runs.get(p[1]); if (r) r.data = p[0]; return; }
+    if (sql === 'UPDATE runs SET env=? WHERE id=?') { const r = t.runs.get(p[1]); if (r) r.env = p[0]; return; }
     if (/^DELETE FROM runs/.test(sql)) return void t.runs.delete(p[0]);
     if (/^INSERT INTO definitions/.test(sql)) return void t.definitions.set(p[0], { id: p[0], project: p[1], revision: p[2], data: p[3] });
     if (/^DELETE FROM definitions/.test(sql)) { const d = t.definitions.get(p[0]); if (d?.project === p[1]) t.definitions.delete(p[0]); return; }
@@ -82,13 +84,22 @@ function fakeAgents(mcp, respond) {
   const sessions = new Map(); let seq = 0;
   const push = (s, role, text) => s.messages.push({ key: `agent-msg-${++seq}`, role, text });
   return {
-    sessions,
+    sessions, updates: [], mcp,
     async call(method, a) {
+      if (method === 'health') return { reasoning: true };
       if (method === 'create') { sessions.set(a.spec.id, { spec: a.spec, status: 'ready', messages: [] }); return { id: a.spec.id }; }
       const s = sessions.get(a.id); if (!s) throw new Error('no session');
-      if (method === 'view') return { session: { status: s.status, error: null }, messages: s.messages.slice(-(a.limit || 100)), permissions: [] };
+      if (method === 'view') return { session: { ...s.spec, status: s.status, error: null }, messages: s.messages.slice(-(a.limit || 100)), permissions: [] };
+      if (method === 'update') {
+        assert.equal(s.status, 'ready');
+        if (this.updateError) throw new Error(this.updateError);
+        this.updates.push(a);
+        s.spec = { ...s.spec, ...a.patch };
+        return { status: s.status };
+      }
       if (method === 'cancel') { s.status = 'ready'; push(s, 'system', 'Turn ended: cancelled'); return null; }
       if (method === 'send') {
+        if (a.currentTurnOnly && this.deferSteering) return { promptRequired: true };
         if (s.status === 'busy') { push(s, 'user', a.text); return { steered: true }; }
         s.status = 'busy'; push(s, 'user', a.text);
         const token = s.spec.mcps[0].env.find(e => e.name === 'HATO_MCP_TOKEN').value;
@@ -109,8 +120,8 @@ async function runtime(respond = async () => 'ok') {
   const { host, mcp } = fakeHost(), db = fakeDb();
   host.db = db.api;
   const agents = fakeAgents(mcp, respond);
-  const events = [];
-  const ctx = { moduleId: 'workflow-runner', host, log: { info() {}, warn() {}, error: (...a) => console.error(...a) }, events: { emit: (t, v) => events.push([t, v]), on() {} },
+  const events = [], handlers = new Map();
+  const ctx = { moduleId: 'workflow-runner', host, log: { info() {}, warn() {}, error: (...a) => console.error(...a) }, events: { emit: (t, v) => events.push([t, v]), on: (t, fn) => handlers.set(t, fn) },
     modules: { call: (target, method, args) => { assert.equal(target, 'agent-runner'); return agents.call(method, args); } } };
   await mod.activate(ctx);
   const meta = { caller: 'daemon-client' };
@@ -122,10 +133,109 @@ async function runtime(respond = async () => 'ok') {
     return r.id;
   };
   const finished = id => until(async () => { const r = await m('run', { id }); return ['succeeded', 'failed', 'cancelled'].includes(r.status) && r; });
-  return { mod, m, start, finished, agents, events, db, env };
+  return { mod, m, start, finished, agents, events, handlers, db, env };
 }
 const B = (id, type, extra = {}) => ({ id, type, label: id, prompt: '', position: { x: 0, y: 0 }, ...extra });
 const out = (run, id) => run.blocks.find(b => b.blockId === id);
+
+for (const [provider, type] of [['claude', 'chatbox'], ['codex', 'chatbox'], ['codex', 'ai']]) {
+  test(`${provider} ${type} applies MCP additions and removals between turns`, async () => {
+    let releaseFirst;
+    const gate = new Promise(resolve => { releaseFirst = resolve; });
+    const { m, start, finished, env, agents } = await runtime(async (_spec, text, call) => {
+      if (text.endsWith('first')) await gate;
+      return JSON.stringify(await call('workflow_connections', {}));
+    });
+    env.profiles[0] = { ...env.profiles[0], id: provider, provider };
+    env.defaultProfileId = provider;
+    const def = { id: 'hot-mcp', name: 'Hot MCP', blocks: [B('agent', type, { prompt: 'Help' })], edges: [] };
+    const runId = await start(def, 'first');
+    const session = await until(() => [...agents.sessions.values()].find(s => s.status === 'busy'));
+    const id = session.spec.id;
+    const scope = () => session.spec.mcps[0].env.find(e => e.name === 'HATO_MCP_TOKEN').value;
+    const call = (name, args = {}) => agents.mcp(scope(), name, args);
+    const mcpServers = [{ id: 'fixture', name: 'Fixture', command: 'node', args: [], env: [] }];
+    await m('save', { projectId: 'p1', expectedRevision: 1, mcpEnv: { mcpServers, mcpConfigs: {} },
+      definition: { ...def, blocks: [...def.blocks, B('mcp', 'mcp', { mcp: { serverId: 'fixture' } })],
+        edges: [{ id: 'mcp', from: 'agent', to: 'mcp', type: 'use' }] } });
+    const [pending] = await call('workflow_connections');
+    assert.equal(pending.status, 'pending_restart');
+    assert.equal(pending.invocation, 'workflow_use_block');
+    assert.match(pending.reason, /next turn/);
+    assert.deepEqual(agents.updates, []);
+    agents.deferSteering = true;
+    const followup = () => m('promptSession', { runId, blockId: 'agent', workspaceId: 'ws', id, text: 'next' });
+    assert.deepEqual(await followup(), { queued: true });
+    releaseFirst();
+    const ready = await finished(runId);
+    assert.equal(out(ready, 'agent').sessionId, id);
+    assert.equal(out(ready, 'agent').runs, 2);
+    assert.equal(JSON.parse(out(ready, 'agent').output)[0].invocation, 'provider_mcp_tools');
+    assert.deepEqual(session.spec.mcps.map(m => m.id), ['hato-workflow', 'fixture']);
+    assert.ok(session.messages.some(m => m.role === 'user' && m.text.endsWith('first')));
+    await m('save', { projectId: 'p1', expectedRevision: 2, definition: def, mcpEnv: { mcpServers, mcpConfigs: {} } });
+    await followup();
+    assert.deepEqual(JSON.parse(out(await finished(runId), 'agent').output), []);
+    assert.deepEqual(session.spec.mcps.map(m => m.id), ['hato-workflow']);
+  });
+}
+
+test('a rejected MCP reconnect keeps additions pending and blocks a turn with removed tools', async () => {
+  const { m, start, finished, env, agents } = await runtime(async (_spec, _text, call) =>
+    JSON.stringify(await call('workflow_connections', {})));
+  env.mcpServers = [{ id: 'old', name: 'Old', command: 'node', args: [], env: [] }, { id: 'new', name: 'New', command: 'node', args: [], env: [] }];
+  const def = { id: 'pending', name: 'Pending', blocks: [B('chat', 'chatbox'), ...env.mcpServers.map(m =>
+    B(m.id, 'mcp', { mcp: { serverId: m.id } }))], edges: [{ id: 'old', from: 'chat', to: 'old' }] };
+  const runId = await start(def, 'first');
+  await finished(runId);
+  agents.updateError = 'This provider cannot resume the conversation with new MCP settings.';
+  const newEdge = { id: 'new', from: 'chat', to: 'new' };
+  const save = (expectedRevision, edges) => m('save', { projectId: 'p1', expectedRevision, definition: { ...def, edges } });
+  const chat = () => m('chat', { runId, blockId: 'chat', text: 'next' });
+  await save(1, [...def.edges, newEdge]);
+  await chat();
+  const connections = JSON.parse(out(await finished(runId), 'chat').output);
+  assert.equal(connections[0].invocation, 'provider_mcp_tools');
+  assert.equal(connections[1].status, 'pending_restart');
+  assert.match(connections[1].reason, /cannot resume/);
+  await save(2, [newEdge]);
+  const session = [...agents.sessions.values()][0], count = session.messages.length;
+  await chat();
+  assert.match(out(await finished(runId), 'chat').error, /Could not remove disconnected MCP tools/);
+  assert.equal(session.messages.length, count);
+});
+
+test('provider-initiated turns update status, meeting and retained output once', async () => {
+  const { m, start, finished, agents, handlers } = await runtime();
+  const def = { id: 'wakeup', name: 'Wakeup', blocks: [B('chat', 'chatbox'), B('peer', 'chatbox'), B('room', 'meeting')], edges: [
+    { id: 'chat-room', from: 'chat', to: 'room', type: 'use' },
+    { id: 'peer-room', from: 'peer', to: 'room', type: 'use' },
+    { id: 'peer-chat', from: 'peer', to: 'chat', type: 'use' },
+  ] };
+  const runId = await start(def, 'first', 'chat');
+  const initial = await finished(runId);
+  await m('chat', { runId, blockId: 'peer', text: 'observe' });
+  await finished(runId);
+  const sessionId = out(initial, 'chat').sessionId;
+  const base = { sessionId, turnId: 'wakeup-id', workflow: { runId, blockId: 'chat' } };
+  const emit = event => handlers.get('agent-runner.providerTurn')({ ...base, ...event });
+  const peer = [...agents.sessions.values()].find(a => a.spec.workflow.blockId === 'peer');
+  const token = peer.spec.mcps[0].env.find(e => e.name === 'HATO_MCP_TOKEN').value;
+  const call = (name, args) => agents.mcp(token, name, { block_id: 'chat', ...args });
+  await emit({ phase: 'started' });
+  await emit({ phase: 'started' });
+  assert.equal((await call('workflow_use_block', { action: 'status' })).status, 'running');
+  assert.equal((await call('workflow_use_block', { action: 'tail' })).status, 'running');
+  assert.equal((await m('run', { id: runId })).status, 'running');
+  await emit({ phase: 'finished', state: 'completed', output: 'wakeup result' });
+  await emit({ phase: 'finished', state: 'completed', output: 'wakeup result' });
+  const run = await finished(runId);
+  assert.equal(out(run, 'chat').runs, 2);
+  assert.deepEqual(out(run, 'room').meeting.messages.filter(msg => msg.blockId === 'chat').map(msg => msg.participantStatus),
+    ['running', 'succeeded', 'running', 'succeeded']);
+  assert.equal((await call('workflow_use_block', { action: 'fetch' })).text, 'wakeup result');
+  assert.equal((await call('workflow_block_output', {})).text, 'wakeup result');
+});
 
 // ---------------------------------------------------------------- shared definition helpers
 
@@ -608,4 +718,25 @@ test('agents discover MCP blocks in both initial instructions and the connection
     assert.equal(run.status, 'succeeded', out(run, 'agent').error);
     assert.equal(inspected, true);
   }
+});
+
+test('Browser blocks attach the desktop MCP and identify the selected session', async () => {
+  const { start, finished, agents, env } = await runtime(async (_spec, text, tool) => {
+    assert.match(text, /session-fixture/);
+    const [browser] = await tool('workflow_connections', {});
+    assert.equal(browser.invocation, 'provider_mcp_tools');
+    assert.equal(browser.browser_session, 'session-fixture');
+    assert.match(browser.usage, /browser_screenshot/);
+    const guidance = await tool('workflow_use_block', { block_id: 'browser' });
+    assert.equal(guidance.browser_session, 'session-fixture');
+    return 'Browser connected';
+  });
+  env.mcpServers = [{ id: 'internal-local-mcp', name: 'Hato desktop tools' }];
+  env.mcpConfigs = { 'internal-local-mcp': { name: 'internal-local-mcp', command: 'fixture-mcp', args: [], env: [] } };
+  const id = await start({ id: 'browser-workflow', name: 'Browser workflow', blocks: [
+    B('chat', 'chatbox'), B('browser', 'browser', { browser: { sessionId: 'session-fixture', name: 'Shared browser' } }),
+  ], edges: [{ id: 'edge', from: 'chat', to: 'browser', type: 'use' }] }, 'Read the page');
+  const run = await finished(id);
+  assert.equal(run.status, 'succeeded', out(run, 'chat').error);
+  assert.ok([...agents.sessions.values()][0].spec.mcps.some(m => m.id === 'internal-local-mcp'));
 });

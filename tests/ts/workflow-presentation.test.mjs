@@ -51,6 +51,38 @@ test('Chatbox session status supersedes an old completed invocation and exposes 
   assert.ok(!rendered.some(n => n.type === 'progress'));
 });
 
+test('Claude workflow tool cards render the file and query even without result text', async () => {
+  const { blockRunView } = await load('Hato-plugins/modules/ui/workflows-panel/src/runs.ts');
+  const chat = block('claude', 'chatbox');
+  const titles = ['Read src/main.ts', 'grep parser src/'];
+  const state = { blockId: chat.id, status: 'succeeded', runs: 1, sessionId: 'session', log: [],
+    agentMessages: titles.map((title, index) => ({ key: String(index), title, text: '', role: 'tool', status: 'completed' })) };
+  const nodes = blockRunView({ id: 'claude-tool-cards', status: 'succeeded' }, chat, state, 'test').flatMap(walk);
+  for (const title of titles) assert.ok(nodes.some(n => n.text?.includes(title) || n.title?.includes(title)), title);
+});
+
+test('the Workflows setting defaults on and persists the tool-card opt-out', async () => {
+  const mod = (await load('Hato-plugins/modules/services/workflows/src/index.ts')).default;
+  const settings = new Map(), events = new Map(), state = new Map();
+  const ctx = { moduleId: 'workflows', state,
+    events: { on: (topic, fn) => events.set(topic, fn), emit() {} }, ui: { invalidate() {} },
+    modules: { call: async (target, method, args) => {
+      assert.equal(target, 'persistence');
+      if (method === 'settings.get') return settings.get(args.key);
+      if (method === 'settings.set') return settings.set(args.key, args.value);
+      throw new Error(method);
+    } } };
+  await mod.activate(ctx);
+  const field = () => state.get('workflows.settings').sections[0].fields[0];
+  assert.equal(field().value, true);
+  events.get('settings.change')({ module: 'workflows', section: 'workflows', key: field().key, value: false });
+  await new Promise(setImmediate);
+  assert.equal(settings.get('workflows.trackAutonomousClaudeTurns'), false);
+  assert.equal(field().value, false);
+  await mod.activate(ctx);
+  assert.equal(field().value, false);
+});
+
 test('workflow gateway queries the actual Chatbox session while preserving run state and session scope', async () => {
   const mod = (await load('Hato-plugins/modules/services/workflows/src/index.ts')).default;
   const W = await load('sdk/workflows.ts');

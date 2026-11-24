@@ -15,6 +15,8 @@ pub enum UiMsg {
     ApprovalsChanged,
     /// Terminal content changed for a PTY handle.
     TerminalDirty(String),
+    /// A pushed-frame surface received a new frame or pointer target.
+    SurfaceDirty(String),
     /// A native folder picker was requested; reply via the channel.
     TransferPath(Option<String>, crossbeam_channel::Sender<Result<Option<std::path::PathBuf>, String>>),
     PickFolder(crossbeam_channel::Sender<Option<String>>),

@@ -198,6 +198,7 @@
       net: {
         listenLoopback: (opts) => call("net.listen", { port: (opts && opts.port) || 0 }),
         fetch: (request) => call("net.fetch", request),
+        websocket: (url, opts) => call("net.websocket", Object.assign({ url }, opts || {})),
         write: (handle, text) => call("net.write", { handle, text }),
         close: (handle) => call("net.close", { handle }),
       },
@@ -274,6 +275,10 @@
         pickFolder: () => call("ui.pickFolder", {}),
         openUrl: (url) => call("ui.openUrl", { url }),
         toast: (level, text) => sync("ui.toast", { level, text }),
+        surfaceOpen: (opts) => call("ui.surfaceOpen", opts || {}),
+        surfaceFrame: (handle, frame) => call("ui.surfaceFrame", Object.assign({ handle }, frame)),
+        surfaceCursor: (handle, cursor) => call("ui.surfaceCursor", Object.assign({ handle }, cursor)),
+        surfaceClear: (handle) => call("ui.surfaceClear", { handle }),
       },
     },
     modules: {

@@ -7,11 +7,11 @@ import type { ChatMessage } from "./types";
 import type { AgentMcp, AgentProfile } from "./persistent-agents";
 
 /** Bumped whenever the daemon runtime changes behavior; the gateway pushes a newer runtime when idle. */
-export const WORKFLOW_RUNNER_VERSION = "8";
+export const WORKFLOW_RUNNER_VERSION = "10";
 
 export type WorkflowBlockType =
   | "start_button" | "start_input" | "ai" | "chatbox" | "skill" | "mcp" | "task_controls" | "terminal_control"
-  | "meeting" | "text" | "timer" | "user_prompt" | "yes_no_prompt" | "markdown" | "script" | "run_app";
+  | "meeting" | "text" | "timer" | "user_prompt" | "yes_no_prompt" | "markdown" | "script" | "run_app" | "browser";
 
 export type WorkflowAppAction = "start" | "status" | "kill" | "tail";
 
@@ -40,6 +40,7 @@ export interface WorkflowBlock {
   /** ai, chatbox: workspace-relative instruction file (AGENTS.md, .agents/agents/x.md). */ agentFile?: string;
   /** skill: workspace-relative SKILL.md path of an existing skill (otherwise `prompt` holds instructions). */ skillId?: string;
   /** mcp: a configured MCP server id (MCP servers panel). */ mcp?: { serverId: string };
+  /** browser: a browser session (Browser panel) its connected agents drive. */ browser?: { sessionId: string; name?: string };
   /** Fan-in policy for converging follow/path connections. */ join?: "all" | "any";
   inputSchema?: WorkflowDataSchema; outputSchema?: WorkflowDataSchema;
 }
@@ -129,6 +130,7 @@ export const WORKFLOW_BLOCKS: { type: WorkflowBlockType; label: string; summary:
   { type: "terminal_control", label: "Terminal Control", summary: "Gives connected agents the workspace terminal tools (list, read, write).", fields: [], tool: true },
   { type: "task_controls", label: "Task controls", summary: "Gives connected agents the Git task tools (list, create, start agent).", fields: [], tool: true },
   { type: "mcp", label: "MCP server", summary: "Attaches a configured or built-in Hato MCP server to connected agents.", fields: ["mcp"], tool: true },
+  { type: "browser", label: "Browser", summary: "Gives connected agents a persistent browser session (pages, clicks, typing, screenshots, network), shown live on the block.", fields: ["browser"], tool: true },
 ];
 /** Hato's built-in MCP servers an MCP block can attach besides user-configured ones. Workspace tools
  *  run beside the agent (background agents, terminals, Git tasks); desktop tools reach the open Hato
@@ -142,7 +144,10 @@ export const blockInfo = (type: string) => WORKFLOW_BLOCKS.find(b => b.type === 
 const AGENT_TYPES = new Set(["ai", "chatbox"]);
 export const isAgentBlock = (b: { type: string }) => AGENT_TYPES.has(b.type);
 /** Blocks that only add capabilities to connected agents and never execute themselves. */
-export const isCapabilityBlock = (b: { type: string }) => b.type === "terminal_control" || b.type === "task_controls" || b.type === "mcp";
+export const isCapabilityBlock = (b: { type: string }) => b.type === "terminal_control" || b.type === "task_controls" || b.type === "mcp" || b.type === "browser";
+/** MCP server a capability block attaches to its connected agents (browser blocks use the desktop tools). */
+export const capabilityMcpServer = (b: { type: string; mcp?: { serverId: string } }): string | undefined =>
+  b.type === "mcp" ? b.mcp?.serverId : b.type === "browser" ? "internal-local-mcp" : undefined;
 export const isStartBlock = (b: { type: string }) => b.type === "start_button" || b.type === "start_input";
 export const edgeType = (e: WorkflowEdge): WorkflowEdgeType => e.type || "follow";
 
@@ -176,6 +181,7 @@ export function normalizeDefinition(raw: any, fallback?: Partial<WorkflowDefinit
     if (!block.agentFile && b?.agent && b.agent.scope === "workspace" && typeof b.agent.name === "string") block.agentFile = `.agents/agents/${clip(b.agent.name, 180)}`;
     if (typeof b?.autopilot === "boolean") block.autopilot = b.autopilot;
     if (b?.mcp && typeof b.mcp.serverId === "string") block.mcp = { serverId: clip(b.mcp.serverId, 120) };
+    if (b?.browser && typeof b.browser.sessionId === "string") block.browser = { sessionId: clip(b.browser.sessionId, 80), ...(typeof b.browser.name === "string" ? { name: clip(b.browser.name, 80) } : {}) };
     if (b?.join === "any" || b?.join === "all") block.join = b.join;
     if (b?.inputSchema && typeof b.inputSchema === "object") block.inputSchema = b.inputSchema;
     if (b?.outputSchema && typeof b.outputSchema === "object") block.outputSchema = b.outputSchema;
@@ -237,6 +243,8 @@ export function validateWorkflow(def: WorkflowDefinition, available?: { profiles
     if (b.type === "timer" && !(Number.isInteger(b.seconds) && b.seconds! >= 0 && b.seconds! <= 7 * 86_400)) err("invalid-timer", `Timer '${name}' needs whole seconds from 0 to 604800`, { blockId: b.id });
     if (b.type === "mcp" && !b.mcp?.serverId) err("invalid-mcp", `MCP block '${name}' needs a configured server`, { blockId: b.id });
     if (b.type === "mcp" && b.mcp?.serverId && available?.mcps && !available.mcps.some(m => m.id === b.mcp!.serverId)) warn("unavailable-mcp", `MCP server for '${name}' is not configured or enabled`, { blockId: b.id });
+    if (b.type === "browser" && !b.browser?.sessionId) err("invalid-browser", `Browser block '${name}' needs a browser session`, { blockId: b.id });
+    if (b.type === "browser" && available?.mcps && !available.mcps.some(m => m.id === "internal-local-mcp")) warn("unavailable-browser", `Browser block '${name}' needs the Hato desktop tools, which this workspace cannot reach`, { blockId: b.id });
     if (isAgentBlock(b) && available?.profiles) {
       const ok = b.profileId ? available.profiles.some(p => p.id === b.profileId) : b.provider ? available.profiles.some(p => p.provider === b.provider) : available.profiles.length > 0;
       if (!ok) err("unavailable-provider", `No enabled AI provider matches '${name}' on this machine`, { blockId: b.id });
@@ -355,6 +363,7 @@ output, previewed to 8,000 characters). AI prompts without {{input}} get the inp
 | terminal_control | — | Connected agents call workflow_use_block with action list/read/write; read/write take key, read accepts cursor, write takes text. Requests/results are logged on the block. |
 | task_controls | — | Use it to give an agent Git task tools (tasks_list/create/start_agent; desktop open). |
 | mcp | mcp {serverId} | Use it to attach a configured MCP server to an agent. |
+| browser | browser {sessionId, name?} | Use it to let connected agents drive a Browser panel session (desktop open; the session must allow agents). Agents call the desktop browser commands with that session. |
 
 AI providers: profileId is an ACP profile id from the catalog (workflows__catalog). A block may
 instead name a provider (claude, codex, gemini, …); the first enabled matching profile is used.

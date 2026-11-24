@@ -14,5 +14,7 @@ pub mod sshc;
 pub mod stdio;
 pub mod wsl;
 pub mod streams;
+pub mod surface;
 
 pub mod watch;
+pub mod websocket;

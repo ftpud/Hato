@@ -145,6 +145,10 @@ export interface NativeHost {
     /** Outbound HTTP (`net.fetch`): https anywhere, plain http only to loopback. Redirects are
      *  returned (3xx + location), not followed. Body is UTF-8 text, capped by `maxBytes` (≤ 8 MiB). */
     fetch(request: HttpRequest): Promise<HttpResponse>;
+    /** Outbound WebSocket (`net.websocket`): wss anywhere, plain ws only to loopback. Subscribe to
+     *  the handle's stream: one JSON object per line, `{"t": text}` or `{"b": base64}`; the stream
+     *  ends when the peer closes. `write` sends a text message; `close`/`resources.release` close. */
+    websocket(url: string, opts?: { headers?: Record<string, string>; timeoutMs?: number }): Promise<{ handle: Handle }>;
     write(handle: Handle, text: string): Promise<void>;
     close(handle: Handle): Promise<void>;
   };
@@ -245,6 +249,16 @@ export interface NativeHost {
     /** Open an http(s) URL in the system browser (`ui.openUrl`). */
     openUrl(url: string): Promise<void>;
     toast(level: "info" | "warn" | "error", text: string): void;
+    /** Pushed-frame surface (`ui.surface`) rendered by `surface` UiNodes that reference the handle.
+     *  Any UI module may display it; input reaches the module that renders the node. */
+    surfaceOpen(opts?: { label?: string }): Promise<{ handle: Handle }>;
+    /** Replace the picture (base64 PNG/JPEG/WebP/GIF, ≤ 16 MiB). `width`/`height` set the logical
+     *  coordinate space for input events and the pointer overlay (default: picture pixels). */
+    surfaceFrame(handle: Handle, frame: { data: string; width?: number; height?: number }): Promise<{ seq: number }>;
+    /** Move the pointer overlay (logical coordinates), gliding over `durationMs`; `click` shows a
+     *  press ripple on arrival. `{visible: false}` hides it. */
+    surfaceCursor(handle: Handle, cursor: { x?: number; y?: number; durationMs?: number; click?: boolean; visible?: boolean }): Promise<void>;
+    surfaceClear(handle: Handle): Promise<void>;
   };
 }
 
@@ -535,6 +549,13 @@ export type UiNode =
   /** Native picture file dialog; fires `action` with attachments (or {error}). */
   | (Base & { type: "imagePicker"; action: string; disabled?: boolean; text?: string; iconSvg?: string; iconSize?: number; dialogTitle?: string; maxFiles?: number; maxBytes?: number })
   | (Base & { type: "image"; image: ImageAttachment })
+  /** Live pushed-frame surface (see `ui.surfaceOpen`); frames repaint without a module re-render.
+   *  Input arrives in the frame's logical coordinates: `pointerAction` SurfacePointerEvent,
+   *  `wheelAction` SurfaceWheelEvent, `keyAction` SurfaceKeyEvent (focus by clicking), and
+   *  `resizeAction` {width, height, scale} with the element's size in px. Without input actions the
+   *  surface is a read-only view. `cursorSvg` draws the pointer overlay (a single-color shape with a
+   *  white halo); `cursorLabel` tags it. */
+  | (Base & { type: "surface"; surface: Handle | null; placeholder?: string; pointerAction?: string; wheelAction?: string; keyAction?: string; resizeAction?: string; cursorSvg?: string; cursorLabel?: string; /** Pointer and label color (default primary). */ cursorColor?: UiColor })
   /** Follow-to-bottom list with native scroll anchoring. `children` are ordinary nodes (one per
    *  item, keyed). Scrolling near the top fires `loadOlderAction` (when `hasOlder`); reaching the
    *  bottom fires `bottomAction`. A new `followKey` re-enters follow mode; `scrollKey` separates
@@ -582,6 +603,13 @@ export interface TreeRow { /** Optional plugin-supplied row tint; selection/hove
   /** Native right-click menu; items fire `action` with this row's key as rowKey and `value`. */
   contextMenu?: MenuItem[];
   detail?: string; weight?: "medium" | "semibold" | "bold"; /** Module-side classification (not rendered). */ icon?: string }
+export interface SurfaceModifiers { shift: boolean; ctrl: boolean; alt: boolean; meta: boolean }
+/** `buttons` is a bitmask of held buttons (1 left, 2 right). */
+export interface SurfacePointerEvent { kind: "down" | "up" | "move"; x: number; y: number; button: "left" | "right" | "middle" | null; buttons: number; clickCount: number; modifiers: SurfaceModifiers }
+export interface SurfaceWheelEvent { x: number; y: number; deltaX: number; deltaY: number }
+/** `key` is the platform key name ("a", "enter", "backspace", "left"…); `text` the produced character.
+ *  `paste` carries clipboard text for Cmd/Ctrl+V. */
+export type SurfaceKeyEvent = { kind: "down" | "up"; key: string; text: string | null; modifiers: SurfaceModifiers } | { kind: "paste"; text: string };
 export interface ImageAttachment { name: string; mimeType: string; data: string }
 export interface ChatMessage { images?: ImageAttachment[]; key: string; role: "user" | "assistant" | "thought" | "tool" | "system" | "error" | "plan"; text: string; title?: string; status?: string }
 

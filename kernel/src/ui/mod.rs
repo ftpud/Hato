@@ -9,6 +9,7 @@ mod controls;
 mod editor;
 mod editor_hover;
 pub mod terminal_view;
+mod surface_view;
 mod theme;
 mod images;
 mod lazy_list;
@@ -109,6 +110,7 @@ pub struct Shell {
     editor_assist: HashMap<String, EditorAssist>,
     diffs: HashMap<String, (Entity<DiffState>, Instant)>,
     terminals: HashMap<String, Entity<TerminalView>>,
+    surfaces: HashMap<(String, String, String), Entity<surface_view::SurfaceView>>,
     scrolls: HashMap<String, transcript_scroll::TranscriptScroll>,
     toasts: Vec<motion::Toast>,
     motion: motion::Motion,
@@ -191,6 +193,7 @@ impl Shell {
             editor_assist: HashMap::new(),
             diffs: HashMap::new(),
             terminals: HashMap::new(),
+            surfaces: HashMap::new(),
             scrolls: HashMap::new(),
             toasts: Vec::new(),
             motion: Default::default(),
@@ -223,6 +226,11 @@ impl Shell {
             UiMsg::TerminalDirty(h) => {
                 if let Some(t) = self.terminals.get(&h) {
                     t.update(cx, |_, cx| cx.notify());
+                }
+            }
+            UiMsg::SurfaceDirty(h) => {
+                for ((handle, _, _), view) in &self.surfaces {
+                    if handle == &h { view.update(cx, |v, cx| v.refresh(cx)); }
                 }
             }
             UiMsg::TransferPath(save_name, tx) => {
@@ -1467,6 +1475,21 @@ impl Shell {
                 };
                 self.apply_base(div(), n, cx).flex().flex_col().size_full().min_w_0().min_h_0().overflow_hidden().child(body).into_any_element()
             }
+            "surface" => {
+                let handle = n.get("surface").and_then(|d| d.as_str()).map(str::to_owned);
+                let binding = surface_view::Binding::from_node(module, key, n);
+                let body = match handle.and_then(|h| self.kernel.handles.get_kernel::<crate::host::surface::Surface>(&h, "surface").map(|s| (h, s))) {
+                    Some((h, surface)) => {
+                        let kernel = self.kernel.clone();
+                        let view = self.surfaces.entry((h, module.to_owned(), path.clone())).or_insert_with(|| cx.new(|cx| surface_view::SurfaceView::new(surface, kernel, binding.clone(), cx))).clone();
+                        view.update(cx, |v, cx| if v.binding != binding { v.binding = binding; cx.notify(); });
+                        view.into_any_element()
+                    }
+                    None => div().size_full().flex().items_center().justify_center().text_sm().text_color(theme_muted)
+                        .child(n["placeholder"].as_str().unwrap_or("").to_string()).into_any_element(),
+                };
+                self.apply_base(div(), n, cx).flex().flex_col().size_full().min_w_0().min_h_0().overflow_hidden().child(body).into_any_element()
+            }
             "transcript" => {
                 // Generic follow-to-bottom list with history paging and scroll anchoring. Items are
                 // module nodes (`children`); `followKey` changing re-enters follow mode (e.g. the
@@ -1818,6 +1841,8 @@ impl Render for Shell {
         // Drop native state for terminals whose PTY handle disappeared.
         let live: HashSet<String> = self.kernel.handles.handles_of_kind("pty").into_iter().collect();
         self.terminals.retain(|h, _| live.contains(h));
+        let live_surfaces: HashSet<String> = self.kernel.handles.handles_of_kind("surface").into_iter().collect();
+        self.surfaces.retain(|(h, _, _), _| live_surfaces.contains(h));
         let floats = std::mem::take(&mut self.lay.floats);
         let float_els: Vec<AnyElement> = floats.iter().map(|(m, p, n)| self.render_float(m, p, n, window, cx)).collect();
         let drag_layer = self.drag_overlay(cx);
@@ -1867,6 +1892,7 @@ pub fn run(cfg: Config) {
     app.run(move |cx| {
         gpui_kit::init(cx);
         terminal_view::init(cx);
+        surface_view::init(cx);
         theme::init(cx, &k2.cfg.data_dir);
         cx.on_app_quit({
             let k = k2.clone();

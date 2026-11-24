@@ -8,9 +8,9 @@ const configOptions = [
   { id: 'mode', category: 'mode', options: [{ value: 'plan', name: 'Plan' }, { value: 'code', name: 'Code' }] },
 ];
 
-function harness() {
-  const listeners = new Map(), requests = [], dbWrites = [];
-  const ctx = { modules: { call: async () => null }, log: { error() {}, info() {}, warn() {} }, events: { emit() {} }, host: {
+function harness({ canLoad = true, resume = false } = {}) {
+  const listeners = new Map(), requests = [], dbWrites = [], events = [];
+  const ctx = { modules: { call: async () => null }, log: { error() {}, info() {}, warn() {} }, events: { emit: (...a) => events.push(a) }, host: {
     env: { info: () => ({ platform: 'linux' }) },
     db: { openNamespace: async () => 'db', query: async (_db, sql) => sql.startsWith('PRAGMA') ? [{ name: 'images_json' }, { name: 'tool_call_id' }] : sql.startsWith('SELECT seq FROM messages') && dbWrites.some(w => w.sql.startsWith('INSERT INTO messages') && w.args[7] === 'call-1') ? [{ seq: 42 }] : [], exec: async (_db, sql, args) => { dbWrites.push({ sql, args }); return { changes: 1 }; } },
     capabilities: { request: async () => ({ grant: 'grant' }), release: async () => {} }, resources: { release: async () => {} },
@@ -20,18 +20,120 @@ function harness() {
       if (request.id === undefined) return;
       if ('result' in request || 'error' in request) return;
       let result;
-      if (request.method === 'initialize') result = { protocolVersion: 1, agentCapabilities: { loadSession: true, promptCapabilities: { image: true } } };
+      if (request.method === 'initialize') result = { protocolVersion: 1, agentCapabilities: { loadSession: canLoad, promptCapabilities: { image: true }, mcpCapabilities: { http: true } } };
       else if (request.method === 'session/new') result = { sessionId: 'provider-session', configOptions: structuredClone(configOptions) };
       else if (request.method === 'session/set_config_option') result = { configOptions: structuredClone(configOptions) };
       else if (request.method === 'session/prompt') return;
+      else if (request.method === 'session/load' && resume) result = { configOptions: structuredClone(configOptions) };
       else if (request.method === 'session/load') { queueMicrotask(() => listeners.get(handle)(JSON.stringify({ jsonrpc: '2.0', id: request.id, error: { code: -32002, message: 'Resource not found', data: { sessionId: request.params.sessionId } } }) + '\n')); return; }
       else throw new Error(request.method);
       queueMicrotask(() => listeners.get(handle)(JSON.stringify({ jsonrpc: '2.0', id: request.id, result }) + '\n'));
     } },
   } };
-  return { ctx, listeners, requests, dbWrites };
+  return { ctx, listeners, requests, dbWrites, events };
 }
 const spec = extra => ({ id: 'chat', name: 'Chat', workspaceId: 'ws', root: '/workspace', profile: { name: 'Fixture', executable: 'test', args: [] }, model: '', agentFile: null, skills: [], mcps: [], workspaceMcp: false, ...extra });
+
+const workflow = { runId: 'run', blockId: 'block' };
+const adapter = provider => ({ id: provider, provider, name: provider, executable: 'test', args: [] });
+const meta = { caller: 'workflow-runner' };
+
+for (const provider of ['claude', 'codex']) {
+  test(`${provider} reconnect loads the same provider session with the complete MCP set`, async () => {
+    const mod = (await load('Hato-plugins/modules/services/agent-runner/src/index.ts')).default;
+    const { ctx, requests, listeners } = harness({ resume: true });
+    await mod.activate(ctx);
+    const extra = { id: 'fixture', name: 'fixture', command: 'node', args: [], env: [] };
+    const config = spec({ profile: adapter(provider), workflow });
+    await mod.methods.create(ctx, { spec: config });
+    await mod.methods.send(ctx, { id: config.id, text: 'previous' });
+    const prompt = requests.find(r => r.method === 'session/prompt');
+    const update = mcps => mod.methods.update(ctx, { id: config.id, patch: { ...config, mcps } }, meta);
+    await assert.rejects(update([extra]), /finish its turn/);
+    assert.equal(requests.some(r => r.method === 'session/cancel'), false);
+    listeners.get('process')(JSON.stringify({ jsonrpc: '2.0', id: prompt.id, result: { stopReason: 'end_turn' } }) + '\n');
+    await new Promise(setImmediate);
+    await update([extra]);
+    await update([]);
+    assert.equal(requests.filter(r => r.method === 'session/new').length, 1);
+    assert.deepEqual(requests.filter(r => r.method === 'session/load').map(r => [r.params.sessionId, r.params.mcpServers]), [
+      ['provider-session', [{ name: extra.name, command: extra.command, args: [], env: [] }]], ['provider-session', []],
+    ]);
+  });
+}
+
+test('a provider without session load keeps its existing workflow conversation', async () => {
+  const mod = (await load('Hato-plugins/modules/services/agent-runner/src/index.ts')).default;
+  const { ctx, requests, listeners } = harness({ canLoad: false });
+  await mod.activate(ctx);
+  const config = spec({ profile: adapter('codex'), workflow });
+  await mod.methods.create(ctx, { spec: config });
+  await mod.methods.send(ctx, { id: config.id, text: 'previous' });
+  const prompt = requests.find(r => r.method === 'session/prompt');
+  listeners.get('process')(JSON.stringify({ jsonrpc: '2.0', id: prompt.id, result: { stopReason: 'end_turn' } }) + '\n');
+  await new Promise(setImmediate);
+  await assert.rejects(mod.methods.update(ctx, { id: config.id, patch: { ...config, mcps: [{ id: 'extra', name: 'extra' }] } }, meta), /cannot resume/);
+  assert.equal(requests.filter(r => r.method === 'initialize').length, 1);
+  assert.deepEqual((await mod.methods.list())[0].mcps, []);
+  assert.equal((await mod.methods.list())[0].sessionId, 'provider-session');
+});
+
+test('a rejected MCP transport restores the previous workflow endpoint', async () => {
+  const mod = (await load('Hato-plugins/modules/services/agent-runner/src/index.ts')).default;
+  const { ctx, requests } = harness({ resume: true });
+  await mod.activate(ctx);
+  const old = { id: 'hato-workflow', name: 'hato-workflow', command: 'node', args: ['old'], env: [] };
+  const config = spec({ profile: adapter('codex'), workflow, mcps: [old] });
+  await mod.methods.create(ctx, { spec: config });
+  const mcps = [{ ...old, args: ['replacement'] }, { id: 'sse', name: 'sse', type: 'sse', url: 'https://example.invalid/mcp' }];
+  await assert.rejects(mod.methods.update(ctx, { id: config.id, patch: { ...config, mcps } }, meta), /cannot connect to SSE/);
+  const restored = (await mod.methods.list())[0];
+  assert.equal(restored.status, 'ready');
+  assert.equal(restored.sessionId, 'provider-session');
+  assert.deepEqual(restored.mcps, [old]);
+  assert.deepEqual(requests.find(r => r.method === 'session/load').params.mcpServers, [{ name: old.name, command: old.command, args: old.args, env: [] }]);
+});
+
+test('only opted-in workflow Claude sessions negotiate autonomous turns and keep tool-card titles', async () => {
+  for (const [provider, scope, enabled, expected] of [
+    ['claude', workflow, undefined, true], ['claude', workflow, false, false],
+    ['claude', undefined, true, false], ['codex', workflow, true, false],
+  ]) {
+    const mod = (await load('Hato-plugins/modules/services/agent-runner/src/index.ts')).default;
+    const { ctx, listeners, requests, events, dbWrites } = harness();
+    await mod.activate(ctx);
+    await mod.methods.create(ctx, { spec: spec({ profile: adapter(provider), workflow: scope, trackAutonomousClaudeTurns: enabled }) });
+    const caps = requests.find(r => r.method === 'initialize').params.clientCapabilities;
+    assert.equal(caps._meta?.jetbrains.air.capabilities.includes('asyncTasks') ?? false, expected);
+    if (!expected) continue;
+    const update = value => listeners.get('process')(JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'provider-session', update: value } }) + '\n');
+    const spawn = id => update({ sessionUpdate: 'async_task_spawned', asyncTaskId: id, taskType: 'turn' });
+    const finish = id => update({ sessionUpdate: 'async_task_state_update', asyncTaskId: id, state: 'completed' });
+    await mod.methods.send(ctx, { id: 'chat', text: 'user turn' });
+    spawn('overlap'); finish('overlap');
+    const prompt = requests.find(r => r.method === 'session/prompt');
+    listeners.get('process')([
+      { jsonrpc: '2.0', id: prompt.id, result: { stopReason: 'end_turn' } },
+      { jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'provider-session',
+        update: { sessionUpdate: 'async_task_spawned', asyncTaskId: 'wakeup', taskType: 'turn' } } },
+    ].map(value => JSON.stringify(value)).join('\n') + '\n');
+    await new Promise(setImmediate);
+    assert.equal((await mod.methods.list())[0].status, 'busy');
+    for (const [toolCallId, title] of [['read', 'Read src/main.ts'], ['search', 'grep parser src']]) {
+      update({ sessionUpdate: 'tool_call', toolCallId, title, status: 'in_progress' });
+      update({ sessionUpdate: 'tool_call_update', toolCallId, status: 'completed' });
+    }
+    update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Wakeup result' } });
+    finish('wakeup');
+    await new Promise(setImmediate);
+    assert.equal((await mod.methods.list())[0].status, 'ready');
+    assert.deepEqual(events.filter(([name]) => name === 'agent-runner.providerTurn').map(([, event]) => [event.phase, event.turnId, event.output]),
+      [['started', 'wakeup', undefined], ['finished', 'wakeup', 'Wakeup result']]);
+    const titles = dbWrites.filter(w => w.sql.startsWith('INSERT INTO messages') && w.args[1] === 'tool').map(w => w.args[3]);
+    assert.ok(titles.every(title => ['Read src/main.ts', 'grep parser src'].includes(title)));
+    assert.deepEqual([...new Set(titles)], ['Read src/main.ts', 'grep parser src']);
+  }
+});
 
 test('reconnect replaces a live Claude process and applies the latest subscription preference', async () => {
   const mod = (await load('Hato-plugins/modules/services/agent-runner/src/index.ts')).default;
