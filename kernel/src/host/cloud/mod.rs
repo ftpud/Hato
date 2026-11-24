@@ -573,7 +573,7 @@ impl Connection {
         timeout(OPEN_DEADLINE, result)
             .await
             .map_err(|_| anyhow!("Cloud host did not answer in time"))?
-            .map_err(|_| anyhow!("Cloud host closed the channel before it was ready (link dropped or host refused this device)"))?
+            .map_err(|_| anyhow!("The Cloud host isn't ready: it may be offline or restarting Hato. Hato retries automatically; if it persists, check the host in the Cloud panel."))?
     }
 
     pub async fn disconnect(&self) {

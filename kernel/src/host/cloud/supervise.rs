@@ -192,12 +192,16 @@ pub fn service(home: &Path) -> Result<()> {
             .status()
             .map(|status| status.success())
     };
-    if !wake()? {
-        bail!("Could not start hatod");
+    // Connect to the relay even if the daemon is still starting (e.g. an upgrade is replacing it):
+    // the host stays online and channels work as soon as the daemon answers. Retry quickly while
+    // it's down, then settle to a slow health check.
+    let mut healthy = matches!(wake(), Ok(true));
+    if !healthy {
+        eprintln!("hato cloud: hatod is not answering yet; retrying every 5 s");
     }
     std::thread::spawn(move || loop {
-        std::thread::sleep(Duration::from_secs(30));
-        let _ = wake();
+        std::thread::sleep(Duration::from_secs(if healthy { 30 } else { 5 }));
+        healthy = matches!(wake(), Ok(true));
     });
     let config = super::Config::load(&home.join("cloud/host.json"))?;
     super::run_connector(config, home)
