@@ -108,7 +108,10 @@ test('terminal blocks split in both directions, resize, preserve PTYs across wor
   assert.deepEqual(terminals().map(n => n.pty), ptys);
   const close = walk(mod.render()).filter(n => n.key === 'closeBlock')[1].action;
   const closeBefore = calls.filter(c => c.method === 'close').length;
-  await mod.onEvent(c.ctx, { action: close });
+  const closing = mod.onEvent(c.ctx, { action: close });
+  assert.equal(calls.filter(c => c.method === 'close').length, closeBefore, 'keep the shell alive through its exit animation');
+  assert.equal(c.selected().view.ui.terminalLayout.children[1].children.length, 2, 'do not persist a partial closing layout');
+  await closing;
   assert.equal(terminals().length, 2);
   assert.equal(terminals()[0].pty, original);
   assert.equal(calls.filter(c => c.method === 'close').length - closeBefore, 2);

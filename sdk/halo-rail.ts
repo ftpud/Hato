@@ -6,7 +6,7 @@
 // the actions named here. Motion and paint come from generic native primitives (layoutTransition,
 // presence, layoutId, label reveal/tween, meter, ring, spinner).
 import type { Json, UiColor, UiNode, UiStyle, UiTransition } from "./types";
-import type { LimitsSnapshot } from "./usage-limits";
+import { resetText, type LimitsSnapshot } from "./usage-limits";
 import { haloLogo } from "./halo-logo";
 import { fadeLine, glassCard, glassChip, glassWell, glossyTile, glow } from "./halo-glass";
 
@@ -72,7 +72,7 @@ export interface HaloItem {
 }
 export interface HaloSection {
   key: string; title: string; items: HaloItem[];
-  add?: { action: string; value?: Json; tooltip: string };
+  add?: { action: string; value?: Json; tooltip: string; iconSvg?: string };
   /** Native content placed under the title (e.g. a slot); expanded rails only. */
   embed?: UiNode;
   /** Collapsed rails: show every item, only the active ones, or none. */
@@ -208,7 +208,7 @@ function sectionHead(m: HaloModel, s: HaloSection, index: number): UiNode {
   ], { style: { height: 13, justify: "center" } });
   return row(`head:${s.key}`, [
     text("t", s.title.toUpperCase(), { size: 9, color: "faint", mono: true, spacing: 1.8, reveal: haloMotion.scramble(index), grow: true }),
-    ...(s.add ? [row("add", [icon("i", haloIcons.plus, 12, "faint")], { action: s.add.action, value: s.add.value ?? null, tooltip: s.add.tooltip,
+    ...(s.add ? [row("add", [icon("i", s.add.iconSvg || haloIcons.plus, 12, "faint")], { action: s.add.action, value: s.add.value ?? null, tooltip: s.add.tooltip,
       hoverStyle: { background: "hover" }, style: { width: 20, height: 20, radius: 5, justify: "center" } })] : []),
   ], { style: { height: 24, paddingX: 9 } });
 }
@@ -373,7 +373,7 @@ export function haloRail(m: HaloModel): UiNode {
   for (const s of m.sections) {
     const items = m.expanded ? s.items : s.collapsed === "none" ? [] : s.collapsed === "active" ? s.items.filter(i => i.active) : s.items;
     const tasks = m.expanded ? s.tasks || [] : [];
-    if (!items.length && !tasks.length && !(m.expanded && s.embed)) continue;
+    if (!items.length && !tasks.length && !(m.expanded && (s.embed || s.add))) continue;
     const head: UiNode[] = [sectionHead(m, s, index++)];
     if (m.expanded && s.tabs && s.tabs.items.length > 1) head.push(tabsNode(s));
     if (m.expanded && s.embed) head.push(row(`embed:${s.key}`, [s.embed], { style: { paddingX: 3 } }));
@@ -405,7 +405,10 @@ export function haloUsage(limits: Record<string, LimitsSnapshot | null> | null |
     const windows = [hours, week].filter((w): w is NonNullable<typeof w> => !!w).map(w => ({ label: /wk|week/i.test(w.label) ? "wk" : /5/.test(w.label) ? "5h" : w.label.slice(0, 3), usedPercent: Number(w.usedPercent) || 0 }));
     if (!windows.length) continue;
     const name = provider === "claude" ? "Claude" : provider === "codex" ? "Codex" : provider[0]!.toUpperCase() + provider.slice(1);
-    const lines = [`${name} plan usage`, ...snap!.windows.map(x => `${x.label}: ${Math.round(x.usedPercent)}% used · ${Math.round(Math.max(0, 100 - x.usedPercent))}% left`)];
+    const lines = [`${name} plan usage`, ...snap!.windows.map(x => {
+      const reset = resetText(x);
+      return `${x.label}: ${Math.round(x.usedPercent)}% used · ${Math.round(Math.max(0, 100 - x.usedPercent))}% left${reset ? ` · ${reset}` : ""}`;
+    })];
     if (snap!.error) lines.push(`⚠ ${snap!.error}`);
     lines.push(snap!.loading ? "Checking…" : "Click to refresh");
     out.push({ id: provider, name, windows, tooltip: lines.join("\n"), loading: !!snap!.loading });

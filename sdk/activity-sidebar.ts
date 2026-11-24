@@ -142,7 +142,7 @@ export function activitySidebar(id: string, side: "left" | "right"): AppModule {
       };
     });
     // The whole list, in its own scroll area so panels stay in view below it.
-    return { key: "projects", title: "Projects", items, add: { action: "addProject", tooltip: "Add a project" }, collapsed: "active", maxHeight: 260,
+    return { key: "projects", title: "Projects", items, add: { action: "toggleProjectPanel", iconSvg: haloIcons.chevron, tooltip: visible.projects ? "Hide Projects panel" : "Show Projects panel" }, collapsed: "active", maxHeight: 260,
       tabs: groups.length && !q ? { action: "selectGroup", active: group ? group.id : "all", items: [{ id: "all", label: "All", count: all.length }, ...groups.map(g => ({ id: g.id, label: g.name, count: g.projectIds.length }))] } : undefined };
   };
 
@@ -220,7 +220,7 @@ export function activitySidebar(id: string, side: "left" | "right"): AppModule {
         side, expanded, focused, sections, busy: busyCount(), usage: [],
         header: { title: ws?.name || "Hato", subtitle: ws ? undefined : "Select a project", logo: true,
           embed: enabled("git-branch") && ws ? { type: "slot", key: "git-branch", module: "git-branch", height: 28 } as UiNode : undefined },
-        search: { placeholder: "Search projects & panels", query },
+        search: { placeholder: "Search…", query },
         account: {
           initials: initialsOf(machine), name: machine, detail: error || (updates ? `${updates} module update${updates === 1 ? "" : "s"}` : ws ? (ws.location === "local" ? "Local workspace" : ws.machineId) : "Hato"),
           badge: updates || undefined, open: accountOpen, darkMode: colorMode !== "light",
@@ -242,7 +242,7 @@ export function activitySidebar(id: string, side: "left" | "right"): AppModule {
       side, expanded, focused, busy: busyCount(), usage,
       header: { title: "Assistant", subtitle: chats?.conversations?.length ? `${chats.conversations.length} chat${chats.conversations.length === 1 ? "" : "s"} in ${ws?.name || "this project"}` : ws?.name },
       primary: ws ? { label: "New chat", iconSvg: haloIcons.plus, action: "newChat", tooltip: "Start a new chat in this project" } : undefined,
-      search: expanded ? { placeholder: "Search chats & panels", query } : undefined,
+      search: expanded ? { placeholder: "Search…", query } : undefined,
       sections: [
         ...(workingSection() ? [workingSection()!] : []),
         ...(chatsSec ? [chatsSec] : []),
@@ -342,6 +342,7 @@ export function activitySidebar(id: string, side: "left" | "right"): AppModule {
         }
         case "workspace": if (typeof v === "string") request(ctx, "selectWorkspace", { workspaceId: v }); break;
         case "addProject": showPanel(ctx, "projects"); request(ctx, "addProject"); break;
+        case "toggleProjectPanel": togglePanel(ctx, "projects"); ctx.ui.invalidate(); break;
         case "openPanel": if (typeof v === "string") showPanel(ctx, v); ctx.ui.invalidate(); break;
         case "newChat": showPanel(ctx, "ai"); request(ctx, "newChat"); break;
         case "chat": showPanel(ctx, "ai"); request(ctx, "selectConversation", { id: v }); break;

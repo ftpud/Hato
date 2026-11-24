@@ -13,8 +13,21 @@ test("Claude /usage Markdown yields used percent per window", () => {
   const r = U.parseClaudeUsage(md);
   assert.equal(r.plan, "Claude max subscription");
   assert.deepEqual(r.windows.map(w => [w.id, w.label, w.usedPercent]), [["five_hour", "5h", 42], ["seven_day", "Wk", 7], ["weekly-opus", "Wk · Opus", 12.5]]);
-  assert.ok(Number.isFinite(r.windows[0].resetsAt));
+  assert.equal(r.windows[0].resetsAt, null);
+  assert.equal(U.resetText(r.windows[0]), 'resets Nov 4, 3:00 PM');
   assert.equal(r.windows[1].resetsAt, null);
+});
+
+test('Claude reset dates preserve meridiem/timezone and never report expired resets as zero', () => {
+  const parsed = U.parseClaudeUsage('**5-hour limit** — **42%** · Resets Nov 25, 2026, 3:00 PM PST');
+  assert.equal(parsed.windows[0].resetsAt, Date.parse('2026-11-25T23:00:00Z'));
+  const now = Date.parse('2026-11-25T22:00:00Z');
+  assert.equal(U.resetText(parsed.windows[0], now), 'resets in 1 h 0 min');
+  const window = { id: 'five_hour', label: '5h', usedPercent: 42, resetsText: null };
+  assert.equal(U.resetText({ ...window, resetsAt: now + 20000 }, now), 'resets in <1 min');
+  assert.equal(U.resetText({ ...window, resetsAt: now }, now), 'reset time passed · refresh usage');
+  assert.equal(U.resetText({ ...window, resetsAt: now - 60000 }, now), 'reset time passed · refresh usage');
+  assert.equal(U.resetText({ ...window, resetsAt: Date.parse('2001-11-25T03:00:00Z'), resetsText: 'Nov 25, 3:00 PM' }, now), 'resets Nov 25, 3:00 PM', 'cached dates from the old parser use the adapter text');
 });
 
 test("Codex /status Markdown converts percent left to used and skips spend limits", () => {

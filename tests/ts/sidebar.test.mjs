@@ -40,6 +40,15 @@ test('Halo rails toggle layout panels and reflect collapse, hide and restore sta
   assert.ok(find(rowOf(left.render(), 'git'), n => n.key === 'badge'), 'collapsed rail shows a badge dot');
   await left.onEvent(ctx, { action: 'expand', value: true });
   assert.equal(ctx.state.get('left-sidebar.preferredWidth'), 248);
+  ctx.state.set('projects-panel.rail', { selected: null, projects: [] });
+  const projectControl = () => find(find(left.render(), n => n.key === 'head:projects'), n => n.key === 'add');
+  assert.equal(projectControl().action, 'toggleProjectPanel');
+  assert.match(projectControl().children[0].svg, /m9 6 6 6-6 6/);
+  const projectsWereVisible = ctx.state.get('workspace-layout.panels').projects;
+  await left.onEvent(ctx, { action: projectControl().action });
+  assert.equal(ctx.state.get('workspace-layout.panels').projects, !projectsWereVisible);
+  await left.onEvent(ctx, { action: projectControl().action });
+  assert.equal(ctx.state.get('workspace-layout.panels').projects, projectsWereVisible);
   assert.equal(find(rowOf(left.render(), 'git'), n => n.key === 'n').text, '12');
   ctx.state.set('git-panel.panelBadge.git', 125);
   assert.equal(find(rowOf(left.render(), 'git'), n => n.key === 'n').text, '99+');

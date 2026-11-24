@@ -55,7 +55,12 @@ function shortLabel(label: string) {
 }
 function parseDate(text: string | undefined): number | null {
   if (!text) return null;
-  const t = Date.parse(clean(text).replace(/\s+[A-Z]{2,5}$/, ""));
+  const value = clean(text);
+  // Adapter display dates often omit the year. Date.parse can assign those dates to 2001;
+  // keep the original display text rather than manufacture an expired timestamp. Preserve
+  // AM/PM and timezone suffixes on complete dates.
+  if (!/\b\d{4}\b/.test(value)) return null;
+  const t = Date.parse(value);
   return Number.isFinite(t) ? t : null;
 }
 
@@ -89,8 +94,11 @@ export function applyClaudeRateLimit(prev: LimitsSnapshot | null, info: any, now
 
 /** Human "resets in" text for a window. */
 export function resetText(w: LimitWindow, now = Date.now()): string {
-  if (w.resetsAt) {
-    const mins = Math.max(0, Math.round((w.resetsAt - now) / 60000));
+  if (w.resetsAt && Number.isFinite(w.resetsAt)) {
+    const remaining = w.resetsAt - now;
+    if (remaining <= 0) return w.resetsText ? `resets ${w.resetsText}` : "reset time passed · refresh usage";
+    if (remaining < 60000) return "resets in <1 min";
+    const mins = Math.ceil(remaining / 60000);
     if (mins < 60) return `resets in ${mins} min`;
     if (mins < 48 * 60) return `resets in ${Math.floor(mins / 60)} h ${mins % 60} min`;
     return `resets in ${Math.round(mins / 1440)} days`;
