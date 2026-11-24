@@ -85,16 +85,50 @@ export default {
       const project = await ctx.modules.call("projects", "addLocal", { path: root });
       const workspaceId = `project:${project.id}:root`;
       const { server } = await ctx.modules.call("internal-local-mcp", "endpoint", { workspaceId, conversationId: "browser-integration" });
-      const toolName = "browser__browser_screenshot";
-      await until(async () => (await T("test.state", { key: "internal-mcp.settings" }))?.sections
-        ?.some(section => section.fields?.some(field => field.key === toolName)));
-      await ev("settings", "change", { key: JSON.stringify(["internal-mcp", "mcp:browser", toolName]), value: true });
-      await until(async () => (await ctx.modules.call("internal-local-mcp", "tools", {})).some(tool => tool.name === toolName));
-      const request = { method: "tools/call", params: { name: toolName, arguments: { session: id, quality: "low" } } };
-      const result = await T("test.exec", { argv: ["node", `${root}/tests/integration/fixtures/mcp-client.mjs`, JSON.stringify(server), JSON.stringify(request)] });
-      if (result.code !== 0) throw new Error(result.stderr || "MCP client failed");
-      const response = JSON.parse(result.stdout).result;
-      check("desktop MCP returns a native JPEG content block", !response.isError && response.content.some(c => c.type === "image" && c.mimeType === "image/jpeg" && c.data.startsWith("/9j/")));
+      async function enable(command) {
+        const name = `browser__${command}`;
+        await until(async () => (await T("test.state", { key: "internal-mcp.settings" }))?.sections
+          ?.some(section => section.fields?.some(field => field.key === name)));
+        await ev("settings", "change", { key: JSON.stringify(["internal-mcp", "mcp:browser", name]), value: true });
+        if (!await until(async () => (await ctx.modules.call("internal-local-mcp", "tools", {})).some(tool => tool.name === name))) {
+          throw new Error(`MCP command did not enable: ${name}`);
+        }
+      }
+      async function mcpCall(command, args) {
+        const request = { method: "tools/call", params: { name: `browser__${command}`, arguments: { session: id, ...args } } };
+        const result = await T("test.exec", { argv: ["node", `${root}/tests/integration/fixtures/mcp-client.mjs`, JSON.stringify(server), JSON.stringify(request)] });
+        if (result.code !== 0) throw new Error(result.stderr || "MCP client failed");
+        return JSON.parse(result.stdout).result;
+      }
+      const hasJpeg = response => response.content.some(c => c.type === "image" && c.mimeType === "image/jpeg" && c.data.startsWith("/9j/"));
+      await enable("browser_screenshot");
+      const response = await mcpCall("browser_screenshot", { quality: "low" });
+      check("desktop MCP returns a native JPEG content block", !response.isError && hasJpeg(response));
+
+      await enable("browser_batch");
+      await enable("browser_navigate");
+      await enable("browser_text");
+      const steps = [
+        { command: "browser_navigate", arguments: { url: "data:text/html," + encodeURIComponent(html) } },
+        { command: "browser_text" },
+        { command: "browser_screenshot" },
+      ];
+      const batch = await mcpCall("browser_batch", { steps });
+      check("browser batch reads the new page and returns its screenshot in order",
+        !batch.isError && batch.structuredContent?.results[1]?.result.text.includes("Hello visible text") && hasJpeg(batch));
+      const denied = await mcpCall("browser_batch", { steps: [{ command: "browser_type", arguments: { text: "denied" } }] });
+      check("batch respects individual MCP command permissions", denied.isError);
+      await enable("browser_wait");
+      const waited = await mcpCall("browser_wait", { selector: "#i", text: "never appears", timeoutMs: 100 });
+      check("standalone wait requires both conditions and reports timeout as an error",
+        waited.isError && waited.structuredContent?.found === false);
+      const failed = await mcpCall("browser_batch", { steps: [
+        { command: "browser_screenshot" },
+        { command: "browser_wait", arguments: { selector: "#missing", timeoutMs: 100 } },
+        { command: "browser_text" },
+      ] });
+      check("batch stops on a failed step and preserves earlier screenshots",
+        failed.isError && failed.structuredContent?.failure.step === 2 && failed.structuredContent?.results.length === 1 && hasJpeg(failed));
       await ctx.modules.call("internal-local-mcp", "revoke", { conversationId: "browser-integration" });
 
     } catch (error) { check("uncaught", false, String(error) + "\n" + (error && error.stack)); }
