@@ -179,9 +179,26 @@ pub(super) fn upgrade(home: &Path) -> Result<()> {
 pub fn service(home: &Path) -> Result<()> {
     let exe = std::env::current_exe()?;
     let root = home.to_path_buf();
+    let following = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let wake = move || {
         // A connector upgrade must leave an already running daemon and its resources alone.
-        if crate::daemon::client::request(&root, &serde_json::json!({"op":"hello"})).is_ok() {
+        if let Ok(info) = crate::daemon::client::request(&root, &serde_json::json!({"op":"hello"})) {
+            // A desktop updated the daemon over SSH: follow its binary instead of later replacing
+            // the daemon with ours, which would make the two routes restart it back and forth.
+            if let Some(daemon_exe) = info["exe"].as_str() {
+                let other = Path::new(daemon_exe);
+                if other != exe.as_path()
+                    && other.is_file()
+                    && !following.swap(true, std::sync::atomic::Ordering::SeqCst)
+                {
+                    eprintln!("hato cloud: following the daemon's binary {daemon_exe}");
+                    let _ = Command::new(other)
+                        .args(["cloud", "supervise", "--dir"])
+                        .arg(&root)
+                        .stdin(Stdio::null())
+                        .status();
+                }
+            }
             return Ok(true);
         }
         Command::new(&exe)

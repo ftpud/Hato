@@ -133,6 +133,8 @@ fn raise_fd_limit() {
 }
 
 pub fn serve(home: &Path, idle_secs: u64) -> anyhow::Result<()> {
+    // Resolve the login shell before any request threads exist.
+    let _ = login_shell();
     raise_fd_limit();
     let run = run_dir(home);
     std::fs::create_dir_all(&run)?;
@@ -646,16 +648,29 @@ fn absolute(p: &Path) -> String {
 }
 
 /// The user's login shell (what sshd runs commands with), then `$SHELL`, then `/bin/sh`.
+///
+/// Resolved once with the reentrant `getpwuid_r` and cached. `getpwuid` returns a pointer into a
+/// shared static buffer: called from concurrent request threads it returned other accounts' shells
+/// (e.g. `/usr/sbin/nologin`) and corrupted memory, crashing the daemon under request bursts.
 fn login_shell() -> String {
-    unsafe {
-        let pw = libc::getpwuid(libc::getuid());
-        if !pw.is_null() && !(*pw).pw_shell.is_null() {
-            if let Ok(s) = std::ffi::CStr::from_ptr((*pw).pw_shell).to_str() {
-                if !s.is_empty() { return s.to_string(); }
-            }
-        }
+    static SHELL: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    SHELL.get_or_init(|| passwd_shell().unwrap_or_else(|| {
+        std::env::var("SHELL").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "/bin/sh".into())
+    })).clone()
+}
+
+fn passwd_shell() -> Option<String> {
+    let mut buffer = vec![0 as libc::c_char; 16 * 1024];
+    let mut entry: libc::passwd = unsafe { std::mem::zeroed() };
+    let mut found: *mut libc::passwd = std::ptr::null_mut();
+    let code = unsafe {
+        libc::getpwuid_r(libc::getuid(), &mut entry, buffer.as_mut_ptr(), buffer.len(), &mut found)
+    };
+    if code != 0 || found.is_null() || entry.pw_shell.is_null() {
+        return None;
     }
-    std::env::var("SHELL").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "/bin/sh".into())
+    let shell = unsafe { std::ffi::CStr::from_ptr(entry.pw_shell) }.to_str().ok()?.to_string();
+    (!shell.is_empty()).then_some(shell)
 }
 
 fn signal_number(name: &[u8]) -> i32 {
