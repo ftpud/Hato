@@ -83,7 +83,7 @@ impl Shell {
             } else {
                 "Automatic approvals are off now. Hato couldn’t save the change, so they may come back on after restart."
             };
-            self.toasts.push(("error".into(), message.into(), Instant::now()));
+            self.toasts.push(super::motion::Toast::new("error".into(), message.into()));
         }
     }
 }

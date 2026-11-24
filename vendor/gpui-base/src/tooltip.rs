@@ -181,6 +181,8 @@ pub struct TooltipOverlay {
     show_task: Option<Task<()>>,
     hide_task: Option<Task<()>>,
     renderer: TooltipRenderer,
+    closing: bool,
+    presence: crate::motion::SurfacePresence,
 }
 
 impl TooltipOverlay {
@@ -195,6 +197,8 @@ impl TooltipOverlay {
             is_switching: false,
             show_task: None,
             hide_task: None,
+            closing: false,
+            presence: Default::default(),
             renderer: Rc::new(|view, _, _, _| div().child(view).into_any_element()),
         }
     }
@@ -224,6 +228,7 @@ impl TooltipOverlay {
             return;
         }
         self.hide_task = None;
+        self.closing = false;
         let show_delay = content
             .show_delay
             .unwrap_or_else(|| TooltipDefaults::global(cx).show_delay);
@@ -265,7 +270,11 @@ impl TooltipOverlay {
             cx.background_executor().timer(grace_period).await;
             let _ = this.update_in(cx, |this, _, cx| {
                 if this.epoch == epoch {
-                    this.content = None;
+                    if cx.try_global::<crate::motion::SurfaceStyles>().is_some_and(|s| s.tooltip.is_some()) {
+                        this.closing = true;
+                    } else {
+                        this.content = None;
+                    }
                     this.previous_bounds = None;
                     this.had_recent_tooltip = false;
                     cx.notify();
@@ -281,6 +290,8 @@ impl TooltipOverlay {
             || self.show_task.is_some()
             || self.hide_task.is_some();
         self.content = None;
+        self.closing = false;
+        self.presence = Default::default();
         self.previous_bounds = None;
         self.had_recent_tooltip = false;
         self.is_switching = false;
@@ -300,6 +311,24 @@ impl Default for TooltipOverlay {
 
 impl Render for TooltipOverlay {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        use crate::motion::{SurfaceStyles, SurfaceOffset};
+        let motion = cx.try_global::<SurfaceStyles>().and_then(|styles| styles.tooltip.clone());
+        let pose = motion.as_ref().map(|motion| {
+            let (pose, running) = self.presence.sample(
+                !self.closing && self.content.is_some(), motion, crate::surface_motion(cx),
+                cx.background_executor().now(),
+            );
+            if running {
+                window.request_animation_frame();
+            } else if self.closing {
+                self.content = None;
+            }
+            pose
+        });
+        if motion.is_none() {
+            self.presence = Default::default();
+            if self.closing { self.content = None; }
+        }
         let Some(content) = self.content.as_ref() else {
             return div().into_any_element();
         };
@@ -314,7 +343,11 @@ impl Render for TooltipOverlay {
                 epoch: self.animation_epoch,
             },
         };
-        let rendered = (self.renderer)(view, transition, window, cx);
+        let rendered = if let Some(pose) = pose {
+            SurfaceOffset::new(div().opacity(pose.opacity).child(view), pose.offset).into_any_element()
+        } else {
+            (self.renderer)(view, transition, window, cx)
+        };
         deferred(
             TooltipPositioner::new(content.trigger_bounds)
                 .when_some(content.preferred_placement, |this, placement| {

@@ -3,6 +3,7 @@
 //! and owns the trusted chrome (approval dialogs, safe mode). Never blocks on JS: trees arrive
 //! asynchronously through the UI bridge and are cached.
 pub mod interact;
+mod motion;
 mod canvas;
 mod controls;
 mod editor;
@@ -109,7 +110,8 @@ pub struct Shell {
     diffs: HashMap<String, (Entity<DiffState>, Instant)>,
     terminals: HashMap<String, Entity<TerminalView>>,
     scrolls: HashMap<String, transcript_scroll::TranscriptScroll>,
-    toasts: Vec<(String, String, Instant)>,
+    toasts: Vec<motion::Toast>,
+    motion: motion::Motion,
     modals: Vec<(String, String, Value)>,
     control_style: Value,
     in_title_bar: bool,
@@ -149,16 +151,15 @@ impl Shell {
             }
         })
         .detach();
+        #[cfg(target_os = "windows")]
+        cx.observe_window_activation(window, |_, window, cx| {
+            if window.is_window_active() { gpui_kit::base::apply_system_reduce_motion(cx); }
+        }).detach();
         // Toast expiry / periodic refresh.
         cx.spawn(async move |this, cx| loop {
             cx.background_executor().timer(Duration::from_millis(1000)).await;
             if this.update(cx, |this, cx| {
-                let before = this.toasts.len();
-                let ms = theme::chrome(cx)["toasts"]["durationMs"].as_u64().unwrap_or(8000).clamp(1000, 120_000);
-                this.toasts.retain(|t| t.2.elapsed() < Duration::from_millis(ms));
-                if before != this.toasts.len() {
-                    cx.notify();
-                }
+                if !this.toasts.is_empty() { cx.notify(); }
             }).is_err() {
                 break;
             }
@@ -192,6 +193,7 @@ impl Shell {
             terminals: HashMap::new(),
             scrolls: HashMap::new(),
             toasts: Vec::new(),
+            motion: Default::default(),
             modals: Vec::new(),
             control_style: Value::Null,
             in_title_bar: false,
@@ -251,11 +253,7 @@ impl Shell {
                 .detach();
             }
             UiMsg::Toast { level, text } => {
-                self.toasts.push((level, text, Instant::now()));
-                let max = theme::chrome(cx)["toasts"]["max"].as_u64().unwrap_or(5).clamp(1, 20) as usize;
-                while self.toasts.len() > max {
-                    self.toasts.remove(0);
-                }
+                self.toasts.push(motion::Toast::new(level, text));
                 cx.notify();
             }
             UiMsg::OpenUrl(url) => cx.open_url(&url),
@@ -559,7 +557,7 @@ impl Shell {
         let b = |k: &str| n.get(k).and_then(|v| v.as_bool()).unwrap_or(false);
         let theme_muted = cx.theme().muted_foreground;
         match ty {
-            "theme" => { self.control_style = n["controls"].clone(); images::application_icon(cx, &n["applicationIcon"]); theme::configure(cx, n, &self.kernel.cfg.data_dir); div().into_any_element() }
+            "theme" => { if self.kernel.root_module().as_deref() == Some(module) { self.motion.theme(&n["motion"], cx); } self.control_style = n["controls"].clone(); images::application_icon(cx, &n["applicationIcon"]); theme::configure(cx, n, &self.kernel.cfg.data_dir); div().into_any_element() }
             "row" | "column" => {
                 let mut d = if ty == "row" { h_flex() } else { v_flex() };
                 if ty == "row" {
@@ -747,7 +745,8 @@ impl Shell {
                     let dispatch = tab_strip::MenuDispatch { kernel: k, module: m, inputs, key, row: None };
                     return wrapper.child(button).context_menu(move |menu, window, cx| {
                         dispatch.build(menu, &menu_items, window, cx)
-                    }).into_any_element();
+                    }).when_some(motion::transition(&n["menuTransition"]), |menu, transition| menu.surface_transition(transition))
+                        .into_any_element();
                 }
                 let double_action = s("doubleClickAction");
                 let button = btn.on_click(move |event, _, cx| {
@@ -787,7 +786,14 @@ impl Shell {
                 let node = n.clone();
                 let width = n["menuWidth"].as_f64().unwrap_or(440.0).clamp(200.0, 1000.0) as f32;
                 let max_height = n["maxHeight"].as_f64().unwrap_or(520.0).clamp(100.0, 1000.0) as f32;
+                let exit_node = n.clone();
                 gpui_component::popover::Popover::new(sid(&module, &path)).open(b("open"))
+                    .when_some(motion::transition(&n["transition"]), |popup, transition| popup.surface_transition(transition))
+                    .exit_content(move |window, cx| {
+                        v_flex().w(px(width.min((f32::from(window.viewport_size().width) - 24.0).max(160.0))))
+                            .max_h(px(max_height)).gap_2().overflow_hidden()
+                            .children(motion::passive_children(&exit_node, cx)).into_any_element()
+                    })
                     .trigger(trigger)
                     .on_open_change(move |open, _, cx| Self::fire(&k, &m, &inputs, &action, &key2, None, json!(*open), cx))
                     .content(move |_, window, cx| {
@@ -993,6 +999,7 @@ impl Shell {
                 let el = if disabled {
                     btn.into_any_element()
                 } else {
+                    let exit_options = options.clone();
                     btn.dropdown_menu(move |mut menu, _, _| {
                         for (v, l, dis) in options.iter().cloned() {
                             let k = k.clone();
@@ -1007,6 +1014,8 @@ impl Shell {
                         }
                         menu
                     })
+                    .when_some(motion::transition(&n["transition"]), |menu, transition| menu.surface_transition(transition))
+                    .exit_content(move |_, cx| motion::passive_menu(exit_options.iter().map(|(_, label, _)| label.as_str()), cx))
                     .into_any_element()
                 };
                 self.apply_base(div(), n, cx).child(el).into_any_element()
@@ -1045,6 +1054,10 @@ impl Shell {
                         .tooltip(s("tooltip"))
                         .on_change(move |v, _, cx| Self::fire(&k, &m, &inputs, &action, &key2, None, json!(*v), cx)))
                     .into_any_element()
+            }
+            "popover" if n["transition"].is_object() => {
+                self.queue_popover(module, &path, n, window, cx);
+                div().into_any_element()
             }
             "popover" => {
                 let kids = self.children(module, n, &path, depth, window, cx);
@@ -1790,6 +1803,7 @@ impl Shell {
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.modals.clear();
+        self.motion.begin();
         self.begin_frame();
         self.rendered_editor_hovers.clear();
         let root = self.kernel.root_module();
@@ -1814,19 +1828,8 @@ impl Render for Shell {
         let approvals = self.render_approvals(window, cx);
         let security_indicator = self.auto_approve_indicator(cx);
         let security_confirmation = self.security_confirmation(cx);
-        let chrome = theme::chrome(cx);
-        let toast_w = chrome["toasts"]["width"].as_f64().unwrap_or(420.0).clamp(160.0, 1200.0) as f32;
-        let mut toasts = v_flex().absolute().gap_1().w(px(toast_w));
-        toasts = match chrome["toasts"]["position"].as_str() {
-            Some("top-right") => toasts.top(px(44.0)).right(px(12.0)),
-            Some("top-left") => toasts.top(px(44.0)).left(px(12.0)),
-            Some("bottom-left") => toasts.bottom(px(36.0)).left(px(12.0)),
-            _ => toasts.bottom(px(36.0)).right(px(12.0)),
-        };
-        for (level, text, _) in &self.toasts {
-            let c = match level.as_str() { "error" => cx.theme().danger, "warn" => cx.theme().warning, _ => cx.theme().info };
-            toasts = toasts.child(div().p_2().rounded(px(6.0)).text_xs().bg(cx.theme().background).border_1().border_color(c).text_color(c).child(text.clone()));
-        }
+        let toasts = self.render_toasts(window, cx);
+        let popovers = self.render_popovers(window, cx);
         let _ = &self.submit_queue;
         div().size_full().relative().flex().flex_col().overflow_hidden().bg(cx.theme().background).text_color(cx.theme().foreground).font_family(cx.theme().font_family.clone()).font_weight(theme::font_weight(cx))
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
@@ -1839,6 +1842,7 @@ impl Render for Shell {
             .child(div().flex_1().min_h_0().min_w_0().overflow_hidden().flex().flex_col().child(body))
             .children(float_els)
             .children(modal_els)
+            .children(popovers)
             .child(toasts)
             .children(approvals)
             .children(security_confirmation)

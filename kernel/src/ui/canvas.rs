@@ -246,7 +246,7 @@ impl Shell {
                 reg.borrow_mut().insert(id_paint, b);
                 b
             },
-            move |_, b, window, _| {
+            move |_, b, window, cx| {
                 if grid >= 8.0 {
                     let (w, h) = (px_f(b.size.width), px_f(b.size.height));
                     let mut g = PathBuilder::stroke(px(1.0));
@@ -270,7 +270,7 @@ impl Shell {
                     paint_curve(c, b.origin, window);
                 }
                 // Active connections animate while they are shown (staggered so parallel ones differ).
-                if curves.iter().any(|c| c.spark.is_some()) {
+                if !cx.reduce_motion() && curves.iter().any(|c| c.spark.is_some()) {
                     let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
                     for (i, c) in curves.iter().enumerate() {
                         if let Some(color) = c.spark {

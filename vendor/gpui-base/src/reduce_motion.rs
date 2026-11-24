@@ -21,12 +21,9 @@
 //!   D-Bus, so the reading lands a moment after `init` returns, and Base keeps
 //!   following the portal's change signal for the life of the application.
 //!
-//! An application owns the flag once it sets it. Base writes the
-//! flag only while it still holds what Base last wrote (or GPUI's initial
-//! `false`), so an application that calls [`App::set_reduce_motion`] after
-//! `init` is never overridden by a later reading, and one that wants to follow
-//! the system again calls [`apply_system_reduce_motion`].
-//!
+//! An application can explicitly select its motion mode. The last system
+//! reading is retained while an override is active.
+
 //! Under GPUI's test scheduler the platform is never consulted, whichever
 //! crate's tests are running: a probe that answers from another thread would
 //! break the scheduler's determinism, and a test wanting reduced motion sets
@@ -40,6 +37,8 @@ use gpui::{App, Global};
 struct SystemReduceMotion {
     applied: Option<bool>,
     following: bool,
+    raw: Option<bool>,
+    requested: Option<MotionMode>,
 }
 
 impl Global for SystemReduceMotion {}
@@ -49,19 +48,7 @@ pub(crate) fn init(cx: &mut App) {
     apply_system_reduce_motion(cx);
 }
 
-/// Reads the operating system's reduced-motion preference into
-/// [`App::set_reduce_motion`].
-///
-/// `gpui_base::init` calls this once. Call it again to re-read the preference
-/// on a platform Base does not follow live — macOS and Windows post no
-/// notification Base can subscribe to without a window, so a change made
-/// while the application runs reaches it only through this call.
-///
-/// The application wins over the system: when the flag no longer holds what
-/// Base last wrote, the application set it, and this call leaves it alone.
-/// Where the platform cannot say (wasm, an unsupported desktop, a Linux
-/// session without the portal) the flag is left as it is, and under GPUI's
-/// test scheduler the platform is not asked at all.
+/// Refresh the system preference and ensure the platform listener is installed.
 pub fn apply_system_reduce_motion(cx: &mut App) {
     if is_test_scheduler(cx) {
         return;
@@ -71,6 +58,35 @@ pub fn apply_system_reduce_motion(cx: &mut App) {
     if !state.following {
         state.following = true;
         platform::follow(cx);
+    }
+}
+
+/// The app preference. Off and Reduced both stop legacy decorative animations.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum MotionMode {
+    System,
+    On,
+    Off,
+}
+
+pub fn set_motion_mode(mode: MotionMode, cx: &mut App) {
+    if cx.default_global::<SystemReduceMotion>().requested == Some(mode) {
+        return;
+    }
+    cx.default_global::<SystemReduceMotion>().requested = Some(mode);
+    apply_preference(None, cx);
+    cx.refresh_windows();
+}
+
+pub fn surface_motion(cx: &App) -> crate::motion::SurfaceMotion {
+    use crate::motion::SurfaceMotion;
+    match cx
+        .try_global::<SystemReduceMotion>()
+        .and_then(|state| state.requested)
+    {
+        Some(MotionMode::Off) => SurfaceMotion::Off,
+        _ if cx.reduce_motion() => SurfaceMotion::Reduced,
+        _ => SurfaceMotion::Full,
     }
 }
 
@@ -87,33 +103,63 @@ fn is_test_scheduler(cx: &App) -> bool {
 /// Writes one reading of the system preference into the flag, unless the
 /// application has taken the flag over since the reading Base last applied.
 fn apply_preference(preference: Option<bool>, cx: &mut App) {
-    let Some(reduce) = preference else {
-        return;
-    };
-    let applied = cx
-        .try_global::<SystemReduceMotion>()
-        .and_then(|state| state.applied);
-    if cx.reduce_motion() != applied.unwrap_or(false) {
-        return;
+    let state = cx.default_global::<SystemReduceMotion>();
+    if let Some(preference) = preference {
+        state.raw = Some(preference);
     }
+    let (raw, requested, applied) = (state.raw, state.requested, state.applied);
+    let reduce = match requested {
+        Some(MotionMode::On) => false,
+        Some(MotionMode::Off) => true,
+        Some(MotionMode::System) => raw.unwrap_or(false),
+        None if preference.is_some() && cx.reduce_motion() == applied.unwrap_or(false) => {
+            preference.unwrap_or(false)
+        }
+        None => return,
+    };
     cx.set_reduce_motion(reduce);
     cx.default_global::<SystemReduceMotion>().applied = Some(reduce);
 }
 
 #[cfg(target_os = "macos")]
 mod platform {
+    use futures::StreamExt as _;
     use gpui::App;
-    use objc2_app_kit::NSWorkspace;
+    use objc2_app_kit::{NSWorkspace, NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification};
+    use objc2_foundation::NSNotification;
 
     pub(super) fn read() -> Option<bool> {
         Some(NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceMotion())
     }
 
-    pub(super) fn follow(_cx: &mut App) {}
+    pub(super) fn follow(cx: &mut App) {
+        let center = NSWorkspace::sharedWorkspace().notificationCenter();
+        let (send, mut signals) = futures::channel::mpsc::unbounded();
+        let callback = block2::RcBlock::new(move |_: std::ptr::NonNull<NSNotification>| {
+            let _ = send.unbounded_send(());
+        });
+        // The notification center retains the block and may invoke it off the UI thread.
+        let observer = unsafe {
+            center.addObserverForName_object_queue_usingBlock(
+                Some(NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification),
+                None,
+                None,
+                &callback,
+            )
+        };
+        cx.spawn(async move |cx| {
+            while signals.next().await.is_some() {
+                cx.update(|cx| super::apply_preference(read(), cx));
+            }
+            unsafe { center.removeObserver((&*observer).as_ref()) };
+        })
+        .detach();
+    }
 }
 
 #[cfg(target_os = "windows")]
 mod platform {
+    use futures::StreamExt as _;
     use gpui::App;
     use windows::Win32::{
         Foundation::BOOL,
@@ -121,6 +167,7 @@ mod platform {
             SPI_GETCLIENTAREAANIMATION, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SystemParametersInfoW,
         },
     };
+    use windows::{Foundation::TypedEventHandler, UI::ViewManagement::UISettings};
 
     pub(super) fn read() -> Option<bool> {
         let mut animations_enabled = BOOL(0);
@@ -138,7 +185,25 @@ mod platform {
         Some(!animations_enabled.as_bool())
     }
 
-    pub(super) fn follow(_cx: &mut App) {}
+    pub(super) fn follow(cx: &mut App) {
+        let Ok(settings) = UISettings::new() else {
+            return;
+        };
+        let (send, mut signals) = futures::channel::mpsc::unbounded();
+        let Ok(token) = settings.AnimationsEnabledChanged(&TypedEventHandler::new(move |_, _| {
+            let _ = send.unbounded_send(());
+            Ok(())
+        })) else {
+            return;
+        };
+        cx.spawn(async move |cx| {
+            while signals.next().await.is_some() {
+                cx.update(|cx| super::apply_preference(read(), cx));
+            }
+            let _ = settings.RemoveAnimationsEnabledChanged(token);
+        })
+        .detach();
+    }
 }
 
 #[cfg(target_os = "linux")]

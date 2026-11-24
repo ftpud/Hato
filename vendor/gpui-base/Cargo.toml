@@ -231,6 +231,9 @@ features = [
 ]
 default-features = false
 
+[target.'cfg(target_os = "macos")'.dependencies.block2]
+version = "0.6"
+
 [target.'cfg(target_os = "macos")'.dependencies.objc2]
 version = "0.6"
 
@@ -247,6 +250,9 @@ features = [
 version = "0.3"
 features = [
     "NSGeometry",
+    "NSNotification",
+    "NSOperation",
+    "block2",
     "NSString",
 ]
 
@@ -261,6 +267,8 @@ features = [
     "Wdk_System_SystemServices",
     "Win32_Foundation",
     "Win32_UI_WindowsAndMessaging",
+    "UI_ViewManagement",
+    "Foundation",
 ]
 
 [lints.clippy]

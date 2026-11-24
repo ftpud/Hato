@@ -139,12 +139,27 @@ impl Shell {
     pub(super) fn render_split(&mut self, module: &str, n: &Value, path: &str, key: &str, depth: usize, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let horizontal = n.get("direction").and_then(|d| d.as_str()) != Some("vertical");
         let id = format!("{module}::{path}");
-        let kids = self.children(module, n, path, depth, window, cx);
-        let count = kids.len().max(1);
+        let nodes: &[Value] = n["children"].as_array().map(Vec::as_slice).unwrap_or_default();
+        let nodes = &nodes[..nodes.len().min(2000)];
+        let count = nodes.len().max(1);
+        let reveal_enabled = self.motion.dock_enabled() && n["reveal"].is_object();
+        let mut reveals: Vec<_> = if reveal_enabled {
+            nodes.iter().map(|child| {
+                let key = child["key"].as_str()?;
+                super::motion::reveal(&n["reveal"][key], sid(module, &format!("{path}/{key}")), window, cx)
+            }).collect()
+        } else {
+            Vec::new()
+        };
         let mut node_sizes: Vec<f32> = n.get("sizes").and_then(|s| s.as_array()).map(|a| a.iter().filter_map(|x| x.as_f64().map(|v| v as f32)).collect()).unwrap_or_default();
         node_sizes.resize(count, 1.0 / count as f32);
         let mut fixed: Vec<Option<f32>> = n.get("fixed").and_then(|s| s.as_array()).map(|a| a.iter().map(|x| x.as_f64().map(|v| v as f32)).collect()).unwrap_or_default();
         fixed.resize(count, None);
+        for (index, reveal) in reveals.iter().enumerate() {
+            if let Some(allocation) = reveal.as_ref().and_then(|reveal| reveal.allocation) {
+                fixed[index] = Some(allocation);
+            }
+        }
         let mut collapsible: Vec<bool> = n.get("collapsible").and_then(|s| s.as_array()).map(|a| a.iter().map(|x| x.as_bool().unwrap_or(false)).collect()).unwrap_or_default();
         collapsible.resize(count, false);
         let sizes = match self.lay.split_overrides.get(&id) {
@@ -169,8 +184,11 @@ impl Shell {
         d = self.apply_base(d, n, cx).flex_1().size_full().min_w_0().min_h_0().overflow_hidden().relative().items_stretch();
         d = d.child(capture(&self.lay.bounds, id.clone()));
         let mut previous_visible: Option<usize> = None;
-        for (i, k) in kids.into_iter().enumerate() {
-            if matches!(fixed[i], Some(size) if size <= 0.0) { continue; }
+        for (i, child) in nodes.iter().enumerate() {
+            let reveal = reveals.get_mut(i).and_then(Option::take);
+            let no_extent = matches!(fixed[i], Some(size) if size <= 0.0);
+            if no_extent { continue; }
+            let k = self.node(module, child, path, depth, window, cx);
             if let Some(previous) = previous_visible {
                 let can = resizable && fixed[previous].is_none() && fixed[i].is_none();
                 let line = if horizontal { div().w(px(1.0)).h_full().bg(border) } else { div().h(px(1.0)).w_full().bg(border) };
@@ -202,7 +220,37 @@ impl Shell {
                     if horizontal { c.h_full() } else { c.w_full() }
                 }
             };
-            d = d.child(cell.child(div().size_full().min_w_0().min_h_0().overflow_hidden().flex().flex_col().child(k)));
+            let content = div().size_full().min_w_0().min_h_0().overflow_hidden().flex().flex_col().child(k);
+            d = if let Some(reveal) = reveal {
+                let mut content = content.opacity(reveal.opacity)
+                    .when(reveal.visible, |content| content.track_focus(&reveal.focus));
+                if let Some(measured) = reveal.measure {
+                    cell = cell.relative().child(canvas(move |bounds, _, _| {
+                        let extent = px_f(if horizontal { bounds.size.width } else { bounds.size.height });
+                        if extent.is_finite() && extent > 0. {
+                            measured.set(Some(extent));
+                        }
+                    }, |_, _, _, _| {}).absolute().inset_0());
+                }
+                if let Some(extent) = reveal.slide {
+                    // Keep the pane laid out at its open size and pin it to the edge facing the
+                    // workspace, so the shrinking/growing cell slides it in from its dock edge.
+                    content = content.absolute();
+                    content = if horizontal {
+                        let c = content.top_0().bottom_0().w(px(extent));
+                        if reveal.end { c.left_0() } else { c.right_0() }
+                    } else {
+                        let c = content.left_0().right_0().h(px(extent));
+                        if reveal.end { c.top_0() } else { c.bottom_0() }
+                    };
+                    cell = cell.relative();
+                }
+                // A closing pane keeps its live visuals but no longer takes pointer input.
+                let shield = (!reveal.visible).then(|| div().absolute().inset_0().occlude());
+                d.child(cell.relative().child(content).children(shield))
+            } else {
+                d.child(cell.child(content))
+            };
         }
         d.into_any_element()
     }
@@ -463,8 +511,10 @@ impl Shell {
     pub(super) fn render_window_body(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         match self.lay.window_nodes.get(id).cloned() {
             Some((module, path, n)) => {
+                self.motion.begin();
                 let kids = self.children(&module, &n, &path, 1, window, cx);
-                v_flex().size_full().min_h_0().overflow_hidden().children(kids).into_any_element()
+                let popovers = self.render_popovers(window, cx);
+                v_flex().relative().size_full().min_h_0().overflow_hidden().children(kids).children(popovers).into_any_element()
             }
             None => div().p_3().text_sm().child("This panel was re-docked.").into_any_element(),
         }
@@ -483,6 +533,9 @@ impl Shell {
         // content (Detached) needs to read the Shell.
         let shell = cx.entity();
         let handles: Vec<(String, AnyWindowHandle)> = to_close.iter().filter_map(|id| self.lay.windows.remove(id).map(|h| (id.clone(), h))).collect();
+        for (_, handle) in &handles {
+            self.motion.forget_window(handle.window_id());
+        }
         let specs: Vec<(String, String, Value)> = to_open.iter().filter_map(|id| self.lay.window_nodes.get(id).map(|(m, _, n)| (id.clone(), m.clone(), n.clone()))).collect();
         let kernel = self.kernel.clone();
         cx.defer(move |cx| {
@@ -521,6 +574,7 @@ fn open_detached(shell: Entity<Shell>, _kernel: Arc<Kernel>, id: String, module:
                 let (id4, m2, k2, a2) = (id3.clone(), m.clone(), k.clone(), a.clone());
                 sh.update(cx, |this, cx| {
                     this.lay.windows.remove(&id4);
+                    this.motion.forget_window(window.window_handle().window_id());
                     this.lay.closed_by_user.insert(id4.clone());
                     if let Some(a) = a2 {
                         let inputs = this.module_inputs(&m2);
@@ -530,11 +584,17 @@ fn open_detached(shell: Entity<Shell>, _kernel: Arc<Kernel>, id: String, module:
                 });
                 true
             });
-            cx.new(|cx| Detached::new(window_shell.clone(), id2.clone(), cx))
+            cx.new(|cx| {
+                #[cfg(target_os = "windows")]
+                cx.observe_window_activation(window, |_, window, cx| {
+                    if window.is_window_active() { gpui_kit::base::apply_system_reduce_motion(cx); }
+                }).detach();
+                Detached::new(window_shell.clone(), id2.clone(), cx)
+            })
         });
         match r {
             Ok((handle, _)) => shell.update(cx, |this, _| { this.lay.windows.insert(id, handle); }),
-            Err(e) => shell.update(cx, |this, cx| { this.toasts.push(("error".into(), format!("cannot open window: {e}"), Instant::now())); cx.notify(); }),
+            Err(e) => shell.update(cx, |this, cx| { this.toasts.push(super::motion::Toast::new("error".into(), format!("cannot open window: {e}"))); cx.notify(); }),
         }
     }
 }

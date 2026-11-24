@@ -8,8 +8,10 @@ use gpui::{
     FocusHandle, Focusable, GlobalElementId, Hitbox, HitboxBehavior, InspectorElementId,
     InteractiveElement, IntoElement, LayoutId, LongPressEvent, MouseButton, MouseDownEvent,
     ParentElement, Pixels, Point, Position, Style, StyleRefinement, Styled, Subscription,
-    TouchPhase, Window, anchored, deferred, div, px,
+    TouchPhase, Window, anchored, deferred, div, px, prelude::FluentBuilder as _,
 };
+
+use gpui_base::motion::{SurfaceOffset, SurfacePose, SurfacePresence, SurfaceStyles, SurfaceTransition};
 
 use crate::{input::AnyInputState, menu::PopupMenu, root::WindowState};
 
@@ -50,6 +52,7 @@ pub struct ContextMenu<E: ParentElement + Styled + Sized> {
     // This is not in use, just for style refinement forwarding.
     _ignore_style: StyleRefinement,
     anchor: Anchor,
+    motion: Option<SurfaceTransition>,
 }
 
 impl<E: ParentElement + Styled> ContextMenu<E> {
@@ -60,6 +63,7 @@ impl<E: ParentElement + Styled> ContextMenu<E> {
             element: Some(element),
             menu: None,
             anchor: Anchor::TopLeft,
+            motion: None,
             _ignore_style: StyleRefinement::default(),
         }
     }
@@ -71,6 +75,11 @@ impl<E: ParentElement + Styled> ContextMenu<E> {
         F: Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static,
     {
         self.menu = Some(Rc::new(builder));
+        self
+    }
+
+    pub fn surface_transition(mut self, transition: SurfaceTransition) -> Self {
+        self.motion = Some(transition);
         self
     }
 
@@ -124,6 +133,7 @@ struct ContextMenuSharedState {
     /// after the input has left the focused-input registry.
     selection_input: Option<AnyInputState>,
     open: bool,
+    presence: SurfacePresence,
     position: Point<Pixels>,
     /// Registered on this element's dispatch node every frame and never
     /// focused, so the menu can resolve its shortcut hints against the
@@ -155,6 +165,7 @@ impl Default for ContextMenuState {
                 menu_view: None,
                 selection_input: None,
                 open: false,
+                presence: SurfacePresence::default(),
                 position: Default::default(),
                 trigger_focus_handle: None,
                 _subscription: None,
@@ -174,24 +185,29 @@ struct DeferredMenu {
     position: Point<Pixels>,
     anchor: Anchor,
     menu: Option<AnyElement>,
+    pose: SurfacePose,
+    live: bool,
 }
 
 impl DeferredMenu {
-    fn build_menu(&self, window: &mut Window) -> AnyElement {
+    fn build_menu(&self, window: &mut Window, cx: &App) -> AnyElement {
+        let content = if self.live {
+            self.menu_view.clone().into_any_element()
+        } else {
+            self.menu_view.read(cx).exit_visual(cx)
+        };
         deferred(
             anchored().child(
                 div()
                     .w(window.bounds().size.width)
                     .h(window.bounds().size.height)
-                    .on_scroll(|_, _, cx| {
-                        cx.stop_propagation();
-                    })
+                    .when(self.live, |root| root.on_scroll(|_, _, cx| cx.stop_propagation()))
                     .child(
                         anchored()
                             .position(self.position)
                             .snap_to_window_with_margin(px(8.))
                             .anchor(self.anchor)
-                            .child(self.menu_view.clone()),
+                            .child(SurfaceOffset::new(div().opacity(self.pose.opacity).child(content), self.pose.offset)),
                     ),
             ),
         )
@@ -248,7 +264,7 @@ impl Element for DeferredMenu {
         if !self.draws.get() {
             return;
         }
-        let mut menu = self.build_menu(window);
+        let mut menu = self.build_menu(window, cx);
         menu.prepaint_as_root(bounds.origin, window.viewport_size().into(), window, cx);
         self.menu = Some(menu);
     }
@@ -295,9 +311,20 @@ impl<E: ParentElement + Styled + IntoElement + 'static> Element for ContextMenu<
             window,
             cx,
             |this, state: &mut ContextMenuState, window, cx| {
-                let (position, open) = {
-                    let shared_state = state.shared_state.borrow();
-                    (shared_state.position, shared_state.open)
+                let (position, open, pose, active) = {
+                    let mut shared_state = state.shared_state.borrow_mut();
+                    let open = shared_state.open && shared_state.menu_view.as_ref().is_some_and(|menu| !menu.read(cx).is_empty());
+                    let fallback = cx.try_global::<SurfaceStyles>().and_then(|styles| styles.menu.as_ref());
+                    let transition = this.motion.as_ref().or(fallback);
+                    let (pose, active) = transition.map(|transition| shared_state.presence.sample(
+                        open, transition, gpui_base::surface_motion(cx), cx.background_executor().now(),
+                    )).unwrap_or_default();
+                    if active {
+                        window.request_animation_frame();
+                    } else if !shared_state.open {
+                        shared_state.menu_view = None;
+                    }
+                    (shared_state.position, open, pose, active)
                 };
                 state
                     .shared_state
@@ -307,13 +334,15 @@ impl<E: ParentElement + Styled + IntoElement + 'static> Element for ContextMenu<
                 let menu_view = state.shared_state.borrow().menu_view.clone();
                 let draws_menu = Rc::new(Cell::new(false));
                 let menu_element = menu_view
-                    .filter(|menu| open && !menu.read(cx).is_empty())
+                    .filter(|_| open || active)
                     .map(|menu_view| DeferredMenu {
                         draws: draws_menu.clone(),
                         menu_view,
                         position,
                         anchor,
                         menu: None,
+                        pose,
+                        live: open,
                     });
 
                 let mut element = this

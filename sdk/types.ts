@@ -351,16 +351,50 @@ export interface CanvasEdge { key: string; from: string; to: string; fromSide?: 
 export type MenuItem = { separator: true } | { text: string; action: string; value?: Json; disabled?: boolean; checked?: boolean; /** Copied natively when the menu item is chosen. */ copyText?: string } | { text: string; children: MenuItem[] };
 /** Window-relative logical pixels for positioning an anchored popover. */
 export interface WindowAnchor { x: number; y: number }
+/** System follows the desktop preference. On enables full motion. Off settles immediately. */
+export type UiMotionMode = "system" | "on" | "off";
+
+/** Cubic Bézier control points, in x1, y1, x2, y2 order. X coordinates must be in [0, 1]. */
+export type UiMotionEasing = readonly [number, number, number, number];
+
+/** Resolved timing in milliseconds. Zero settles on the current frame. */
+export interface UiMotionTiming { durationMs: number; easing: UiMotionEasing }
+
+/** Enter starts at this pose, and exit ends here. The visible pose is opacity 1, offset 0, scale 1. */
+export interface UiMotionLeg extends UiMotionTiming {
+  opacity?: number;
+  /** Offset in window axes, in logical pixels. Reduced motion drops the offset. */
+  offsetPx?: readonly [number, number];
+  /** Requested surface scale. The initial native surfaces support opacity and offset. */
+  scale?: number;
+}
+
+/** Keyed surface motion. Omit a leg to mount or unmount immediately on that leg. */
+export interface UiTransition { enter?: UiMotionLeg; exit?: UiMotionLeg }
+
+/** Window chrome motion supplied by the root UI module. Settings and presets can change live. */
+export interface UiMotion {
+  mode: UiMotionMode;
+  /** Fallback transition for native menus and dropdowns. Individual descriptors may override it. */
+  menu?: UiTransition;
+  /** Transition for managed tooltips. */
+  tooltip?: UiTransition;
+  /** Timing for native button hover and press backgrounds. */
+  interaction?: UiMotionTiming;
+  /** Opt-in development prototype for clipped split-region motion. Defaults to false. */
+  experimentalDockReveal?: boolean;
+}
+
 export type UiNode =
   /** Window-wide theme (normally from the root plugin). `mode` is the appearance preference;
    *  `terminal` overrides the 16 ANSI colors; `chrome` configures kernel chrome such as toasts. */
-  | (Base & { type: "theme"; controls?: { listRowHeight?: number; stripedRows?: boolean; rowDividers?: boolean }; /** Palette `textSelection` independently styles selected text; defaults to `selection`. */ palette: { light: Record<string, string>; dark: Record<string, string> }; mode?: "light" | "dark";
+  | (Base & { type: "theme"; motion?: UiMotion; controls?: { listRowHeight?: number; stripedRows?: boolean; rowDividers?: boolean }; /** Palette `textSelection` independently styles selected text; defaults to `selection`. */ palette: { light: Record<string, string>; dark: Record<string, string> }; mode?: "light" | "dark";
       /** Runtime application icon (macOS Dock and app switcher), including unbundled source launches. */ applicationIcon?: ImageAttachment;
       typography?: { fontFamily?: string; monoFontFamily?: string; fontSize?: number; monoFontSize?: number; fontWeight?: number };
       terminal?: { light?: string[]; dark?: string[] };
       /** Syntax color scheme per appearance (see sdk/syntax-schemes.ts); omit for built-in colors. */
       syntax?: { light?: SyntaxPalette; dark?: SyntaxPalette };
-      chrome?: { toasts?: { position?: "bottom-right" | "bottom-left" | "top-right" | "top-left"; width?: number; durationMs?: number; max?: number } } })
+      chrome?: { toasts?: { position?: "bottom-right" | "bottom-left" | "top-right" | "top-left"; width?: number; durationMs?: number; max?: number; transition?: UiTransition } } })
   | (Base & { type: "titleBar"; children: UiNode[] })
   | (Base & { type: "row" | "column"; children: UiNode[]; /** Embedded wallpaper, cover-cropped behind children. */ backgroundImage?: ImageAttachment;
       /** Applies only to the wallpaper; foreground children retain full opacity. Defaults: opacity 1, scale 1. */
@@ -375,6 +409,12 @@ export type UiNode =
   | (Base & { type: "split"; direction: "horizontal" | "vertical"; sizes?: number[]; children: UiNode[];
       /** Fixed size in px per child (null = flexible). */ fixed?: (number | null)[]; minSize?: number; resizable?: boolean;
       /** Fired once when a divider drag ends: value {sizes}. */ resizeAction?: string;
+      /** Experimental motion keyed by each direct child’s stable key. Keep the child and descriptor
+       *  present while closed. Use ordinary `sizes` and `fixed` entries while open and `fixed: 0`
+       *  for the closed child. Native holds the last measured open viewport during a transition,
+       *  then restores normal split sizing. `extentPx` is an optional fallback for a child that
+       *  has never been measured. Requires `theme.motion.experimentalDockReveal`. */
+      reveal?: Record<string, { visible: boolean; extentPx?: number; edge: "start" | "end"; transition: UiTransition }>;
       /** Fired when a divider is dragged past a collapsible child's minimum: value {index}. */ collapseAction?: string; collapsible?: boolean[] })
   /** Native drag source. A click (no movement) fires clickAction with `payload`. */
   | (Base & { type: "dragHandle"; payload: Json; label?: string; clickAction?: string; children?: UiNode[] })
@@ -401,13 +441,13 @@ export type UiNode =
     }[]; active: string; action: string; doubleClickAction?: string; reorderAction?: string })
   | (Base & { type: "slot"; module: string })
   /** Button-anchored popup rendered outside clipped toolbars/panels. Escape/outside click send action=false. */
-  | (Base & { type: "dropdown"; text: string; iconSvg?: string; open: boolean; action: string; disabled?: boolean; variant?: "primary" | "ghost" | "danger" | "default";
+  | (Base & { type: "dropdown"; transition?: UiTransition; text: string; iconSvg?: string; open: boolean; action: string; disabled?: boolean; variant?: "primary" | "ghost" | "danger" | "default";
       menuWidth?: number; maxHeight?: number; children: UiNode[] })
   | (Base & { type: "label"; text: string; size?: "xs" | "sm" | "md" | "lg"; weight?: "normal" | "medium" | "semibold" | "bold"; /** "default" or any UiColor. */ color?: UiColor; mono?: boolean; wrap?: boolean; /** Let the user select and copy the text. */ selectable?: boolean })
-  | (Base & { type: "button"; text: string; /** Inline SVG drawing, bundled and hot reloaded with the module (see sdk/ui-icons.ts). */ iconSvg?: string; iconSize?: number; iconColor?: UiColor; /** Compact count overlay on the button. Empty or absent hides it. */ badge?: string; action: string; variant?: "primary" | "ghost" | "danger" | "default"; disabled?: boolean; value?: Json; small?: boolean;
+  | (Base & { type: "button"; menuTransition?: UiTransition; text: string; /** Inline SVG drawing, bundled and hot reloaded with the module (see sdk/ui-icons.ts). */ iconSvg?: string; iconSize?: number; iconColor?: UiColor; /** Compact count overlay on the button. Empty or absent hides it. */ badge?: string; action: string; variant?: "primary" | "ghost" | "danger" | "default"; disabled?: boolean; value?: Json; small?: boolean;
       /** Copied to the clipboard natively on click (no round trip); `action` may be "". */ copyText?: string; /** Secondary mouse gestures use the same value as action. */ doubleClickAction?: string; middleClickAction?: string; contextAction?: string; contextMenu?: MenuItem[] })
   | (Base & { type: "textInput"; placeholder?: string; value?: string; submitAction?: string; changeAction?: string; cancelAction?: string; autoFocus?: boolean; /** Inline SVG shown before single-line input text. */ prefixSvg?: string; pasteImageAction?: string; /** Limits for pasted pictures. */ maxFiles?: number; maxBytes?: number; secret?: boolean; multiline?: boolean; /** Fill the available height instead of using a fixed row count. */ fillHeight?: boolean; rows?: number; rowHeight?: number; disabled?: boolean })
-  | (Base & { type: "select"; options: { value: string; label: string; disabled?: boolean }[]; value: string | null; action: string; disabled?: boolean; placeholder?: string; label?: string; disabledReason?: string; /** Style of the dropdown button itself (`style` styles its wrapper). */ buttonStyle?: UiStyle })
+  | (Base & { type: "select"; transition?: UiTransition; options: { value: string; label: string; disabled?: boolean }[]; value: string | null; action: string; disabled?: boolean; placeholder?: string; label?: string; disabledReason?: string; /** Style of the dropdown button itself (`style` styles its wrapper). */ buttonStyle?: UiStyle })
   | (Base & { type: "choice"; text: string; description?: string; disabled?: boolean; selected?: boolean; action: string; value: string; /** Glyph shown when selected (default ✓). */ mark?: string })
   | (Base & { type: "switch"; label: string; checked: boolean; action: string; disabled?: boolean; /** Track color when on. */ accent?: UiColor })
   /** Native slider. `action` fires once on release with the value snapped to `step` (a number);
@@ -420,7 +460,7 @@ export type UiNode =
   | (Base & { type: "colorPicker"; value: string | null; action: string; swatches?: string[]; label?: string; disabled?: boolean })
   /** Click-outside-to-close overlay. Anchored from `top` (default 52), or upward from `bottom`
    *  (content height then, unless `heightFraction` is set). */
-  | (Base & { type: "popover"; children: UiNode[]; closeAction: string; /** Anchor in window coordinates; takes precedence over inset positioning. */ windowAnchor?: WindowAnchor; top?: number; bottom?: number; left?: number; right?: number; /** Height as a fraction of the parent (0.1–1). */ heightFraction?: number; maxHeight?: number })
+  | (Base & { type: "popover"; transition?: UiTransition; children: UiNode[]; closeAction: string; /** Anchor in window coordinates; takes precedence over inset positioning. */ windowAnchor?: WindowAnchor; top?: number; bottom?: number; left?: number; right?: number; /** Height as a fraction of the parent (0.1–1). */ heightFraction?: number; maxHeight?: number })
   | (Base & { type: "toggle"; label: string; checked: boolean; action: string; disabled?: boolean })
   | (Base & { type: "tree"; rows: TreeRow[]; selectAction: string; expandAction: string; /** Fired with the row key as the pointer enters a row, and without one when it leaves the list. */ hoverAction?: string; /** Double click or Enter activates the row. Also enables arrow-key selection. */ activateAction?: string;
       /** Fixed row height (px); omit for content height. */ rowHeight?: number;

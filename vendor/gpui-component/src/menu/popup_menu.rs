@@ -1451,6 +1451,27 @@ struct RenderOptions {
     radius: Pixels,
 }
 
+impl PopupMenu {
+    /// A display-only representation used while the dismissed menu fades.
+    pub(crate) fn exit_visual(&self, cx: &App) -> AnyElement {
+        let items = self.menu_items.iter().map(|item| match item {
+            PopupMenuItem::Separator => div().h(px(1.)).my_1().bg(cx.theme().border),
+            PopupMenuItem::Label(label) => div().px_2().py_1().child(label.clone()),
+            PopupMenuItem::Item { label, disabled, checked, .. } => div().px_2().py_1()
+                .opacity(if *disabled { 0.5 } else { 1. })
+                .child(if *checked { format!("✓ {label}") } else { label.to_string() }),
+            PopupMenuItem::Submenu { label, disabled, .. } => div().px_2().py_1()
+                .opacity(if *disabled { 0.5 } else { 1. }).child(format!("{label} ›")),
+            PopupMenuItem::ElementItem { .. } => div().h(px(24.)),
+        });
+        v_flex().p_1().min_w(rems(8.)).max_w(self.max_width()).gap_y_0p5()
+            .rounded(cx.theme().radius).bg(cx.theme().popover).text_color(cx.theme().popover_foreground)
+            .when(self.bounds.size.width > px(0.), |this| this.w(self.bounds.size.width))
+            .when(self.bounds.size.height > px(0.), |this| this.max_h(self.bounds.size.height).overflow_hidden())
+            .children(items).into_any_element()
+    }
+}
+
 impl Render for PopupMenu {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.update_submenu_menu_anchor(window);

@@ -267,6 +267,18 @@ pub(crate) trait ManagedTooltipExt:
         show_delay: Option<Duration>,
         build_tooltip: impl Fn(&mut Window, &mut App) -> AnyView + 'static,
     ) -> Self {
+        self.managed_tooltip_with_hover(preferred_placement, show_delay, build_tooltip, None)
+    }
+
+    /// GPUI allows a single `on_hover` listener per element, so callers that
+    /// also need hover state pass it here to share that listener.
+    fn managed_tooltip_with_hover(
+        self,
+        preferred_placement: Option<Placement>,
+        show_delay: Option<Duration>,
+        build_tooltip: impl Fn(&mut Window, &mut App) -> AnyView + 'static,
+        extra_hover: Option<Rc<dyn Fn(&bool, &mut Window, &mut App)>>,
+    ) -> Self {
         let build_tooltip = Rc::new(build_tooltip);
         let trigger = Rc::new(RefCell::new(TooltipTrigger::default()));
         let trigger_writer = trigger.clone();
@@ -289,6 +301,9 @@ pub(crate) trait ManagedTooltipExt:
             let trigger = trigger.clone();
             let build_tooltip = build_tooltip.clone();
             move |hovered, window, cx| {
+                if let Some(extra) = &extra_hover {
+                    extra(hovered, window, cx);
+                }
                 let trigger = trigger.borrow();
                 let Some(id) = trigger.id.as_ref() else {
                     return;

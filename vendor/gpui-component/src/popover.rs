@@ -128,6 +128,8 @@ pub struct Popover {
     mouse_button: MouseButton,
     appearance: bool,
     overlay_closable: bool,
+    motion: Option<gpui_base::motion::SurfaceTransition>,
+    exit_content: Option<Box<dyn FnOnce(&mut Window, &mut App) -> AnyElement>>,
     on_open_change: Option<Rc<dyn Fn(&bool, &mut Window, &mut App)>>,
 }
 
@@ -148,6 +150,8 @@ impl Popover {
             mouse_button: MouseButton::Left,
             appearance: true,
             overlay_closable: true,
+            motion: None,
+            exit_content: None,
             default_open: false,
             open: None,
             on_open_change: None,
@@ -202,6 +206,17 @@ impl Popover {
     /// This is only used to initialize the open state of the popover.
     ///
     /// And please note that if you use the `open` method, this value will be ignored.
+    pub fn surface_transition(mut self, transition: gpui_base::motion::SurfaceTransition) -> Self {
+        self.motion = Some(transition);
+        self
+    }
+
+    /// Presentation-only content for the close transition.
+    pub fn exit_content(mut self, content: impl FnOnce(&mut Window, &mut App) -> AnyElement + 'static) -> Self {
+        self.exit_content = Some(Box::new(content));
+        self
+    }
+
     pub fn default_open(mut self, open: bool) -> Self {
         self.default_open = open;
         self
@@ -339,6 +354,9 @@ impl RenderOnce for Popover {
         let children = self.children;
         let content = self.content;
         let trigger_style = self.trigger_style;
+        let exit_style = style.clone();
+        let transition = self.motion.or_else(|| cx.try_global::<gpui_base::motion::SurfaceStyles>()
+            .and_then(|styles| styles.menu.clone()));
 
         BasePopover::new(self.id)
             .anchor(self.anchor)
@@ -347,6 +365,11 @@ impl RenderOnce for Popover {
             .mouse_button(self.mouse_button)
             .default_open(self.default_open)
             .overlay_closable(self.overlay_closable)
+            .when_some(transition, |this, transition| this.surface_transition(transition))
+            .when_some(self.exit_content, |this, render| this.exit_content(move |window, cx| {
+                v_flex().when(appearance, |this| this.popover_style(cx).p_3()).shadow_none()
+                    .refine_style(&exit_style).child(render(window, cx)).into_any_element()
+            }))
             .content(move |state, window, cx| {
                 v_flex()
                     .id("content")

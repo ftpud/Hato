@@ -1,4 +1,4 @@
-use std::{rc::Rc, time::Duration};
+use std::{cell::Cell, rc::Rc, time::Duration};
 
 use crate::{
     ActiveTheme, Colorize as _, Disableable, Icon, Placement, RoleOverride, Selectable, Sizable,
@@ -617,6 +617,31 @@ impl InteractiveElement for Button {
     }
 }
 
+#[derive(Default)]
+struct BackgroundInteraction {
+    hovered: Cell<bool>,
+    pressed: Cell<bool>,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+struct ButtonFill(Hsla);
+
+impl gpui_base::motion::Interpolate for ButtonFill {
+    fn interpolate(&self, target: &Self, progress: f32) -> Self {
+        use gpui_base::animation::Lerp;
+        let (from, to) = (self.0, target.0);
+        // A fully transparent fill contributes no color. Keep the visible
+        // endpoint's hue throughout the fade (especially for ghost buttons).
+        Self(if from.a == 0. {
+            Hsla { a: to.a * progress, ..to }
+        } else if to.a == 0. {
+            Hsla { a: from.a * (1. - progress), ..from }
+        } else {
+            from.lerp(&to, progress)
+        })
+    }
+}
+
 impl RenderOnce for Button {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let style: ButtonVariant = self.variant;
@@ -635,6 +660,46 @@ impl RenderOnce for Button {
         let normal_style = style.normal(self.outline, cx);
         let selected_style = style.selected(self.outline, cx);
         let disabled_style = style.disabled(self.outline, cx);
+        let timing = cx.try_global::<gpui_base::motion::SurfaceStyles>()
+            .and_then(|styles| styles.interaction.clone());
+        let fills = if timing.is_some() && interactive && !selected && hover_group.is_none() {
+            let idle = match &instance_style.background {
+                Some(fill) => fill.color().and_then(|background| background.as_solid()),
+                None => normal_style.bg.as_solid(),
+            };
+            let hovered = style.hovered(self.outline, cx).bg.as_solid();
+            let pressed = style.active(self.outline, cx).bg.as_solid();
+            idle.zip(hovered).zip(pressed)
+        } else {
+            None
+        };
+        let animated_background = fills.is_some();
+        let view = window.current_view();
+        let interaction = animated_background.then(|| {
+            window.use_keyed_state((self.id.clone(), "background-interaction"), cx,
+                |_, _| Rc::new(BackgroundInteraction::default())).read(cx).clone()
+        });
+        let background = match (&interaction, fills, timing) {
+            (Some(state), Some(((idle, hovered), pressed)), Some(timing)) => {
+                let target = match (state.hovered.get(), state.pressed.get()) {
+                    (true, true) => pressed,
+                    (true, false) => hovered,
+                    (false, _) => idle,
+                };
+                let duration = if gpui_base::surface_motion(cx) == gpui_base::motion::SurfaceMotion::Full {
+                    timing.duration
+                } else {
+                    Duration::ZERO
+                };
+                gpui_base::motion::transition(
+                    (self.id.clone(), "background-color"),
+                    ButtonFill(target),
+                    gpui_base::motion::Transition::new(duration).easing(timing.easing),
+                    window, cx,
+                ).0.into()
+            }
+            _ => normal_style.bg,
+        };
         let icon_size = self.icon_size.unwrap_or_else(|| match self.size {
             Size::Size(v) => Size::Size(v * 0.75),
             _ => self.size,
@@ -737,8 +802,8 @@ impl RenderOnce for Button {
                     .when(interactive, |this| {
                         this.active(|this| {
                             let active_style = style.active(self.outline, cx);
-                            this.bg(active_style.bg)
-                                .border_color(active_style.border)
+                            let this = if animated_background { this } else { this.bg(active_style.bg) };
+                            this.border_color(active_style.border)
                                 .text_color(active_style.fg)
                         })
                         .when_some(hover_group, |this, group| {
@@ -756,12 +821,13 @@ impl RenderOnce for Button {
                     return this;
                 }
                 let hover_style = style.hovered(self.outline, cx);
-                this.bg(hover_style.bg)
-                    .border_color(hover_style.border)
+                let this = if animated_background { this } else { this.bg(hover_style.bg) };
+                this.border_color(hover_style.border)
                     .text_color(hover_style.fg)
             })
             .line_height(relative(1.25))
-            .refine_style(&instance_style);
+            .refine_style(&instance_style)
+            .when(animated_background, |this| this.bg(background));
 
         // The explicit name wins: it exists precisely for the cases where the
         // visible content is not what a listener needs to hear.
@@ -881,20 +947,47 @@ impl RenderOnce for Button {
         .when(loading, |this| {
             this.on_click(|_, _, cx| cx.stop_propagation())
         })
-        .when_some(self.on_hover.filter(|_| hoverable), |this, on_hover| {
-            this.on_hover(move |hovered, window, cx| {
-                on_hover(hovered, window, cx);
+        .when_some(interaction.clone(), |this, state| {
+            let inside = state.clone();
+            let outside = state.clone();
+            this.on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                state.hovered.set(true);
+                state.pressed.set(true);
+                cx.notify(view);
+            })
+            .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                inside.pressed.set(false);
+                cx.notify(view);
+            })
+            .on_mouse_up_out(MouseButton::Left, move |_, _, cx| {
+                outside.pressed.set(false);
+                cx.notify(view);
             })
         })
         .map(|this| {
+            // One hover listener per element: share it with the tooltip.
+            let on_hover = self.on_hover.filter(|_| hoverable);
+            let hover: Option<Rc<dyn Fn(&bool, &mut Window, &mut App)>> =
+                (interaction.is_some() || on_hover.is_some()).then(|| {
+                    Rc::new(move |hovered: &bool, window: &mut Window, cx: &mut App| {
+                        if let Some(state) = &interaction {
+                            state.hovered.set(*hovered);
+                            cx.notify(view);
+                        }
+                        if let Some(on_hover) = &on_hover {
+                            on_hover(hovered, window, cx);
+                        }
+                    }) as Rc<dyn Fn(&bool, &mut Window, &mut App)>
+                });
             if let Some(builder) = self.tooltip_builder {
-                this.managed_tooltip_with(
+                this.managed_tooltip_with_hover(
                     tooltip_placement,
                     tooltip_show_delay,
                     move |window, cx| builder(window, cx),
+                    hover,
                 )
             } else if let Some((tooltip, action)) = self.tooltip {
-                this.managed_tooltip_with(
+                this.managed_tooltip_with_hover(
                     tooltip_placement,
                     tooltip_show_delay,
                     move |window, cx| {
@@ -907,7 +1000,10 @@ impl RenderOnce for Button {
                             })
                             .build(window, cx)
                     },
+                    hover,
                 )
+            } else if let Some(hover) = hover {
+                this.on_hover(move |hovered, window, cx| hover(hovered, window, cx))
             } else {
                 this
             }

@@ -39,6 +39,8 @@ pub struct DropdownMenuPopover<T: Selectable + IntoElement + 'static> {
     trigger: T,
     builder: Rc<dyn Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu>,
     on_open_change: Option<Rc<dyn Fn(&bool, &mut Window, &mut App)>>,
+    motion: Option<gpui_base::motion::SurfaceTransition>,
+    exit_content: Option<Box<dyn FnOnce(&mut Window, &mut App) -> AnyElement>>,
 }
 
 impl<T> DropdownMenuPopover<T>
@@ -57,7 +59,19 @@ where
             trigger,
             builder: Rc::new(builder),
             on_open_change: None,
+            motion: None,
+            exit_content: None,
         }
+    }
+
+    pub fn surface_transition(mut self, transition: gpui_base::motion::SurfaceTransition) -> Self {
+        self.motion = Some(transition);
+        self
+    }
+
+    pub fn exit_content(mut self, content: impl FnOnce(&mut Window, &mut App) -> AnyElement + 'static) -> Self {
+        self.exit_content = Some(Box::new(content));
+        self
     }
 
     /// Set the anchor corner for the dropdown menu popover.
@@ -111,6 +125,8 @@ where
 
         Popover::new(SharedString::from(format!("popover:{}", self.id)))
             .appearance(false)
+            .when_some(self.motion, |this, transition| this.surface_transition(transition))
+            .when_some(self.exit_content, |this, render| this.exit_content(render))
             .overlay_closable(false)
             .trigger(self.trigger)
             .anchor(self.anchor)

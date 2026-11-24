@@ -193,6 +193,8 @@ pub struct Popover {
     content: Option<ContentBuilder>,
     mouse_button: MouseButton,
     overlay_closable: bool,
+    motion: Option<crate::motion::SurfaceTransition>,
+    exit_content: Option<Box<dyn FnOnce(&mut Window, &mut App) -> AnyElement>>,
     on_open_change: Option<OpenChangeHandler>,
 }
 
@@ -211,8 +213,20 @@ impl Popover {
             content: None,
             mouse_button: MouseButton::Left,
             overlay_closable: true,
+            motion: None,
+            exit_content: None,
             on_open_change: None,
         }
+    }
+
+    pub fn surface_transition(mut self, transition: crate::motion::SurfaceTransition) -> Self {
+        self.motion = Some(transition);
+        self
+    }
+
+    pub fn exit_content(mut self, content: impl FnOnce(&mut Window, &mut App) -> AnyElement + 'static) -> Self {
+        self.exit_content = Some(Box::new(content));
+        self
     }
 
     pub fn anchor(mut self, anchor: impl Into<Anchor>) -> Self {
@@ -323,6 +337,18 @@ impl RenderOnce for Popover {
         });
 
         let open = state.read(cx).is_open();
+        let (pose, running) = if let Some(transition) = self.motion.as_ref() {
+            let animation = window.use_keyed_state((self.id.clone(), "motion"), cx,
+                |_, _| crate::motion::SurfacePresence::default());
+            let now = cx.background_executor().now();
+            let mode = crate::surface_motion(cx);
+            animation.update(cx, |animation, _| animation.sample(open, transition, mode, now))
+        } else {
+            (crate::motion::SurfacePose::default(), false)
+        };
+        if running && (open || self.exit_content.is_some()) {
+            window.request_animation_frame();
+        }
         let focus_handle = state.read(cx).focus_handle(cx);
         let Some(trigger) = self.trigger else {
             return div().id("empty").into_any_element();
@@ -356,7 +382,12 @@ impl RenderOnce for Popover {
                 }
             });
         if !open {
-            return popup.into_any_element();
+            return match self.exit_content.filter(|_| running) {
+                Some(render) => popup.content(crate::motion::SurfaceOffset::new(
+                    div().opacity(pose.opacity).child(render(window, cx)), pose.offset,
+                )).into_any_element(),
+                None => popup.into_any_element(),
+            };
         }
 
         let content = div()
@@ -382,7 +413,7 @@ impl RenderOnce for Popover {
                     }
                 })
             });
-        popup.content(content).into_any_element()
+        popup.content(crate::motion::SurfaceOffset::new(content.opacity(pose.opacity), pose.offset)).into_any_element()
     }
 }
 

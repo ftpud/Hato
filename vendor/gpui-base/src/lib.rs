@@ -155,7 +155,7 @@ pub use positioner::{Align, Positioner, ResolvedPosition};
 pub use progress::{Progress, ProgressIndicator, ProgressTrack};
 pub use radio::{Radio, RadioStyles};
 pub use radio_group::RadioGroup;
-pub use reduce_motion::apply_system_reduce_motion;
+pub use reduce_motion::{MotionMode, apply_system_reduce_motion, set_motion_mode, surface_motion};
 #[doc(hidden)]
 pub use resizable::PANEL_MIN_SIZE;
 pub use resizable::{
