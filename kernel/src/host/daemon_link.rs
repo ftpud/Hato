@@ -14,7 +14,7 @@ use crate::host::stdio::{ProcHandle, Spawned};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[derive(Clone, Debug)]
 pub struct DaemonInfo {
@@ -33,18 +33,29 @@ pub struct DaemonTable {
     links: Mutex<HashMap<String, Arc<CtlLink>>>,
     /// `machine\0binary` pairs whose daemon binary predates `ctl-stream`.
     no_stream: Mutex<std::collections::HashSet<String>>,
+    /// SSH/WSL machines: the connection (its `connected_at`) under which the daemon was last
+    /// installed and started. While that connection lives, `ensure_ssh` only checks the daemon
+    /// still answers instead of repeating install and start-up (two commands, SFTP round trips
+    /// and hashing the binary: about a second per call).
+    ensured: Mutex<HashMap<String, Instant>>,
+    /// Serializes `ensure_ssh` per machine, so concurrent callers share one install/start.
+    ensuring: Mutex<HashMap<String, Arc<Mutex<()>>>>,
 }
 
 impl DaemonTable {
     pub fn get(&self, machine_id: &str) -> Option<DaemonInfo> { self.by_machine.lock().get(machine_id).cloned() }
     fn put(&self, i: DaemonInfo) {
-        // The binary or home may have changed: the next request opens a fresh channel.
-        self.links.lock().remove(&i.machine_id);
-        self.by_machine.lock().insert(i.machine_id.clone(), i);
+        let mut by_machine = self.by_machine.lock();
+        // A changed binary or home needs a fresh channel; an unchanged one keeps the open link.
+        if by_machine.get(&i.machine_id).is_none_or(|old| old.bin != i.bin || old.dir != i.dir) {
+            self.links.lock().remove(&i.machine_id);
+        }
+        by_machine.insert(i.machine_id.clone(), i);
     }
     pub fn forget(&self, machine_id: &str) {
         self.links.lock().remove(machine_id);
         self.by_machine.lock().remove(machine_id);
+        self.ensured.lock().remove(machine_id);
     }
 }
 
@@ -166,8 +177,8 @@ fn install(master: &Arc<SshMaster>, data_dir: &std::path::Path, repo_root: &std:
     }
     let (os, arch) = platform(uname.trim()).ok_or_else(|| HostError::new("ENOTSUP", format!("unsupported remote platform: {}", uname.trim())))?;
     let local = binary_for(data_dir, repo_root, os, arch)?;
-    let bytes = std::fs::read(&local).map_err(HostError::io)?;
-    let tag = format!("{}-{}", crate::daemon::VERSION, &sha256_hex(&bytes)[..12]);
+    let (size, digest) = binary_digest(&local)?;
+    let tag = format!("{}-{}", crate::daemon::VERSION, &digest[..12]);
     let sftp = master.sftp()?;
     let home = sftp.realpath(".")?;
     // `HATO_REMOTE_DAEMON_DIR` (absolute, or relative to the remote home) relocates the daemon.
@@ -180,8 +191,9 @@ fn install(master: &Arc<SshMaster>, data_dir: &std::path::Path, repo_root: &std:
         _ => format!("{home}/.hato"),
     }};
     let bin = format!("{dir}/bin/hato-{tag}");
-    let present = sftp.stat(&bin).map(|a| a.size == Some(bytes.len() as u64)).unwrap_or(false);
+    let present = sftp.stat(&bin).map(|a| a.size == Some(size)).unwrap_or(false);
     if !present {
+        let bytes = std::fs::read(&local).map_err(HostError::io)?;
         // One streamed channel (much faster than SFTP round trips for a large binary).
         let tmp = format!("{bin}.part-{}", crate::util::random_hex(4));
         let script = format!("umask 077 && mkdir -p {dir} && cat > {tmp} && chmod 700 {tmp} && mv -f {tmp} {bin}",
@@ -194,9 +206,65 @@ fn install(master: &Arc<SshMaster>, data_dir: &std::path::Path, repo_root: &std:
     Ok((bin, dir))
 }
 
-/// Install (if needed) and start the daemon on an SSH machine.
+/// Size and SHA-256 of a local daemon binary, remembered while its size and mtime are unchanged
+/// (reading and hashing the ~13 MB file on every ensure cost tens of milliseconds, more with an
+/// antivirus scanning each read).
+fn binary_digest(path: &std::path::Path) -> HResult<(u64, String)> {
+    static CACHE: std::sync::OnceLock<Mutex<HashMap<PathBuf, (u64, std::time::SystemTime, String)>>> = std::sync::OnceLock::new();
+    let meta = std::fs::metadata(path).map_err(HostError::io)?;
+    let (size, modified) = (meta.len(), meta.modified().map_err(HostError::io)?);
+    let cache = CACHE.get_or_init(Default::default);
+    if let Some((s, m, d)) = cache.lock().get(path) {
+        if *s == size && *m == modified {
+            return Ok((size, d.clone()));
+        }
+    }
+    let bytes = std::fs::read(path).map_err(HostError::io)?;
+    let digest = sha256_hex(&bytes);
+    cache.lock().insert(path.to_path_buf(), (bytes.len() as u64, modified, digest.clone()));
+    Ok((bytes.len() as u64, digest))
+}
+
+/// The daemon ensured earlier on this same connection, if it still answers over the control
+/// channel. `None` means install/start again: a new connection, a lost command route, or no reply.
+fn ensured_ssh(table: &DaemonTable, master: &Arc<SshMaster>) -> Option<DaemonInfo> {
+    let machine = master.profile.machine_id();
+    let connection = (*master.connected_at.lock())?;
+    if table.ensured.lock().get(&machine) != Some(&connection) || master.daemon_route_lost() {
+        return None;
+    }
+    let info = table.get(&machine)?;
+    // Each control request connects to the daemon socket, so an answer proves the daemon runs.
+    let alive = ctl_link(table, &info, Some(master))
+        .and_then(|l| l.call(&json!({"op": "hello", "args": {}}), Duration::from_secs(10)))
+        .is_ok_and(|v| v.is_some_and(|v| v["ok"] == true));
+    if !alive {
+        table.links.lock().remove(&machine);
+        table.ensured.lock().remove(&machine);
+        return None;
+    }
+    Some(info)
+}
+
+/// Install (if needed) and start the daemon on an SSH machine. Repeated calls on the same
+/// connection only check that the daemon still answers.
 pub fn ensure_ssh(table: &DaemonTable, master: &Arc<SshMaster>, data_dir: &std::path::Path, repo_root: &std::path::Path) -> HResult<DaemonInfo> {
     master.ensure_alive()?;
+    let machine = master.profile.machine_id();
+    let lock = table.ensuring.lock().entry(machine.clone()).or_default().clone();
+    let _ensuring = lock.lock();
+    if let Some(info) = ensured_ssh(table, master) {
+        return Ok(info);
+    }
+    let connection = *master.connected_at.lock();
+    let info = start_ssh(table, master, data_dir, repo_root)?;
+    if let Some(connection) = connection {
+        table.ensured.lock().insert(machine, connection);
+    }
+    Ok(info)
+}
+
+fn start_ssh(table: &DaemonTable, master: &Arc<SshMaster>, data_dir: &std::path::Path, repo_root: &std::path::Path) -> HResult<DaemonInfo> {
     let (bin, dir) = install(master, data_dir, repo_root, None)?;
     let (code, out, err) = run_ssh(master, &format!("{} daemon ensure --dir {}", sh_quote(&bin), sh_quote(&dir)), None, Duration::from_secs(60))?;
     if code != 0 {
@@ -446,6 +514,20 @@ mod tests {
 
         table.forget("local");
         assert!(table.links.lock().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn binary_digest_follows_file_changes() {
+        let dir = std::env::temp_dir().join(format!("hato-digest-{}", crate::util::random_hex(4)));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("hato");
+        std::fs::write(&path, b"one").unwrap();
+        let (size, first) = binary_digest(&path).unwrap();
+        assert_eq!((size, first.as_str()), (3, sha256_hex(b"one").as_str()));
+        assert_eq!(binary_digest(&path).unwrap().1, first);
+        std::fs::write(&path, b"longer").unwrap();
+        assert_eq!(binary_digest(&path).unwrap(), (6, sha256_hex(b"longer")));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

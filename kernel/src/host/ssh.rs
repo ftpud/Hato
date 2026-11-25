@@ -184,6 +184,9 @@ impl SshMaster {
         *self.daemon_socket.lock() = socket;
     }
 
+    /// The daemon route was given up since the daemon was last ensured (ensuring again restores it).
+    pub fn daemon_route_lost(&self) -> bool { self.daemon_route_error.lock().is_some() }
+
     /// Start `request` through the daemon route; `None` means use an SSH session instead. Errors
     /// arrive before the program started, so falling back never runs it twice.
     fn via_daemon(&self, request: Value, pty: bool) -> Option<Spawned> {

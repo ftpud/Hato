@@ -230,7 +230,9 @@ pub fn host_async(k: &Arc<Kernel>, gen: &Arc<Generation>, op: String, args: Valu
     let k = k.clone();
     let gen = gen.clone();
     let spawn = std::thread::Builder::new().name(format!("op:{op}")).spawn(move || {
+        let started = std::time::Instant::now();
         let r = dispatch(&k, &gen, &op, &args);
+        log_slow_op(&gen.module_id, &op, &args, &r, started.elapsed());
         if let Err(e) = &r {
             if e.code == "EPERM" || e.code == "EDENIED" {
                 k.audit.record(&gen.module_id, gen.gen_id, &op, &audit_summary(&op, &args), &format!("{e}"), None);
@@ -241,6 +243,35 @@ pub fn host_async(k: &Arc<Kernel>, gen: &Arc<Generation>, op: String, args: Valu
     if spawn.is_err() {
         let _ = tx.send(op_result_msg(call_id, Err(HostError::new("EAGAIN", "cannot spawn op thread"))));
     }
+}
+
+/// Ops that wait for something by design (output, a user, an event); their duration says nothing.
+const WAITING_OPS: &[&str] = &[
+    "process.wait", "pty.read", "approvals.request", "ui.pickFolder", "cloud.events", "daemon.cloudReadProgram",
+    "net.listen", "streams.subscribe", "state.watch", "events.subscribe",
+];
+
+/// Log ops slower than `HATO_SLOW_OP_MS` (default 200; 0 disables) to kernel.log, to see where
+/// remote switching and saving spend their time. The detail names what ran, never file contents.
+fn log_slow_op(module: &str, op: &str, args: &Value, r: &HResult<Value>, took: Duration) {
+    static THRESHOLD: std::sync::OnceLock<u128> = std::sync::OnceLock::new();
+    let threshold = *THRESHOLD.get_or_init(|| std::env::var("HATO_SLOW_OP_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(200));
+    if threshold == 0 || took.as_millis() < threshold || WAITING_OPS.contains(&op) {
+        return;
+    }
+    let s = |v: &Value| v.as_str().unwrap_or("").chars().take(120).collect::<String>();
+    let target = s(&args["target"]["kind"]);
+    let detail = match op {
+        _ if op.starts_with("fs.") => s(&args["path"]),
+        "process.run" | "process.spawn" => {
+            let first = args["args"].as_array().and_then(|a| a.iter().find(|x| !x.as_str().unwrap_or("-").starts_with('-'))).map(s).unwrap_or_default();
+            format!("{} {first}", s(&args["executable"]))
+        }
+        "daemon.request" => format!("{} {} {}", s(&args["op"]), s(&args["args"]["target"]), s(&args["args"]["method"])),
+        _ => String::new(),
+    };
+    let outcome = match r { Ok(_) => "ok".to_string(), Err(e) => e.code.clone() };
+    log::info!("slow op {op} took {}ms [{module}] {target} {} ({outcome})", took.as_millis(), detail.trim());
 }
 
 /// Audit text for an op. Requests that can carry credentials (headers, form bodies) are reduced
