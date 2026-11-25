@@ -5,10 +5,11 @@ user's MacBook (Built-in Liquid Retina, 2560×1664, ProMotion), running `target/
 
 ## Takeover checkpoint (2026-11-25)
 
-- Preserved the pending changes in both repositories. Nothing committed or pushed in this
-  continuation; release artifacts are prepared locally, not published.
-- **Built:** `cargo build` succeeds. The running app has not been restarted by this agent, so
-  the additional native change below is **not verified live** and needs the user's relaunch.
+- Baseline changes committed at the user's request: **Hato `7054f5a`** and
+  **Hato-plugins `e324a8e`**. Release artifacts are committed locally, not published. The host
+  lock remains pinned to the previous published revision; do not pin it to an unpublished SHA.
+- **Built and reloaded:** `cargo build` succeeds. The baseline was idle-verified; both native
+  caching follow-ups were relaunched. Latest live measurements are recorded below.
 - **New native fix:** layout-motion revisions are now scoped to the module that publishes a
   tree (`Motion::tree_changed` / `revision(module)`). An unrelated panel update no longer
   starts or restarts another panel's layout-move animation during a parent resize. A regression
@@ -44,9 +45,140 @@ user's MacBook (Built-in Liquid Retina, 2560×1664, ProMotion), running `target/
   theme/control-style and interaction invalidation. Test overlays, hidden/reopened panels,
   drag/drop and detached windows as well as animation isolation before enabling caching.
 
-Next: review/commit the two repositories separately and publish only with authorization;
-then continue the caching refactor described above. Do not repin `plugins.lock.json` to an
-unpublished/uncommitted plugin revision.
+The baseline commits are local; publish only with authorization. Do not repin
+`plugins.lock.json` to an unpublished plugin revision.
+
+### First caching boundary (after the baseline commits)
+
+- Native trees with independent layout allocations (`grow`, `height`, or `style.height`) now
+  render through window/element-owned `CachedTree` entities. GPUI reuses their layout and scene
+  data on unrelated frames. Content-sized trees keep their existing renderer path.
+- This deliberately caches **tree controls**, not whole module panels. Trees do not register
+  shell floats, slots, modals or detached windows; the shell's frame bookkeeping remains eager.
+  Other inline content still rebuilds, and scene reuse is not a raster cache: static effects
+  still incur GPU compositing/fill work. No live CPU/GPU improvement has been measured yet.
+- Snapshot changes, control-style changes, theme and motion-style globals invalidate the cache;
+  GPUI also handles changed bounds, clipping and inherited text styles. Native keyboard actions
+  explicitly invalidate the cached tree as well as the shell. The separately laid-out root fills
+  its allocated bounds, including flex allocation and animated dimension changes.
+- Shared paint clocks now schedule one invalidation **per view and window**. Previously a shared
+  spinner clock notified just the first view that painted; with independent caches, other lists
+  could otherwise freeze. All timers still align to the common grid.
+- Actual GPUI rendering regressions verify cache reuse, painted-row retention, snapshot/theme
+  invalidation, keyboard focus/actions, and shared-clock invalidation without duplicate timers.
+  The final `cargo test --features snapshot --lib ui::` passes all **44 tests**, and
+  `cargo build` succeeds. This follow-up remains uncommitted for review. The user relaunched
+  it (startup 18:21:46 local, binary mtime 18:21:45); the new renderer is now running.
+
+### Live cached-tree measurement
+
+- Background motion remains off (read-only persistence check). Two consecutive active-agent
+  samples of PID 14273, 10.05 s each: **16.6% / 30.4% GPU busy**, **26.6% / 29.0% CPU**.
+  Redraw windows around the samples were 23.7–28.2 fps, overwhelmingly paint clocks.
+  Compared with the earlier ~32% GPU / ~30% CPU active sample, this does **not** establish a
+  meaningful overall improvement; the lower first GPU sample was not sustained.
+- Non-intrusive 3 s CPU profile: `/private/tmp/hato-cached-tree.sample.txt`. Main-thread frame
+  work still includes Shell rendering/node construction, layout, and paint. No `CachedTree`
+  render stack was observed in this short sample (consistent with reuse, not proof of it).
+  The existing inline content remains the next CPU target; static scene fill/compositing
+  remains a separate GPU cost that view caching alone does not remove.
+
+Next: continue expanding cache boundaries after separating shell frame registrations from
+module rendering; the first live sample shows native-list caching alone is insufficient.
+Publish the already committed plugin releases only when asked, then update the host lock.
+
+### Broader module-body caching (new follow-up, running)
+
+- `panel_view.rs` adds stable cached module-body views per window and slot mount. Eligibility
+  is planned once per immutable module snapshot, using an allowlist of audited native nodes.
+  Ordinary panels, chat transcripts/markdown, inputs, images, and native splits are supported.
+- Panels with frame-collected nodes (modals, popovers, detached windows, slots, drop zones),
+  theme/chrome, trusted controls, native editors, presence state or lazy item-height lists stay
+  eager. Unknown node kinds also stay eager. This avoids skipping registration/lifetime work;
+  full separation of those registrations remains future work.
+- Cache invalidation covers module snapshots, theme/motion globals, inherited control styles,
+  bounds, clipping, text style, fullscreen state and native divider drags including release.
+  `panel:<module>` diagnostic causes identify module-body renders in the redraw log.
+- Input-slot creation is factored into a shared helper. Cached bodies prepare visible input
+  handles before building sibling event callbacks, while keeping the existing kernel-owned
+  input entities, subscriptions, text and caret state.
+- `cargo check` and all **46 native UI tests** pass. New rendering regressions cover sibling
+  isolation/paint retention, input handles, eager fallback, and actual native split dragging.
+  Rebuilt native code was relaunched by the user; `panel:<module>` logs confirm it is running.
+
+### ACP progress instruction clarification
+
+- Updated shared `sdk/persistent-agents.ts` prompt/tool descriptions: exact JSON example,
+  0–100 milestones, 80-character optional note, accepted-percent acknowledgement, and explicit
+  handling of `isError` / `Transport closed` (a resolved tool call is not proof of success).
+  Agents should try another available endpoint for their session instead of retrying a stale
+  connection. Clarified the hidden HTML-comment format for agents without MCP tools as well.
+- All module consumers were rebuilt; changed bundles are `agent-runner`, `ai-sessions`,
+  `internal-mcp` and `internal-remote-mcp`. Both repositories' TypeScript checks and all nine
+  progress tests pass. After the user's module reload, read-only registry/artifact checks
+  confirmed active versions **0033 / 0024 / 0025 / 0037**, respectively; all four match the
+  rebuilt bundle hashes and contain the clarified prompts. The already committed marketplace
+  artifacts do not contain this prompt update yet.
+- After app restarts the old `internal-local-mcp` and `internal-remote-mcp-local` connections
+  returned `Transport closed`. `internal-remote-mcp/report_progress` returned accepted percent
+  and the user confirmed the sidebar updates work. Always inspect progress tool results.
+
+### Measurement after native and module reloads
+
+- Discarded the sample interrupted by the user's module reload. Fresh sample started at
+  **18:38:29 local**, desktop PID 32393, Background motion confirmed off. Three ~10 s windows:
+  CPU **21.7%, 23.2%, 25.2%** (mean **23.4%**); GPU busy **14.8%, 17.7%, 21.9%**
+  (mean **18.1%**). Raw data: `/private/tmp/hato-panel-cache-reloaded-sample.json`.
+- Previous active readings were roughly 30% CPU / 32% GPU. Overall sampled load is lower, but
+  frame rate and module activity also varied, so this is **not** a controlled A/B or proof of
+  reduced GPU cost per frame. Fresh redraw windows were 15.2–25.0 fps, mainly paint clocks.
+- The 15.2 fps window recorded **153 Shell frames, one `panel:ai` render and one `tree:ai`**:
+  the AI body is being reused across unrelated animation frames. Another window had 144 AI
+  body renders in 251 frames, so there is still intermittent cache invalidation/refresh work.
+
+Next: investigate intermittent AI-body invalidations and remaining eager panel/scene costs.
+Keep marketplace publication separate; prepare a newer release before publishing the prompts.
+
+### Scrollbar animation and transcript refresh isolation (latest, running)
+
+- Source tracing found that gpui-base scrollbar fade/hover-width animations notify their
+  containing view. When that view is the AI panel, even an unchanged transcript is rebuilt.
+  Nesting another cache below it does not solve this: GPUI refreshes cached descendants when
+  it renders a dirty cached parent.
+- Cached module panels now host transcript scrollbars in a **sibling native layer**, with
+  retained, window-scoped viewport bounds and clipping. Its deferred prepaint runs after panel
+  prepaint so it can use current geometry even on the first frame. Fades/hover animations
+  notify the scrollbar layer; pointer/scroll/touch offset changes also notify the content view
+  after native event handling. Panels without registered scrollbars skip the layer's view work.
+- This layer lives inside the panel, so floating/detached placement and higher trusted window
+  overlays keep their existing stacking. Uncached/eager transcripts retain their original
+  inline scrollbar path. Removing a transcript clears its live layer binding.
+- Transcript prepend/follow corrections now request another frame for their containing view
+  (`anim:transcript-anchor`, `anim:transcript-follow`) instead of `window.refresh()`, which was
+  bypassing every panel cache. Existing scrolling/follow/history policy is unchanged.
+- All **47 native UI tests** pass. A real GPUI regression triggers scrollbar animation frames
+  and verifies the transcript render count stays fixed, then checks native track-click
+  scrolling does repaint content, history prepending retains its anchor, and removed bars
+  leave no live bindings. `cargo build` succeeds; the user relaunched it (binary mtime 18:55:14
+  local, startup 18:55:15). New scrollbar-layer and transcript-animation diagnostics are live.
+
+### Live scrollbar-isolation sample
+
+- Fresh sample at **18:56:00 local**, PID 55298, Background motion confirmed off. Three
+  consecutive 10.06 s windows measured CPU **23.4%, 21.5%, 20.9%** (mean **21.9%**) and GPU
+  busy **18.4%, 14.9%, 16.2%** (mean **16.5%**). Raw data:
+  `/private/tmp/hato-scrollbar-isolation-sample.json`.
+- The preceding module-body-cache sample averaged 23.4% CPU / 18.1% GPU. This is a small
+  decrease in sampled overall load, not a controlled A/B improvement: frame rate, data updates,
+  and native animations varied between samples.
+- Recorded `(Shell frames, AI-body renders)` were **(278, 20), (151, 1), (176, 5)**.
+  `view:scrollbars` matched frame counts; paint clocks remained the dominant frame source.
+  The last interval had two `anim:transcript-follow` requests and no global transcript-refresh
+  entries. No high-frequency AI-body rebuild burst appeared in this 30 s sample.
+
+Next: profile remaining eager rendering and GPU fill/compositing while busy spinners keep the
+window active. Remaining panel invalidations may include caret blinking, hover transitions,
+streaming messages and other legitimate control/data changes.
 
 ## 1. Already committed and pushed (done)
 
@@ -57,7 +189,7 @@ unpublished/uncommitted plugin revision.
 | Hato | `d1bffe6` | `daemon_link::ensure_ssh` cached per live SSH connection (`hello` liveness check over the ctl link), per-machine ensure lock, ctl link kept on unchanged re-ensure, binary digest cached by size+mtime. Slow-op logging (`HATO_SLOW_OP_MS`, default 200). |
 | Hato | `a20a85b` | `plugins.lock.json` re-pinned to Hato-plugins `fac01fd`. |
 
-## 2. Uncommitted, built, running (needs commit + plugin release)
+## 2. Baseline optimizations (committed locally; plugin publication pending)
 
 ### Hato repo (kernel + SDK)
 - **Pipelined SFTP** (`kernel/src/host/sftp.rs`, `fs.rs`): many requests in flight per session.

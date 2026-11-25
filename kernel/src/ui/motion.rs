@@ -300,6 +300,12 @@ impl Motion {
                     .contains_key(&(window.window_handle().window_id(), sid(module, path))))
     }
 
+    pub(super) fn has_module_presence(&self, module: &str, window: &Window) -> bool {
+        let prefix = format!("{module}::");
+        let id = window.window_handle().window_id();
+        self.children.keys().any(|(owner, path)| *owner == id && path.starts_with(&prefix))
+    }
+
     pub(super) fn dock_enabled(&self) -> bool {
         self.theme["experimentalDockReveal"]
             .as_bool()

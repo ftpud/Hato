@@ -3,6 +3,42 @@
 use super::*;
 use std::{cell::RefCell, ops::Range, rc::Rc};
 
+/// Tree controls do not register shell overlays or child slots. They can be rendered lazily
+/// behind a native view boundary without skipping the shell's frame bookkeeping.
+struct CachedTree {
+    shell: WeakEntity<Shell>,
+    module: String,
+    path: String,
+    node: Arc<Value>,
+    controls: Value,
+    _subscriptions: Vec<Subscription>,
+}
+
+impl CachedTree {
+    fn new(shell: WeakEntity<Shell>, module: String, path: String, node: Arc<Value>, controls: Value, cx: &mut Context<Self>) -> Self {
+        let subscriptions = vec![
+            cx.observe_global::<gpui_component::Theme>(|_, cx| cx.notify()),
+            cx.observe_global::<gpui_kit::base::motion::SurfaceStyles>(|_, cx| cx.notify()),
+        ];
+        Self { shell, module, path, node, controls, _subscriptions: subscriptions }
+    }
+}
+
+impl Render for CachedTree {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(all(test, feature = "snapshot"))]
+        tests::RENDERS.with(|count| count.set(count.get() + 1));
+        self.shell.update(cx, |shell, cx| {
+            // Other modules can configure controls later in Shell::render. Use the settings
+            // that applied at this tree's original position, even when it renders lazily.
+            let previous = std::mem::replace(&mut shell.control_style, self.controls.clone());
+            let body = shell.tree(&self.module, &self.node, &self.path, true, window, cx);
+            shell.control_style = previous;
+            body
+        }).unwrap_or_else(|_| Empty.into_any_element())
+    }
+}
+
 #[derive(Clone)]
 pub(super) struct TreeNavigation {
     focus: FocusHandle,
@@ -11,7 +47,30 @@ pub(super) struct TreeNavigation {
 }
 
 impl Shell {
-    pub(super) fn tree(&mut self, module: &str, n: &Value, path: &str, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn cached_tree(&mut self, module: &str, n: &Value, path: &str, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        // Cached views need a layout allocation independent of their contents. Preserve
+        // intrinsic sizing (including maxHeight-only lists) on the existing renderer path.
+        if n["grow"] != true && !n["height"].is_number() && !n["style"]["height"].is_number() {
+            return self.tree(module, n, path, false, window, cx);
+        }
+        let node = self.tree_nodes.entry((module.to_owned(), path.to_owned()))
+            .or_insert_with(|| Arc::new(n.clone())).clone();
+        let shell = cx.weak_entity();
+        let view = window.use_keyed_state((ElementId::from(sid(module, path)), "tree-view"), cx, |_, cx| {
+            CachedTree::new(shell, module.to_owned(), path.to_owned(), node.clone(), self.control_style.clone(), cx)
+        });
+        view.update(cx, |view, cx| {
+            if !Arc::ptr_eq(&view.node, &node) || view.controls != self.control_style {
+                view.node = node;
+                view.controls = self.control_style.clone();
+                cx.notify();
+            }
+        });
+        let mut layout = self.apply_base(v_flex(), n, cx).min_h_0().min_w_0().overflow_hidden();
+        AnyView::from(view).cached(layout.style().clone()).into_any_element()
+    }
+
+    fn tree(&mut self, module: &str, n: &Value, path: &str, allocated: bool, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         // Hold one copy per module snapshot, not one deep copy on every native
         // refresh (window movement, cursor blinking, hover, etc.).
         let node = self.tree_nodes.entry((module.to_string(), path.to_string()))
@@ -48,8 +107,12 @@ impl Shell {
             div().id(sid(module, path)).flex_1().min_h_0().w_full().overflow_y_scroll()
                 .child(v_flex().w_full().min_w_0().gap(px(gap)).children(rows)).into_any_element()
         };
-        let mut tree = self.apply_base(v_flex(), n, cx).min_h_0().min_w_0().overflow_hidden().child(body);
+        let mut tree = self.apply_base(v_flex(), n, cx).min_h_0().min_w_0().overflow_hidden()
+            // The cached view already received its flex allocation from the parent. Its
+            // separately laid-out root must fill those bounds rather than measure at basis 0.
+            .when(allocated, |d| d.size_full()).child(body);
         if let Some(nav) = navigation {
+            let view = window.current_view();
             let (k, m, inputs) = (self.kernel.clone(), module.to_string(), self.module_inputs(module));
             let rows = node.clone();
             tree = tree.track_focus(&nav.focus).capture_key_down(cx.listener(move |_, ev: &KeyDownEvent, window, cx| {
@@ -77,6 +140,7 @@ impl Shell {
                 window.prevent_default();
                 cx.stop_propagation();
                 Self::fire(&k, &m, &inputs, action, rows["key"].as_str().unwrap_or("_"), Some(row_key), Value::Null, cx);
+                App::notify(cx, view);
                 cx.notify();
             }));
         }
@@ -252,9 +316,81 @@ mod tests {
     use super::Shell;
     use crate::{bridge::UiBridge, config::Config, kernel::Kernel};
     use gpui_kit as gpui;
-    use gpui::{px, size, TestAppContext, VisualTestContext};
+    use gpui::{px, rgb, size, BorrowAppContext, TestAppContext, VisualTestContext};
     use serde_json::json;
     use std::sync::Arc;
+
+    thread_local! { pub(super) static RENDERS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+
+    #[gpui_kit::test]
+    fn cached_tree_reuses_other_frames_and_updates_its_snapshot_and_theme(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let temp = tempfile::tempdir().unwrap();
+        let cfg = Config::from_args(&[
+            "hato".into(), "--repo-root".into(), temp.path().display().to_string(),
+            "--data-dir".into(), temp.path().join("data").display().to_string(),
+        ]).unwrap();
+        let kernel = Kernel::new(cfg, UiBridge::disconnected()).unwrap();
+        let tree = |color: &str| Arc::new(json!({
+            "type":"tree", "key":"rows", "grow":true, "rowHeight":26, "hoverBackground":color,
+            "activateAction":"open", "selectAction":"select",
+            "rows":[{"key":"row", "label":"Row", "background":color}]
+        }));
+        let window = cx.open_window(size(px(360.), px(180.)), |window, cx| {
+            let mut shell = Shell::new(kernel.clone(), UiBridge::new().1, window, cx);
+            shell.only_module = Some("__cached-tree".into());
+            shell.trees.insert("__cached-tree".into(), tree("#125634"));
+            shell
+        });
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        let draw = |visual: &mut VisualTestContext| visual.update(|window, cx| window.draw(cx).clear(cx));
+        draw(&mut visual);
+        let initial = RENDERS.with(|count| count.get());
+        assert!(initial > 0);
+        assert!(visual.update(|window, _| window.painted_quads().iter().any(|q| q.background == rgb(0x125634).into())), "initial row must paint");
+
+        // A redraw requested by another view must reuse the tree's layout and paint data.
+        visual.update(|window, cx| {
+            window.root::<Shell>().unwrap().unwrap().update(cx, |_, cx| cx.notify());
+        });
+        draw(&mut visual);
+        draw(&mut visual);
+        assert_eq!(RENDERS.with(|count| count.get()), initial);
+        assert!(visual.update(|window, _| window.painted_quads().iter().any(|q| q.background == rgb(0x125634).into())));
+
+        // Cached paint must retain native focus and key listeners, even without a new snapshot.
+        visual.update(|window, cx| {
+            let shell = window.root::<Shell>().unwrap().unwrap();
+            let nav = shell.read(cx).tree_navigation[&("__cached-tree".into(), "/rows".into())].clone();
+            window.focus(&nav.focus, cx);
+        });
+        draw(&mut visual);
+        visual.simulate_keystrokes("down");
+        draw(&mut visual);
+        visual.update(|window, cx| {
+            let shell = window.root::<Shell>().unwrap().unwrap();
+            assert_eq!(shell.read(cx).tree_navigation[&("__cached-tree".into(), "/rows".into())].cursor.borrow().as_deref(), Some("row"));
+        });
+
+        visual.update(|window, cx| {
+            window.root::<Shell>().unwrap().unwrap().update(cx, |shell, cx| {
+                shell.on_msg(crate::bridge::UiMsg::Tree {
+                    module:"__cached-tree".into(), generation:0, tree:tree("#563412"),
+                }, window, cx);
+            });
+        });
+        draw(&mut visual);
+        draw(&mut visual);
+        let changed = RENDERS.with(|count| count.get());
+        assert!(changed > initial);
+        assert!(visual.update(|window, _| window.painted_quads().iter().any(|q| q.background == rgb(0x563412).into())));
+
+        visual.update(|_, cx| cx.update_global::<gpui_component::Theme, _>(|_, _| {}));
+        draw(&mut visual);
+        draw(&mut visual);
+        assert!(RENDERS.with(|count| count.get()) > changed);
+        kernel.shutdown();
+    }
 
     #[gpui_kit::test]
     fn tree_description_is_metadata_and_value_stays_inline(cx: &mut TestAppContext) {

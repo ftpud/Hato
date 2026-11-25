@@ -53,13 +53,13 @@ export function agentProgress(args: any): AgentProgress {
 }
 export const REPORT_PROGRESS_TOOL = {
   name: "report_progress",
-  description: "Report roughly how much of the current user request is done (0–100) and optionally a few words on the current step. Hato shows it as a progress bar in its sidebar; it never appears in the chat. Call it when you start (e.g. 5), after major milestones, and with 100 when you finish. Cheap: never wait for or mention it.",
+  description: "Update this session's sidebar progress with JSON such as {\"percent\":5,\"note\":\"Inspecting code\"}. Use 0–100: about 5 at the start, updates at major milestones, and 100 when finished. The optional note is at most 80 characters. Check the result: {\"percent\":5} acknowledges the update; isError or 'Transport closed' means it failed even if the call returned normally. Try another available report_progress endpoint for this session if a connection is closed. Sidebar only: do not put progress reports in chat replies.",
   inputSchema: { type: "object", properties: { percent: { type: "number", minimum: 0, maximum: 100 }, note: { type: "string", maxLength: 80, description: "Current step, a few words" } }, required: ["percent"], additionalProperties: false },
   annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
 };
 /** Starting instruction for agents without Hato's MCP tools: an HTML comment in the reply, which
  *  Hato reads for the sidebar and strips from every transcript (Markdown hides it anyway). */
-export const PROGRESS_MARKER_INSTRUCTION = "Progress: while working on a request, put an HTML comment like <!-- hato-progress 40 | Reading tests --> on its own line in your reply: at the start (≈5), after major milestones, and 100 when finished. Hato reads it for its sidebar and hides it — don't mention it.";
+export const PROGRESS_MARKER_INSTRUCTION = "Progress: without Hato MCP tools, emit an HTML comment on its own line, exactly in this format: <!-- hato-progress 40 | Reading tests -->. Use a number from 0 to 100 and an optional short note after |. Emit about 5 when work starts, update at major milestones while working, and emit 100 only when finished; do not save all updates for the final reply. Hato reads these comments for its sidebar and hides them. Do not add visible progress percentages or explain the comments in chat.";
 const MARKER = /<!--\s*hato-progress\s+(\d{1,3}(?:\.\d+)?)\s*%?\s*(?:\|\s*([^>]*?))?\s*-->/gi;
 /** The latest complete progress marker in reply text, or null. */
 export function lastProgressMarker(text: string): AgentProgress | null {
@@ -88,7 +88,7 @@ export function scanProgressChunk(tail: string, chunk: string): { progress: Agen
 }
 
 /** Starting instruction for agents that have Hato's MCP tools. */
-export const PROGRESS_INSTRUCTION = "Progress: while working on a request, call the report_progress tool with your rough percent done (start ≈5, major milestones, 100 when finished). It feeds Hato's sidebar only — don't mention it in replies.";
+export const PROGRESS_INSTRUCTION = "Progress: call this session's report_progress tool with JSON like {\"percent\":5,\"note\":\"Inspecting code\"}. Use 0–100: about 5 at the start, update at major milestones while working, and 100 only when finished. The optional note is at most 80 characters. Inspect the tool result: {\"percent\":5} acknowledges the update; isError or 'Transport closed' means it failed even if the call returned normally. If a connection is closed, try another available report_progress endpoint for this session instead of repeatedly using the stale connection. Do not assume failed updates reached the sidebar. Progress feeds Hato's sidebar only — do not mention it in chat replies.";
 export interface WorkingAgent {
   id: string;
   progress?: { percent: number; note?: string; at?: number } | null;

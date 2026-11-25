@@ -8,6 +8,8 @@ mod node_motion;
 #[cfg(all(test, feature = "snapshot", unix))]
 mod node_motion_tests;
 mod node_paint;
+mod panel_view;
+mod scrollbar_layer;
 pub(crate) mod redraw_stats;
 mod window_chrome;
 mod canvas;
@@ -88,6 +90,7 @@ struct EditorAssist {
 pub struct Shell {
     kernel: Arc<Kernel>,
     trees: HashMap<String, Arc<Value>>,
+    panel_plans: HashMap<String, panel_view::Plan>,
     /// Owned tree / lazy-list node data reused until the module publishes its next UI snapshot.
     tree_nodes: HashMap<(String, String), Arc<Value>>,
     /// Per tree: (row count, first row key) when `endReachedAction` last fired.
@@ -123,6 +126,7 @@ pub struct Shell {
     window_chrome: window_chrome::WindowChrome,
     modals: Vec<(String, String, Value)>,
     control_style: Value,
+    scrollbar_layer: Option<scrollbar_layer::Registry>,
     in_title_bar: bool,
     approval_scroll: ScrollHandle,
     security_confirm: Option<FocusHandle>,
@@ -180,6 +184,7 @@ impl Shell {
         Shell {
             kernel,
             trees: HashMap::new(),
+            panel_plans: HashMap::new(),
             tree_nodes: HashMap::new(),
             tree_end_fired: HashMap::new(),
             tree_navigation: HashMap::new(),
@@ -210,6 +215,7 @@ impl Shell {
             window_chrome: window_chrome::WindowChrome::new(window),
             modals: Vec::new(),
             control_style: Value::Null,
+            scrollbar_layer: None,
             in_title_bar: false,
             approval_secret: None,
             approval_scroll: ScrollHandle::new(),
@@ -438,13 +444,66 @@ impl Shell {
         }
     }
 
+    /// Allocate a module-owned input before sibling callbacks capture its handle. Cached panel
+    /// bodies may otherwise keep a callback built before a later field was mounted.
+    fn ensure_input_slot(&mut self, module: &str, key: &str, n: &Value, window: &mut Window, cx: &mut Context<Self>) {
+        let ik = (module.to_string(), key.to_string());
+        let multiline = n["multiline"].as_bool().unwrap_or(false);
+        let value = n.get("value").and_then(|v| v.as_str()).map(str::to_owned);
+        let s = |key: &str| n.get(key).and_then(|v| v.as_str()).unwrap_or("").to_owned();
+        let b = |key: &str| n.get(key).and_then(|v| v.as_bool()).unwrap_or(false);
+        if !self.inputs.contains_key(&ik) {
+            let placeholder = s("placeholder");
+            let submit = n.get("submitAction").and_then(|v| v.as_str()).map(|s| s.to_string());
+            let k = self.kernel.clone();
+            let m = module.to_string();
+            let key2 = key.to_string();
+            let change = n.get("changeAction").and_then(|v| v.as_str()).map(str::to_owned);
+            let ik2 = ik.clone();
+            let slot = if multiline {
+                let st = cx.new(|cx| TextareaState::new(window, cx).placeholder(placeholder).submit_on_enter(submit.is_some()).default_value(value.clone().unwrap_or_default()));
+                let sub = cx.subscribe_in(&st, window, move |this: &mut Shell, _st, ev: &InputEvent, _w, cx| {
+                    if let (InputEvent::Change, Some(a)) = (ev, change.as_ref()) {
+                        let text = _st.read(cx).value().to_string();
+                        this.note_echo(&ik2, &text);
+                        let inputs = this.module_inputs(&m);
+                        Shell::fire(&k, &m, &inputs, a, &key2, None, json!(text), cx);
+                    }
+                    if let (InputEvent::PressEnter { shift: false, .. }, Some(a)) = (ev, submit.as_ref()) {
+                        let inputs = this.module_inputs(&m);
+                        Shell::fire(&k, &m, &inputs, a, &key2, None, Value::Null, cx);
+                    }
+                });
+                InputSlot { input: AnyInput::Area(st), applied: value.clone(), echoes: Vec::new(), _sub: sub }
+            } else {
+                let secret = b("secret");
+                let st = cx.new(|cx| InputState::new(window, cx).placeholder(placeholder).masked(secret).default_value(value.clone().unwrap_or_default()));
+                if b("autoFocus") && !b("disabled") { window.focus(&st.read(cx).focus_handle(cx), cx); }
+                let sub = cx.subscribe_in(&st, window, move |this: &mut Shell, _st, ev: &InputEvent, _w, cx| {
+                    if let (InputEvent::Change, Some(a)) = (ev, change.as_ref()) {
+                        let text = _st.read(cx).value().to_string();
+                        this.note_echo(&ik2, &text);
+                        let inputs = this.module_inputs(&m);
+                        Shell::fire(&k, &m, &inputs, a, &key2, None, json!(text), cx);
+                    }
+                    if let (InputEvent::PressEnter { .. }, Some(a)) = (ev, submit.as_ref()) {
+                        let inputs = this.module_inputs(&m);
+                        Shell::fire(&k, &m, &inputs, a, &key2, None, Value::Null, cx);
+                    }
+                });
+                InputSlot { input: AnyInput::Line(st), applied: value.clone(), echoes: Vec::new(), _sub: sub }
+            };
+            self.inputs.insert(ik.clone(), slot);
+        }
+    }
+
     fn module_inputs(&self, module: &str) -> Vec<(String, AnyInput)> {
         self.inputs.iter().filter(|((m, _), _)| m == module).map(|((_, k), s)| (k.clone(), s.input.clone())).collect()
     }
 
     // ---- node rendering ------------------------------------------------------------------------
 
-    fn render_slot(&mut self, module: &str, depth: usize, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    fn render_slot(&mut self, module: &str, mount: &str, depth: usize, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         if depth > 6 {
             return div().child("slot nesting too deep").into_any_element();
         }
@@ -460,6 +519,9 @@ impl Shell {
         match self.trees.get(module).cloned() {
             Some(tree) => {
                 let err = self.render_errors.get(module).cloned();
+                if err.is_none() && !self.in_title_bar && self.panel_cacheable(module, &tree, window) {
+                    return self.cached_panel(module, mount, tree, depth, window, cx);
+                }
                 let body = self.node(module, &tree, "", depth, window, cx);
                 match err {
                     Some(e) => v_flex().size_full().min_h_0().overflow_hidden().child(self.error_strip(module, &e, cx)).child(div().flex_1().min_h_0().overflow_hidden().flex().flex_col().child(body)).into_any_element(),
@@ -722,7 +784,7 @@ impl Shell {
             }
             "slot" => {
                 let m = s("module");
-                let el = self.render_slot(&m, depth + 1, window, cx);
+                let el = self.render_slot(&m, &format!("{module}::{path}"), depth + 1, window, cx);
                 self.apply_base(v_flex().flex_1().size_full().min_w_0().min_h_0().overflow_hidden(), n, cx).child(el).into_any_element()
             }
             "label" => {
@@ -901,49 +963,7 @@ impl Shell {
                 let ik = (module.to_string(), key.to_string());
                 let multiline = b("multiline");
                 let value = n.get("value").and_then(|v| v.as_str()).map(|s| s.to_string());
-                if !self.inputs.contains_key(&ik) {
-                    let placeholder = s("placeholder");
-                    let submit = n.get("submitAction").and_then(|v| v.as_str()).map(|s| s.to_string());
-                    let k = self.kernel.clone();
-                    let m = module.to_string();
-                    let key2 = key.to_string();
-                    let change = n.get("changeAction").and_then(|v| v.as_str()).map(str::to_owned);
-                    let ik2 = ik.clone();
-                    let slot = if multiline {
-                        let st = cx.new(|cx| TextareaState::new(window, cx).placeholder(placeholder).submit_on_enter(submit.is_some()).default_value(value.clone().unwrap_or_default()));
-                        let sub = cx.subscribe_in(&st, window, move |this: &mut Shell, _st, ev: &InputEvent, _w, cx| {
-                            if let (InputEvent::Change, Some(a)) = (ev, change.as_ref()) {
-                                let text = _st.read(cx).value().to_string();
-                                this.note_echo(&ik2, &text);
-                                let inputs = this.module_inputs(&m);
-                                Shell::fire(&k, &m, &inputs, a, &key2, None, json!(text), cx);
-                            }
-                            if let (InputEvent::PressEnter { shift: false, .. }, Some(a)) = (ev, submit.as_ref()) {
-                                let inputs = this.module_inputs(&m);
-                                Shell::fire(&k, &m, &inputs, a, &key2, None, Value::Null, cx);
-                            }
-                        });
-                        InputSlot { input: AnyInput::Area(st), applied: value.clone(), echoes: Vec::new(), _sub: sub }
-                    } else {
-                        let secret = b("secret");
-                        let st = cx.new(|cx| InputState::new(window, cx).placeholder(placeholder).masked(secret).default_value(value.clone().unwrap_or_default()));
-                        if b("autoFocus") && !b("disabled") { window.focus(&st.read(cx).focus_handle(cx), cx); }
-                        let sub = cx.subscribe_in(&st, window, move |this: &mut Shell, _st, ev: &InputEvent, _w, cx| {
-                            if let (InputEvent::Change, Some(a)) = (ev, change.as_ref()) {
-                                let text = _st.read(cx).value().to_string();
-                                this.note_echo(&ik2, &text);
-                                let inputs = this.module_inputs(&m);
-                                Shell::fire(&k, &m, &inputs, a, &key2, None, json!(text), cx);
-                            }
-                            if let (InputEvent::PressEnter { .. }, Some(a)) = (ev, submit.as_ref()) {
-                                let inputs = this.module_inputs(&m);
-                                Shell::fire(&k, &m, &inputs, a, &key2, None, Value::Null, cx);
-                            }
-                        });
-                        InputSlot { input: AnyInput::Line(st), applied: value.clone(), echoes: Vec::new(), _sub: sub }
-                    };
-                    self.inputs.insert(ik.clone(), slot);
-                }
+                self.ensure_input_slot(module, key, n, window, cx);
                 // A module may (re)set an input's value by changing `value` (e.g. clear after send).
                 let slot = self.inputs.get_mut(&ik).unwrap();
                 if value.is_some() && value != slot.applied {
@@ -1133,7 +1153,7 @@ impl Shell {
                     .on_click(move |v, _, cx| Self::fire(&k, &m, &inputs, &action, &key2, None, json!(*v), cx))
                     .into_any_element()
             }
-            "tree" => self.tree(module, n, &path, cx),
+            "tree" => self.cached_tree(module, n, &path, window, cx),
             "status" => {
                 let color = match n.get("level").and_then(|l| l.as_str()) {
                     Some("error") => cx.theme().danger,
@@ -1583,7 +1603,14 @@ impl Shell {
                 let wheel_module = load_module.clone();
                 let wheel_action = older_action.clone();
                 let wheel_key = load_key.clone();
-                let follow_layout = canvas(|_, _, _| (), move |bounds, (), window, cx| {
+                let scrollbar_bounds = window.use_keyed_state(
+                    (ElementId::from(sid(module, &path)), "scrollbar-bounds"), cx,
+                    |_, _| scrollbar_layer::Geometry::default(),
+                ).read(cx).clone();
+                let measured_scrollbar = scrollbar_bounds.clone();
+                let follow_layout = canvas(move |bounds, window, _| {
+                    measured_scrollbar.set(Some((bounds, window.content_mask())));
+                }, move |bounds, (), window, cx| {
                     viewport_y.set(f32::from(bounds.origin.y));
                     let current = transcript_scroll::Geometry { max: f32::from(paint_handle.max_offset().y), offset: f32::from(paint_handle.offset().y) };
                     if let Some(mut anchor) = prepend.get() {
@@ -1598,7 +1625,7 @@ impl Shell {
                         if (current.offset - wanted).abs() > 1.0 { paint_handle.set_offset(point(paint_handle.offset().x, px(wanted))); }
                         geometry.set(Some(transcript_scroll::Geometry { max: current.max, offset: wanted }));
                         prepend.set(if anchor.stable_frames >= 2 { None } else { Some(anchor) });
-                        { crate::ui::redraw_stats::cause(concat!("refresh:", file!(), ":", line!())); window.refresh(); }
+                        { redraw_stats::cause("anim:transcript-anchor"); window.request_animation_frame(); }
                         return;
                     }
                     if let Some(old) = geometry.get() {
@@ -1620,7 +1647,7 @@ impl Shell {
                     // Correct against the measured extent until the last line is actually visible.
                     if following.get() && current.max + current.offset > 1.0 {
                         paint_handle.scroll_to_bottom();
-                        { crate::ui::redraw_stats::cause(concat!("refresh:", file!(), ":", line!())); window.refresh(); }
+                        { redraw_stats::cause("anim:transcript-follow"); window.request_animation_frame(); }
                     }
                 }).absolute().inset_0();
                 let gap = n["gap"].as_f64().unwrap_or(6.0).clamp(0.0, 64.0) as f32;
@@ -1646,10 +1673,17 @@ impl Shell {
                         }
                     }
                 });
+                let scrollbar = match &self.scrollbar_layer {
+                    Some(layer) => {
+                        layer.borrow_mut().insert(path.clone(), scrollbar_layer::Binding { handle: handle.clone(), mode: scrollbar_mode, geometry: scrollbar_bounds });
+                        Empty.into_any_element()
+                    }
+                    None => Scrollbar::vertical(&handle).mode(scrollbar_mode).viewport_from_layout().into_any_element(),
+                };
                 self.apply_base(v_flex(), n, cx).relative().min_w_0().min_h_0().overflow_hidden()
                     .child(viewport)
                     .child(follow_layout)
-                    .child(Scrollbar::vertical(&handle).mode(scrollbar_mode).viewport_from_layout())
+                    .child(scrollbar)
                     .into_any_element()
             }
             "approvalPanel" => {
@@ -1861,9 +1895,9 @@ impl Render for Shell {
         };
         self.window_chrome.update(chrome_tree, window, cx);
         let body = if let Some(m) = self.only_module.clone() {
-            self.render_slot(&m, 0, window, cx)
+            self.render_slot(&m, "__root", 0, window, cx)
         } else if let (true, false, Some(root)) = (layout_ok, self.show_safe_mode, root) {
-            self.render_slot(&root, 0, window, cx)
+            self.render_slot(&root, "__root", 0, window, cx)
         } else {
             v_flex().size_full().child(TitleBar::new().child("Hato")).child(self.render_safe_mode(cx)).into_any_element()
         };

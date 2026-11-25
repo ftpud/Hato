@@ -6,7 +6,7 @@ use gpui_kit::base::{
     surface_motion,
 };
 use node_motion::{default_timing, policy, random};
-use std::{cell::Cell, rc::Rc};
+use std::{cell::{Cell, RefCell}, rc::Rc};
 
 pub(super) fn meter(n: &Value, id: SharedString, window: &mut Window, cx: &mut App) -> AnyElement {
     let count = n["segments"].as_u64().unwrap_or(1).clamp(1, 256) as usize;
@@ -97,8 +97,9 @@ pub(super) fn meter(n: &Value, id: SharedString, window: &mut Window, cx: &mut A
 struct PaintClock {
     last: Cell<Option<Instant>>,
     seconds: Cell<f32>,
-    /// A throttled redraw is already scheduled.
-    scheduled: Cell<bool>,
+    /// A shared spinner clock can paint in several cached views and windows. Each visible
+    /// view needs an invalidation; notifying only the first leaves the others frozen.
+    scheduled: RefCell<HashSet<(WindowId, EntityId)>>,
 }
 
 /// Frame-rate cap for a painted animation: the node's `fps` (1..=120), else `default`. gpui
@@ -164,11 +165,16 @@ impl PaintClock {
         }
         if interval <= EVERY_FRAME {
             { crate::ui::redraw_stats::cause(concat!("anim:", file!(), ":", line!())); window.request_animation_frame(); }
-        } else if !self.scheduled.replace(true) {
-            let (clock, view) = (self.clone(), window.current_view());
+        } else {
+            let view = window.current_view();
+            let key = (window.window_handle().window_id(), view);
+            if !self.scheduled.borrow_mut().insert(key) {
+                return self.seconds.get();
+            }
+            let clock = self.clone();
             window.spawn(cx, async move |cx| {
                 cx.background_executor().timer(until_next_tick(interval)).await;
-                clock.scheduled.set(false);
+                clock.scheduled.borrow_mut().remove(&key);
                 let _ = cx.update(|window, _| window.on_next_frame(move |_, cx| { crate::ui::redraw_stats::cause("anim:paint-clock"); cx.notify(view) }));
             }).detach();
         }
@@ -455,6 +461,49 @@ fn gauge_arc(
     ));
     path.add_polygon(&points, true);
     path.build().ok()
+}
+
+#[cfg(all(test, feature = "snapshot"))]
+mod clock_tests {
+    use super::{PaintClock, GRID};
+    use gpui_kit::{self as gpui, canvas, div, px, size, AppContext, Context, Entity, IntoElement,
+        ParentElement, Render, StyleRefinement, Styled, TestAppContext, VisualTestContext, Window};
+    use std::rc::Rc;
+
+    struct Spinner(Rc<PaintClock>);
+    impl Render for Spinner {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let clock = self.0.clone();
+            canvas(|_, _, _| {}, move |_, _, window, cx| {
+                clock.sample(true, GRID, window, cx);
+            }).size_full()
+        }
+    }
+
+    struct Pair(Entity<Spinner>, Entity<Spinner>);
+    impl Render for Pair {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let style = StyleRefinement::default().w(px(14.)).h(px(14.));
+            div().size_full().child(gpui::AnyView::from(self.0.clone()).cached(style.clone()))
+                .child(gpui::AnyView::from(self.1.clone()).cached(style))
+        }
+    }
+
+    #[gpui::test]
+    fn shared_clock_schedules_every_cached_view(cx: &mut TestAppContext) {
+        let clock = Rc::<PaintClock>::default();
+        let window = cx.open_window(size(px(100.), px(100.)), |_, cx| {
+            let first = cx.new(|_| Spinner(clock.clone()));
+            let second = cx.new(|_| Spinner(clock.clone()));
+            Pair(first, second)
+        });
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        assert_eq!(clock.scheduled.borrow().len(), 2, "each cached view must receive its own tick");
+        // A second paint before the scheduled tick must not queue duplicate timers.
+        visual.update(|window, cx| { window.refresh(); window.draw(cx).clear(cx); });
+        assert_eq!(clock.scheduled.borrow().len(), 2);
+    }
 }
 
 #[cfg(test)]
