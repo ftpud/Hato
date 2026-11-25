@@ -422,6 +422,9 @@ export interface UiAmbient {
   glow?: { color: UiColor; x: number; y: number; radius: number }[];
   /** Speed is in logical pixels per second. The seed makes placement repeatable. */
   particles?: { count: number; color: UiColor; minSize: number; maxSize: number; speed: number; seed: number };
+  /** Maximum redraw rate of the particle motion (1–120, default 30). Each redraw repaints the
+   *  whole window, so slow ambient motion should ask for little. */
+  fps?: number;
 }
 
 /** Window chrome motion supplied by the root UI module. Settings and presets can change live. */
@@ -546,7 +549,7 @@ export type UiNode =
   | (Base & { type: "progress"; value?: number; indeterminate?: boolean; label?: string; transition?: UiMotionTiming; color?: UiColor; trackColor?: UiColor })
   | (Base & { type: "meter"; value: number; max: number; segments: number; filledColor: UiColor; emptyColor: UiColor; highlightColor?: UiColor; /** Minimum value, in the same units as max, eligible for the flash. */ highlightFrom?: number;
       segmentWidth: number; segmentHeight: number; gap: number; radius: number; transition?: UiMotionTiming })
-  | (Base & { type: "spinner"; size: number; color: UiColor; thickness: number })
+  | (Base & { type: "spinner"; size: number; color: UiColor; thickness: number; /** Max redraw rate, 1–120 (default 30). */ fps?: number })
   /** Clockwise gauge starting at 12 o'clock. Size and thickness are logical pixels. */
   | (Base & { type: "ring"; value: number; max: number; size: number; thickness: number; color: UiColor; trackColor: UiColor;
       transition?: UiMotionTiming; label?: string })
@@ -659,7 +662,7 @@ export interface CodeViewerHoverEvent {
   y: number;
 }
 
-export interface TreeRow { /** Optional plugin-supplied row tint; selection/hover take precedence. */ background?: UiColor; /** Native hover tooltip for the row. */ tooltip?: string; /** Module-side description metadata. */ description?: string; /** Shows an animated activity indicator after the label. */ busy?: boolean; iconSvg?: string; iconColor?: UiColor; connector?: "branch" | "last"; /** An empty key renders a noninteractive group heading. */ key: string; label: string; depth: number; expandable: boolean; expanded: boolean; selected: boolean; /** Shown as-is after the label. */ badge?: string;
+export interface TreeRow { /** Optional plugin-supplied row tint; selection/hover take precedence. */ background?: UiColor; /** Native hover tooltip for the row. */ tooltip?: string; /** Module-side description metadata. */ description?: string; /** Shows an animated activity indicator after the label. */ busy?: boolean; iconSvg?: string; /** Replaces the icon with a native activity spinner (capped frame rate; no module re-render per step). */ iconBusy?: boolean; iconColor?: UiColor; connector?: "branch" | "last"; /** An empty key renders a noninteractive group heading. */ key: string; label: string; depth: number; expandable: boolean; expanded: boolean; selected: boolean; /** Shown as-is after the label. */ badge?: string;
   /** Single-line monospace text after the label, before badges. Ellipsizes to fit. */
   value?: string;
   /** Color of the inline value. Defaults to muted. */

@@ -15,7 +15,9 @@ pub(super) struct Motion {
     theme: Value,
     overlays: HashMap<(WindowId, String, String), Overlay>,
     pub(super) frame: u64,
-    pub(super) revision: u64,
+    /// Layout moves are triggered by a new snapshot from the node's owner. Updates to
+    /// another panel must not turn an in-flight resize into a new move animation.
+    revisions: HashMap<String, u64>,
     pub(super) children: HashMap<(WindowId, SharedString), node_motion::PresenceList>,
     anchors: Vec<Anchor>,
     order: u64,
@@ -27,6 +29,15 @@ struct Anchor {
 }
 
 impl Motion {
+    pub(super) fn tree_changed(&mut self, module: &str) {
+        let revision = self.revisions.entry(module.to_owned()).or_default();
+        *revision = revision.wrapping_add(1);
+    }
+
+    pub(super) fn revision(&self, module: &str) -> u64 {
+        self.revisions.get(module).copied().unwrap_or(0)
+    }
+
     pub(super) fn push_anchor(
         &mut self,
         id: SharedString,
@@ -120,7 +131,7 @@ impl Element for AnchorMeasure {
         cx: &mut App,
     ) {
         if self.bounds.replace(Some(bounds)) != Some(bounds) {
-            window.request_animation_frame();
+            { crate::ui::redraw_stats::cause(concat!("anim:", file!(), ":", line!())); window.request_animation_frame(); }
         }
         self.child.prepaint(window, cx);
     }
@@ -359,7 +370,7 @@ pub(super) fn reveal(
         (pose.opacity.clamp(0., 1.), active, state.focus.clone(), state.held, state.measured.clone())
     });
     if active {
-        window.request_animation_frame();
+        { crate::ui::redraw_stats::cause(concat!("anim:", file!(), ":", line!())); window.request_animation_frame(); }
     }
     let sliding = active && full && extent.is_some();
     let allocation = if sliding {
@@ -486,7 +497,7 @@ impl Shell {
                 },
             );
             if active || revealing {
-                window.request_animation_frame();
+                { crate::ui::redraw_stats::cause(concat!("anim:", file!(), ":", line!())); window.request_animation_frame(); }
             }
             if live || active || revealing {
                 let bounds = overlay.anchor.as_ref().and_then(|anchor| anchor.get());
@@ -688,7 +699,7 @@ impl Shell {
                 cx.background_executor().now(),
             );
             if active {
-                window.request_animation_frame();
+                { crate::ui::redraw_stats::cause(concat!("anim:", file!(), ":", line!())); window.request_animation_frame(); }
             }
             if toast.closing && !active {
                 return false;

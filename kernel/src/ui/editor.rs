@@ -97,6 +97,7 @@ impl EditorView {
 
 impl Render for EditorView {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        crate::ui::redraw_stats::cause("view:editor");
         let editor = gpui_component::input::Editor::new(&self.state).readonly(!self.editable).h_full();
         let items = self.menu.as_array().cloned().unwrap_or_default();
         let editor = if items.is_empty() { editor } else {

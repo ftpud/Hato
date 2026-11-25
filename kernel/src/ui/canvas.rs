@@ -278,7 +278,7 @@ impl Shell {
                             paint_spark(c, color, phase, b.origin, window);
                         }
                     }
-                    window.request_animation_frame();
+                    { crate::ui::redraw_stats::cause(concat!("anim:", file!(), ":", line!())); window.request_animation_frame(); }
                 }
                 // Pointer tracking for this canvas's gesture works in whichever window shows it.
                 if dragging {

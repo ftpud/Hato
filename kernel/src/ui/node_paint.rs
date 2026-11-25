@@ -59,7 +59,7 @@ pub(super) fn meter(n: &Value, id: SharedString, window: &mut Window, cx: &mut A
         }
         state.set((target, from, start));
         if from < target && elapsed < timing.duration {
-            window.request_animation_frame();
+            { crate::ui::redraw_stats::cause(concat!("anim:", file!(), ":", line!())); window.request_animation_frame(); }
             Some((
                 from.max(highlight_from.unwrap_or(0.)),
                 1. - elapsed.as_secs_f32() / timing.duration.as_secs_f32(),
@@ -97,7 +97,39 @@ pub(super) fn meter(n: &Value, id: SharedString, window: &mut Window, cx: &mut A
 struct PaintClock {
     last: Cell<Option<Instant>>,
     seconds: Cell<f32>,
+    /// A throttled redraw is already scheduled.
+    scheduled: Cell<bool>,
 }
+
+/// Frame-rate cap for a painted animation: the node's `fps` (1..=120), else `default`. gpui
+/// repaints the whole window for any frame, so an ambient effect redrawn at the display's refresh
+/// rate (120 Hz on ProMotion) re-laid out and repainted every panel continuously.
+fn frame_interval(n: &Value, default: f64) -> Duration {
+    let fps = n["fps"].as_f64().filter(|f| f.is_finite()).unwrap_or(default).clamp(1., 120.);
+    quantize(Duration::from_secs_f64(1. / fps))
+}
+
+/// Throttled redraws land on one shared grid of `GRID` steps: several animated elements (each
+/// spinner, the ambient dust) then share frames instead of each adding its own, unsynchronized.
+const GRID: Duration = Duration::from_nanos(33_333_333);
+
+fn quantize(interval: Duration) -> Duration {
+    if interval <= EVERY_FRAME {
+        return interval;
+    }
+    GRID * (interval.as_nanos().div_ceil(GRID.as_nanos()) as u32)
+}
+
+/// Time until the next multiple of `interval` on the shared grid.
+fn until_next_tick(interval: Duration) -> Duration {
+    static EPOCH: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    let since = EPOCH.get_or_init(std::time::Instant::now).elapsed().as_nanos();
+    let step = interval.as_nanos().max(1);
+    Duration::from_nanos((step - since % step) as u64)
+}
+
+/// At or above this rate, redraw on the next display frame instead of a timer.
+const EVERY_FRAME: Duration = Duration::from_millis(17);
 
 fn elapsed(
     id: SharedString,
@@ -116,7 +148,8 @@ fn elapsed(
 }
 
 impl PaintClock {
-    fn sample(&self, enabled: bool, window: &Window, cx: &App) -> f32 {
+    /// Seconds of animation time, and the next redraw at most `interval` from now.
+    fn sample(self: &Rc<Self>, enabled: bool, interval: Duration, window: &Window, cx: &App) -> f32 {
         if !enabled || !window.is_visible() {
             self.last.set(None);
             return self.seconds.get();
@@ -125,11 +158,20 @@ impl PaintClock {
         if let Some(last) = self.last.replace(Some(now)) {
             // Rendering is suspended while hidden. Ignore that gap on the first visible frame.
             let elapsed = now.saturating_duration_since(last);
-            if elapsed < Duration::from_millis(150) {
+            if elapsed < Duration::from_millis(150).max(interval * 3) {
                 self.seconds.set(self.seconds.get() + elapsed.as_secs_f32());
             }
         }
-        window.request_animation_frame();
+        if interval <= EVERY_FRAME {
+            { crate::ui::redraw_stats::cause(concat!("anim:", file!(), ":", line!())); window.request_animation_frame(); }
+        } else if !self.scheduled.replace(true) {
+            let (clock, view) = (self.clone(), window.current_view());
+            window.spawn(cx, async move |cx| {
+                cx.background_executor().timer(until_next_tick(interval)).await;
+                clock.scheduled.set(false);
+                let _ = cx.update(|window, _| window.on_next_frame(move |_, cx| { crate::ui::redraw_stats::cause("anim:paint-clock"); cx.notify(view) }));
+            }).detach();
+        }
         self.seconds.get()
     }
 }
@@ -144,10 +186,26 @@ pub(super) fn spinner(
     let thickness = motion::number(&n["thickness"], 1.5, 0.25, f64::from(extent) / 2.);
     let color = style::color_of(cx, n, "color").unwrap_or(cx.theme().foreground);
     let (clock, animate) = elapsed(id, "spinner-clock", window, cx);
+    let interval = frame_interval(n, 30.);
+    spinner_canvas(clock, animate, interval, extent, thickness, color)
+}
+
+/// A spinner for places without a window to keep per-element state (tree rows). All of them
+/// share one clock, so they turn in step and cost one throttled redraw between them.
+pub(super) fn shared_spinner(extent: f32, color: Hsla, cx: &App) -> AnyElement {
+    thread_local! {
+        static SHARED: Rc<PaintClock> = Rc::default();
+    }
+    let animate = surface_motion(cx) == SurfaceMotion::Full;
+    let clock = SHARED.with(Rc::clone);
+    spinner_canvas(clock, animate, quantize(Duration::from_secs_f64(1. / 30.)), extent, (extent / 8.).max(1.25), color)
+}
+
+fn spinner_canvas(clock: Rc<PaintClock>, animate: bool, interval: Duration, extent: f32, thickness: f32, color: Hsla) -> AnyElement {
     canvas(
         |_, _, _| {},
         move |bounds, _, window, cx| {
-            let seconds = clock.sample(animate, window, cx);
+            let seconds = clock.sample(animate, interval, window, cx);
             let angle = if animate {
                 seconds % 0.85 / 0.85 * std::f32::consts::TAU
             } else {
@@ -218,6 +276,7 @@ pub(super) fn ambient(
     let speed = motion::number(&config["speed"], 3., 0., 128.);
     let color = style::color_of(cx, config, "color").unwrap_or(transparent_black());
     let (clock, animate) = elapsed(id, "ambient-clock", window, cx);
+    let interval = frame_interval(n, 30.);
     let particles: Vec<_> = (0..count)
         .map(|i| {
             let sample =
@@ -236,7 +295,7 @@ pub(super) fn ambient(
             |_, _, _| {},
             move |bounds, _, window, cx| {
                 let time =
-                    clock.sample(animate && !particles.is_empty() && color.a > 0., window, cx);
+                    clock.sample(animate && !particles.is_empty() && color.a > 0., interval, window, cx);
                 window.with_content_mask(Some(ContentMask { bounds }), |window| {
                     for glow in &glow {
                         let center = bounds.origin

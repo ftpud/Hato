@@ -8,6 +8,7 @@ mod node_motion;
 #[cfg(all(test, feature = "snapshot", unix))]
 mod node_motion_tests;
 mod node_paint;
+pub(crate) mod redraw_stats;
 mod window_chrome;
 mod canvas;
 mod controls;
@@ -38,7 +39,6 @@ use gpui_component::checkbox::Checkbox;
 use gpui_component::input::{EditorState, Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_component::menu::{ContextMenuExt, DropdownMenu, PopupMenuItem};
 use gpui_component::diff::{Diff, DiffFile, DiffMode, DiffState};
-use gpui_component::spinner::Spinner;
 use gpui_component::text::{TextView, TextViewStyle};
 use gpui_component::scroll::{Scrollbar, ScrollbarMode};
 use gpui_kit::base::{GlobalState, SelectableText};
@@ -161,7 +161,7 @@ impl Shell {
         })
         .detach();
         window.observe_window_visibility(|visibility, window, _| {
-            if visibility.is_visible() { window.refresh(); }
+            if visibility.is_visible() { redraw_stats::cause("refresh:visible"); window.refresh(); }
         }).detach();
         #[cfg(target_os = "windows")]
         cx.observe_window_activation(window, |_, window, cx| {
@@ -171,7 +171,7 @@ impl Shell {
         cx.spawn(async move |this, cx| loop {
             cx.background_executor().timer(Duration::from_millis(1000)).await;
             if this.update(cx, |this, cx| {
-                if !this.toasts.is_empty() { cx.notify(); }
+                if !this.toasts.is_empty() { redraw_stats::cause("toasts"); cx.notify(); }
             }).is_err() {
                 break;
             }
@@ -224,23 +224,27 @@ impl Shell {
     fn on_msg(&mut self, msg: UiMsg, _window: &mut Window, cx: &mut Context<Self>) {
         match msg {
             UiMsg::Tree { module, tree, .. } => {
+                redraw_stats::cause(format!("tree:{module}"));
                 self.render_errors.remove(&module);
                 self.tree_nodes.retain(|(owner, _), _| owner != &module);
+                self.motion.tree_changed(&module);
                 self.trees.insert(module, tree);
-                self.motion.revision = self.motion.revision.wrapping_add(1);
                 cx.notify();
             }
             UiMsg::RenderError { module, error } => {
+                redraw_stats::cause(format!("render-error:{module}"));
                 self.render_errors.insert(module, error);
                 cx.notify();
             }
-            UiMsg::ModulesChanged | UiMsg::ApprovalsChanged => cx.notify(),
+            UiMsg::ModulesChanged | UiMsg::ApprovalsChanged => { redraw_stats::cause("modules-changed"); cx.notify() }
             UiMsg::TerminalDirty(h) => {
+                redraw_stats::cause("terminal-output");
                 if let Some(t) = self.terminals.get(&h) {
                     t.update(cx, |_, cx| cx.notify());
                 }
             }
             UiMsg::SurfaceDirty(h) => {
+                redraw_stats::cause("surface-frame");
                 for ((handle, _, _), view) in &self.surfaces {
                     if handle == &h { view.update(cx, |v, cx| v.refresh(cx)); }
                 }
@@ -1594,7 +1598,7 @@ impl Shell {
                         if (current.offset - wanted).abs() > 1.0 { paint_handle.set_offset(point(paint_handle.offset().x, px(wanted))); }
                         geometry.set(Some(transcript_scroll::Geometry { max: current.max, offset: wanted }));
                         prepend.set(if anchor.stable_frames >= 2 { None } else { Some(anchor) });
-                        window.refresh();
+                        { crate::ui::redraw_stats::cause(concat!("refresh:", file!(), ":", line!())); window.refresh(); }
                         return;
                     }
                     if let Some(old) = geometry.get() {
@@ -1616,7 +1620,7 @@ impl Shell {
                     // Correct against the measured extent until the last line is actually visible.
                     if following.get() && current.max + current.offset > 1.0 {
                         paint_handle.scroll_to_bottom();
-                        window.refresh();
+                        { crate::ui::redraw_stats::cause(concat!("refresh:", file!(), ":", line!())); window.refresh(); }
                     }
                 }).absolute().inset_0();
                 let gap = n["gap"].as_f64().unwrap_or(6.0).clamp(0.0, 64.0) as f32;
@@ -1842,6 +1846,7 @@ impl Shell {
 
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        redraw_stats::frame();
         self.modals.clear();
         self.motion.begin();
         self.begin_frame();

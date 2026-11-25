@@ -109,6 +109,7 @@ impl Detached {
 
 impl Render for Detached {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::ui::redraw_stats::cause("view:detached");
         let id = self.id.clone();
         let body = self.shell.update(cx, |sh, cx| sh.render_window_body(&id, window, cx));
         div().size_full().flex().flex_col().overflow_hidden().bg(cx.theme().background).text_color(cx.theme().foreground)
@@ -569,7 +570,7 @@ fn open_detached(shell: Entity<Shell>, _kernel: Arc<Kernel>, id: String, module:
         let window_shell = shell.clone();
         let r = gpui_kit::open_window(opts, cx, move |window, cx| {
             window.observe_window_visibility(|visibility, window, _| {
-                if visibility.is_visible() { window.refresh(); }
+                if visibility.is_visible() { { crate::ui::redraw_stats::cause(concat!("refresh:", file!(), ":", line!())); window.refresh(); } }
             }).detach();
             let (sh, id3, m, k, a) = (window_shell.clone(), id2.clone(), module.clone(), key.clone(), close_action.clone());
             window.on_window_should_close(cx, move |window, cx| {

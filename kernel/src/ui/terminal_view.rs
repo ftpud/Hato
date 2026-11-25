@@ -283,6 +283,7 @@ struct Frame {
 
 impl Render for TerminalView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::ui::redraw_stats::cause("view:terminal");
         let module_palette = super::theme::terminal_palette(cx);
         let palette = match &module_palette { Some(p) => p, None if cx.theme().mode.is_dark() => &PALETTE, None => &LIGHT_PALETTE };
         let default_fg = cx.theme().foreground;

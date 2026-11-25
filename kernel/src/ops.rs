@@ -231,8 +231,17 @@ pub fn host_async(k: &Arc<Kernel>, gen: &Arc<Generation>, op: String, args: Valu
     let gen = gen.clone();
     let spawn = std::thread::Builder::new().name(format!("op:{op}")).spawn(move || {
         let started = std::time::Instant::now();
+        crate::host::sftp::take_queue_wait();
         let r = dispatch(&k, &gen, &op, &args);
-        log_slow_op(&gen.module_id, &op, &args, &r, started.elapsed());
+        let took = started.elapsed();
+        if slow_op_threshold().is_some_and(|t| took.as_millis() >= t) {
+            let machine = grant(&k, &gen, &args).map(|g| match &g.target {
+                Target::Local => "local".to_string(),
+                Target::Ssh { machine_id, .. } => machine_id.chars().take(16).collect(),
+                Target::Cloud { .. } => "cloud".to_string(),
+            }).unwrap_or_default();
+            log_slow_op(&gen.module_id, &op, &args, &r, took, &machine, crate::host::sftp::take_queue_wait());
+        }
         if let Err(e) = &r {
             if e.code == "EPERM" || e.code == "EDENIED" {
                 k.audit.record(&gen.module_id, gen.gen_id, &op, &audit_summary(&op, &args), &format!("{e}"), None);
@@ -251,27 +260,35 @@ const WAITING_OPS: &[&str] = &[
     "net.listen", "streams.subscribe", "state.watch", "events.subscribe",
 ];
 
-/// Log ops slower than `HATO_SLOW_OP_MS` (default 200; 0 disables) to kernel.log, to see where
-/// remote switching and saving spend their time. The detail names what ran, never file contents.
-fn log_slow_op(module: &str, op: &str, args: &Value, r: &HResult<Value>, took: Duration) {
+/// `HATO_SLOW_OP_MS` (default 200; 0 disables): ops at least this slow are logged.
+fn slow_op_threshold() -> Option<u128> {
     static THRESHOLD: std::sync::OnceLock<u128> = std::sync::OnceLock::new();
-    let threshold = *THRESHOLD.get_or_init(|| std::env::var("HATO_SLOW_OP_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(200));
-    if threshold == 0 || took.as_millis() < threshold || WAITING_OPS.contains(&op) {
+    Some(*THRESHOLD.get_or_init(|| std::env::var("HATO_SLOW_OP_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(200))).filter(|t| *t > 0)
+}
+
+/// Log a slow op to kernel.log, to see where remote switching and saving spend their time: the
+/// machine it ran on, what ran (path, command, daemon method; never file contents) and how long it
+/// waited for the machine's SFTP session (`queued`).
+fn log_slow_op(module: &str, op: &str, args: &Value, r: &HResult<Value>, took: Duration, machine: &str, queued: Duration) {
+    if WAITING_OPS.contains(&op) {
         return;
     }
     let s = |v: &Value| v.as_str().unwrap_or("").chars().take(120).collect::<String>();
-    let target = s(&args["target"]["kind"]);
     let detail = match op {
         _ if op.starts_with("fs.") => s(&args["path"]),
         "process.run" | "process.spawn" => {
-            let first = args["args"].as_array().and_then(|a| a.iter().find(|x| !x.as_str().unwrap_or("-").starts_with('-'))).map(s).unwrap_or_default();
-            format!("{} {first}", s(&args["executable"]))
+            let req = &args["request"];
+            let words: Vec<String> = req["args"].as_array().map(|a| a.iter().map(s).filter(|w| !w.starts_with('-') && !w.contains('=') && !w.starts_with('/')).take(2).collect()).unwrap_or_default();
+            let exe = s(&req["executable"]);
+            format!("{} {}", exe.rsplit('/').next().unwrap_or(&exe), words.join(" "))
         }
         "daemon.request" => format!("{} {} {}", s(&args["op"]), s(&args["args"]["target"]), s(&args["args"]["method"])),
         _ => String::new(),
     };
+    let machine = if machine.is_empty() { s(&args["target"]["kind"]) } else { machine.to_string() };
+    let queued = if queued.as_millis() > 0 { format!(" queued {}ms", queued.as_millis()) } else { String::new() };
     let outcome = match r { Ok(_) => "ok".to_string(), Err(e) => e.code.clone() };
-    log::info!("slow op {op} took {}ms [{module}] {target} {} ({outcome})", took.as_millis(), detail.trim());
+    log::info!("slow op {op} took {}ms{queued} [{module}] {machine} {} ({outcome})", took.as_millis(), detail.trim());
 }
 
 /// Audit text for an op. Requests that can carry credentials (headers, form bodies) are reduced

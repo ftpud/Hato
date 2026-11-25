@@ -197,7 +197,7 @@ impl Shell {
                         d.child(div().flex_1().min_w_0().text_sm().font_family(cx.theme().mono_font_family.clone())
                             .text_color(color).overflow_hidden().whitespace_nowrap().text_ellipsis().child(value.to_owned()))
                     })
-                    .when(busy, |d| d.child(div().flex_none().child(Spinner::new().xsmall().color(theme::color(cx, "primary", cx.theme().primary)))))
+                    .when(busy, |d| d.child(div().flex_none().child(node_paint::shared_spinner(12., theme::color(cx, "primary", cx.theme().primary), cx))))
                     .children(r["badges"].as_array().into_iter().flatten().take(8).map(|badge| {
                         let color = badge["color"].as_str().map(|c| theme::color(cx, c, theme_muted)).unwrap_or(theme_muted);
                         div().flex_none().text_xs().text_color(color).whitespace_nowrap().child(badge["text"].as_str().unwrap_or("").to_string())
@@ -206,7 +206,16 @@ impl Shell {
                 .when_some(r["detail"].as_str(), |d, detail| d.child(div().text_xs().text_color(theme_muted).overflow_hidden().whitespace_nowrap().text_ellipsis().child(detail.to_string())));
             #[cfg(all(test, feature = "snapshot"))]
             let label = label.debug_selector(|| format!("tree-content/{rk}"));
+            let icon_busy = r["iconBusy"].as_bool().unwrap_or(false);
             let icon_element = match r["iconSvg"].as_str() {
+                // Activity in place of the icon, drawn natively at a capped frame rate (a module
+                // rotating an SVG re-sent its whole tree for every step).
+                _ if icon_busy => {
+                    let color = r["iconColor"].as_str().map(|c| theme::color(cx, c, theme_muted)).unwrap_or(theme_muted);
+                    let extent = icon_w.unwrap_or(icon_size).min(icon_h.unwrap_or(icon_size));
+                    div().w(px(icon_w.unwrap_or(icon_size))).h(px(icon_h.unwrap_or(icon_size))).flex_none().flex().items_center().justify_center()
+                        .child(node_paint::shared_spinner(extent * 0.8, color, cx)).into_any_element()
+                }
                 Some(svg) => {
                     let color = r["iconColor"].as_str().map(|c| theme::color(cx, c, theme_muted)).unwrap_or(theme_muted);
                     let icon = gpui_component::Icon::default().data(svg.as_bytes()).text_color(color);

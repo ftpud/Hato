@@ -141,11 +141,16 @@ pub fn list(be: &FsBackend, path: &str) -> HResult<Value> {
         }
         FsBackend::Remote(ssh) => {
             let sftp = ssh.sftp()?;
-            for (name, a) in sftp.list(path)? {
+            let entries = sftp.list(path)?;
+            // Symlink targets in one pipelined batch rather than a round trip each.
+            let links: Vec<String> = entries.iter().filter(|(_, a)| a.is_symlink())
+                .map(|(name, _)| format!("{}/{}", path.trim_end_matches('/'), name)).collect();
+            let mut targets = sftp.stat_many(&links).into_iter();
+            for (name, a) in entries {
                 let (kind, size) = if a.is_symlink() {
-                    match sftp.stat(&format!("{}/{}", path.trim_end_matches('/'), name)) {
-                        Ok(t) => (if t.is_dir() { "dir" } else { "file" }, t.size.unwrap_or(0)),
-                        Err(_) => ("symlink", 0),
+                    match targets.next() {
+                        Some(Ok(t)) => (if t.is_dir() { "dir" } else { "file" }, t.size.unwrap_or(0)),
+                        _ => ("symlink", 0),
                     }
                 } else {
                     (if a.is_dir() { "dir" } else if a.is_file() { "file" } else { "other" }, a.size.unwrap_or(0))

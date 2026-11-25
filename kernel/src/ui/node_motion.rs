@@ -140,6 +140,48 @@ impl Geometry {
     }
 }
 
+#[cfg(test)]
+mod geometry_tests {
+    use super::{default_timing, motion, Geometry};
+    use gpui_kit::{point, px, size, Bounds, Point};
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn another_modules_tree_does_not_restart_a_layout_move() {
+        let mut motion = motion::Motion::default();
+        let mut geometry = Geometry::default();
+        let timing = default_timing(280);
+        let now = Instant::now();
+        let rect = |x| Bounds::new(point(px(x), px(0.)), size(px(100.), px(30.)));
+        geometry.offset(rect(0.), motion.revision("panel"), &timing, now, true);
+
+        // A parent resize can move this panel without a new snapshot from its owner.
+        // A simultaneous update from another module must not animate that movement.
+        motion.tree_changed("other");
+        let (offset, active) = geometry.offset(
+            rect(20.), motion.revision("panel"), &timing, now, true,
+        );
+        assert_eq!(offset, Point::default());
+        assert!(!active);
+
+        // Moves caused by a snapshot from the owner still animate.
+        motion.tree_changed("panel");
+        let (offset, active) = geometry.offset(
+            rect(40.), motion.revision("panel"), &timing, now, true,
+        );
+        assert_eq!(offset.x, px(-20.));
+        assert!(active);
+        let started = geometry.start;
+
+        motion.tree_changed("other");
+        geometry.offset(
+            rect(42.), motion.revision("panel"), &timing,
+            now + Duration::from_millis(20), true,
+        );
+        assert_eq!(geometry.start, started);
+    }
+}
+
 struct NodeGeometry {
     child: AnyElement,
     timing: SurfaceTiming,
@@ -190,7 +232,7 @@ impl Element for NodeGeometry {
         if let Some(height) = &self.height {
             let measured = f32::from(bounds.size.height);
             if height.replace(Some(measured)) != Some(measured) {
-                window.request_animation_frame();
+                { crate::ui::redraw_stats::cause(concat!("anim:", file!(), ":", line!())); window.request_animation_frame(); }
             }
         }
         let (offset, active) = self.geometry.borrow_mut().offset(
@@ -201,7 +243,7 @@ impl Element for NodeGeometry {
             surface_motion(cx) == SurfaceMotion::Full,
         );
         if active {
-            window.request_animation_frame();
+            { crate::ui::redraw_stats::cause(concat!("anim:", file!(), ":", line!())); window.request_animation_frame(); }
         }
         let mask = (self.clip && (active || self.resizing)).then(|| ContentMask {
             bounds: Bounds::new(bounds.origin + offset, bounds.size),
@@ -292,7 +334,7 @@ impl Shell {
             height: height.clone(),
             clip: n["style"]["clip"] != false,
             resizing,
-            revision: self.motion.revision,
+            revision: self.motion.revision(module),
         };
         if let Some(height) = height {
             let show = surface_motion(cx) == SurfaceMotion::Full;
@@ -523,7 +565,7 @@ impl PresenceChild {
             return None;
         }
         if active || sizing {
-            window.request_animation_frame();
+            { crate::ui::redraw_stats::cause(concat!("anim:", file!(), ":", line!())); window.request_animation_frame(); }
         }
         let height = self.height.clone();
         let measured = height.get();
@@ -549,7 +591,7 @@ impl PresenceChild {
                 if let Some(child) = children.first() {
                     let target = f32::from(child.size.height);
                     if height.replace(Some(target)) != Some(target) && sizing {
-                        window.request_animation_frame();
+                        { crate::ui::redraw_stats::cause(concat!("anim:", file!(), ":", line!())); window.request_animation_frame(); }
                     }
                 }
             });
@@ -729,7 +771,7 @@ pub(super) fn label_text(n: &Value, id: SharedString, window: &mut Window, cx: &
     };
     let (sample, active) = scramble(text, reveal, now.saturating_duration_since(started), false);
     if active {
-        window.request_animation_frame();
+        { crate::ui::redraw_stats::cause(concat!("anim:", file!(), ":", line!())); window.request_animation_frame(); }
     } else {
         state.update(cx, |state, _| state.started = None);
     }

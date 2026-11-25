@@ -246,6 +246,7 @@ impl Focusable for SurfaceView {
 
 impl Render for SurfaceView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::ui::redraw_stats::cause("view:surface");
         let interactive = self.binding.pointer.is_some() || self.binding.keys.is_some() || self.binding.wheel.is_some();
         let bounds = self.bounds.clone();
         let reported = self.reported.clone();
@@ -299,7 +300,7 @@ impl Render for SurfaceView {
             }
             root = root.child(marker);
         }
-        if animating { window.request_animation_frame(); }
+        if animating { { crate::ui::redraw_stats::cause(concat!("anim:", file!(), ":", line!())); window.request_animation_frame(); } }
         if !interactive { return root; }
         root.track_focus(&self.focus)
             .on_mouse_down(MouseButton::Left, cx.listener(|this, ev: &MouseDownEvent, window, cx| {
