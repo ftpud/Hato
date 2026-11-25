@@ -272,6 +272,51 @@ test('background runner advertises boolean config, preserves structured cost and
   await mod.methods.stop(ctx, { id: 'chat' });
 });
 
+test('background runner keeps provider slash commands for the composer', async () => {
+  const mod = (await load('Hato-plugins/modules/services/agent-runner/src/index.ts')).default;
+  const { ctx, listeners } = harness();
+  await mod.activate(ctx);
+  await mod.methods.create(ctx, { spec: spec() });
+  const update = value => listeners.get('process')(JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'provider-session', update: value } }) + '\n');
+  update({ sessionUpdate: 'available_commands_update', availableCommands: [
+    { name: 'review', description: 'Review changes', input: { hint: 'path' } },
+    { name: 'bad name' }, { description: 'missing name' }, { name: 'compact' },
+  ] });
+  await new Promise(setImmediate);
+  assert.deepEqual((await mod.methods.list())[0].commands, [
+    { name: 'review', description: 'Review changes', input: { hint: 'path' } }, { name: 'compact' },
+  ]);
+  await mod.methods.stop(ctx, { id: 'chat' });
+});
+
+test('a provider slash command sent mid-turn waits for the turn instead of interrupting it', async () => {
+  const mod = (await load('Hato-plugins/modules/services/agent-runner/src/index.ts')).default;
+  const { ctx, listeners, requests } = harness();
+  await mod.activate(ctx);
+  await mod.methods.create(ctx, { spec: spec() });
+  listeners.get('process')(JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'provider-session', update: { sessionUpdate: 'available_commands_update', availableCommands: [{ name: 'compact' }] } } }) + '\n');
+  await mod.methods.send(ctx, { id: 'chat', text: 'Long task' });
+  assert.deepEqual(await mod.methods.send(ctx, { id: 'chat', text: '/compact', steer: true }), { queued: true });
+  assert.equal(requests.some(r => r.method === 'session/cancel'), false, 'a command must not stop the running turn');
+  // Ordinary follow-ups keep the interrupt fallback on providers without steering.
+  assert.deepEqual(await mod.methods.send(ctx, { id: 'chat', text: 'actually stop', steer: true }), { queued: true });
+  assert.equal(requests.filter(r => r.method === 'session/cancel').length, 1);
+  await mod.methods.stop(ctx, { id: 'chat' });
+});
+
+test('reconnect swaps in reissued desktop MCP endpoints and leaves other servers untouched', async () => {
+  const mod = (await load('Hato-plugins/modules/services/agent-runner/src/index.ts')).default;
+  const { ctx, requests } = harness({ resume: true });
+  await mod.activate(ctx);
+  const desktop = token => ({ id: 'internal-local-mcp', name: 'internal-local-mcp', command: 'node', args: ['/proxy.mjs'], env: [{ name: 'HATO_MCP_TOKEN', value: token }] });
+  const other = { id: 'other', name: 'other', command: 'node', args: ['/other.mjs'], env: [] };
+  await mod.methods.create(ctx, { spec: spec({ mcps: [desktop('old'), other] }) });
+  await mod.methods.reconnect(ctx, { id: 'chat', endpoints: [desktop('new'), { ...other, command: 'evil' }] });
+  const servers = requests.filter(r => r.method === 'session/resume').at(-1).params.mcpServers;
+  assert.deepEqual(servers.map(s => [s.name, s.command, s.env[0]?.value ?? null]), [['internal-local-mcp', 'node', 'new'], ['other', 'node', null]]);
+  await mod.methods.stop(ctx, { id: 'chat' });
+});
+
 test('background transcript projection keeps distinct ACP messageId boundaries', async () => {
   const mod = (await load('Hato-plugins/modules/services/agent-runner/src/index.ts')).default;
   const { ctx } = harness();

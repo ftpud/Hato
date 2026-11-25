@@ -213,3 +213,24 @@ test('workflow MCP preparation refreshes OAuth only for selected enabled servers
  assert.deepEqual(requests.map(r=>r.serverId),['github']);
  await assert.rejects(mod.methods.mcpConfigs(ctx,{workspaceId:'ws',ids:['missing']}),/missing or disabled/);
 });
+
+test('reconnect reissues desktop-hosted MCP endpoints for the servers the agent uses',async()=>{
+ const mod=(await load('Hato-plugins/modules/services/persistent-agents/src/index.ts')).default;
+ const issued=[];let reconnect;
+ const session={id:'worker',workspaceId:'ws',status:'ready',agentFile:null,skills:['skill.md'],mcps:[{id:'internal-local-mcp'},{id:'internal-remote-mcp-local'},{id:'github'}]};
+ const ctx={modules:{async call(service,method,args){
+  if(service==='workspace')return{id:'ws',machineId:'local',location:'local'};
+  if(service==='persistence')return method==='settings.get'&&args.key==='acp.claude.useSubscription'?true:[];
+  if(method==='endpoint'){issued.push([service,args]);return service==='internal-local-mcp'?{server:{name:'internal-local-mcp',command:'node',args:['/p'],env:[{name:'HATO_MCP_TOKEN',value:'fresh'}]}}:{name:'x',command:'node',args:['/r'],env:[]};}
+  throw new Error(service+':'+method);
+ }},host:{daemon:{ensure:async()=>({bin:'/hato',dir:'/runtime'}),request:async(_t,operation,a)=>{
+  if(operation==='plugins.list')return{plugins:[{id:'agent-runner',active:true},{id:'internal-remote-mcp',active:true}]};
+  if(a.method==='view')return{session,permissions:[],messages:[]};
+  if(a.method==='reconnect'){reconnect=a.args;return session;}
+  throw new Error(a.method);
+ }}}};
+ await mod.methods.reconnect(ctx,{workspaceId:'ws',id:'worker'});
+ assert.deepEqual(issued.map(([s,a])=>[s,a.conversationId??a.sessionId]),[['internal-remote-mcp','worker'],['internal-local-mcp','worker']]);
+ assert.deepEqual(issued[0][1].skills,['skill.md']);
+ assert.deepEqual(reconnect.endpoints.map(e=>[e.id,e.env?.[0]?.value??null]),[['internal-remote-mcp-local',null],['internal-local-mcp','fresh']]);
+});

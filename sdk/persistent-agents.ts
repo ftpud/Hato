@@ -44,6 +44,8 @@ export interface AgentSession extends AgentSpec {
   configOptions: any[]; models: any; revision: number;
   /** Legacy ACP session modes, last reported context usage and prompt capabilities of the connected provider. */
   modes?: any; usage?: ReportedUsage | null; promptImages?: boolean;
+  /** Slash commands last advertised by the provider (ACP available_commands_update). */
+  commands?: { name: string; description?: string; input?: { hint?: string } | null }[];
   /** Desktop list projection of the latest activity; never drives the agent. */
   activity?: string;
 }

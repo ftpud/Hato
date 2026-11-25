@@ -117,7 +117,16 @@ test('composer autocomplete shows ACP command hints and submits slash arguments 
   const walk = n => [unscoped(n), ...(n.children || []).flatMap(walk)];
   await mod.activate(ctx);
   await dispatch(mod,ctx, { action: 'draftChanged', value: '/re', inputs: {} });
-  const suggestion = walk(mod.render()).find(n => n.key === 'slash-commands').children[0];
+  const tree = walk(mod.render());
+  const popup = tree.find(n => n.key === 'slash-commands');
+  // Pinned over the transcript, above the composer. Not a popover: popovers take keyboard focus
+  // from the composer as they open. An explicit height keeps the list scrollable.
+  assert.equal(popup.type, 'column'); assert.equal(popup.scroll, true); assert.ok(popup.height > 0);
+  assert.equal(popup.style.position, 'absolute');
+  assert.ok(!tree.some(n => n.type === 'popover' && walk(n).some(c => c.key === 'slash-commands')));
+  assert.ok(tree.find(n => n.key === 'transcript-pane').children.some(n => n.key === 'slash-commands'));
+  assert.ok(!walk(tree.find(n => n.key === 'composer')).some(n => n.key === 'slash-commands'));
+  const suggestion = popup.children[0];
   assert.equal(suggestion.text, '/review');
   assert.match(suggestion.description, /Review changes.*path or focus/);
   await dispatch(mod,ctx, { action: 'chooseCommand', value: 'review', inputs: { prompt: '/re' } });
@@ -714,6 +723,31 @@ test('native events carry conversation origins, reject stale send clicks, and re
  finishSend();await dispatch(mod,ctx,{action:'dismissCommands',inputs:{}});assert.equal(mod.canSwap().ok,true);
 });
 
+test('composer input keeps working after the conversation changes (native inputs keep their first actions)',async()=>{
+ const mod=await load('Hato-plugins/modules/ui/ai/src/index.ts');
+ const calls=[];let selected='a';
+ const ctx={state:{get:()=>({id:'ws'}),set(){},watch(){}},events:{on(){},emit(){}},ui:{invalidate(){}},modules:{async call(_,method,args){
+  if(method==='view')return {profiles:[],conversations:[],workspace:{},active:{conversation:{id:selected},messages:[],live:{status:'ready',sessionId:'session-'+selected}}};
+  if(method==='select'){selected=args.conversationId;return;}
+  if(method==='send'){calls.push(args);return;}
+  if(method==='view.patch')return;
+  throw new Error(method);
+ }}};
+ await mod.activate(ctx);await new Promise(setImmediate);
+ const raw=n=>[n,...(n.children||[]).flatMap(raw)];
+ // The native host builds the input once and keeps the action names from that first render.
+ const prompt=raw(mod.render()).find(n=>n.key==='prompt');
+ assert.equal(prompt.submitAction,'send');assert.equal(prompt.changeAction,'draftChanged');
+ await dispatch(mod,ctx,{action:'selectConv',value:'b',inputs:{}});mod.render();
+ await dispatch(mod,ctx,{action:prompt.changeAction,key:'prompt',value:'Hello b',inputs:{prompt:'Hello b'}});
+ assert.equal(raw(mod.render()).find(n=>n.key==='prompt').value,'Hello b');
+ await dispatch(mod,ctx,{action:prompt.submitAction,key:'prompt',value:null,inputs:{prompt:'Hello b'}});
+ assert.equal(calls.length,1);assert.equal(calls[0].conversationId,'b');assert.equal(calls[0].text,'Hello b');
+ assert.equal(raw(mod.render()).find(n=>n.key==='prompt').value,'','sent text is cleared from the composer');
+ // Unscoped events from keys that are not a rendered input stay rejected.
+ await dispatch(mod,ctx,{action:'send',key:'send',inputs:{prompt:'Forged'}});assert.equal(calls.length,1);
+});
+
 test('latest UI load wins and old failures cannot replace a newer selected view',async()=>{
  const mod=await load('Hato-plugins/modules/ui/ai/src/index.ts');
  const listeners={};let callNumber=0,rejectOld;
@@ -738,4 +772,27 @@ test('auth launch errors remain visible when rendering rotates the attempt origi
  await dispatch(mod,ctx,{action:'authenticate:login',inputs:{}});
  const nodes=(function walk(n){return [n,...(n.children||[]).flatMap(walk)];})(mod.render());
  assert.ok(nodes.some(n=>/Unsafe authentication/.test(n.text||'')));
+});
+
+test('MCP popover offers a reconnect that restarts the chat tools, disabled during a turn', async () => {
+  const mod = await load('Hato-plugins/modules/ui/ai/src/index.ts');
+  const calls = [];
+  const view = { profiles: [], conversations: [], workspace: { machineId: 'local', root: '/w' }, mcpServers: [{ id: 'internal', name: 'Hato' }],
+    active: { conversation: { id: 'c', mcpSelection: ['internal'] }, messages: [], live: { status: 'ready', sessionId: 's', mcp: { selection: ['internal'] } } } };
+  const ctx = { state: { get: () => ({ id: 'ws' }), set() {}, watch() {} }, events: { on() {}, emit() {} }, ui: { invalidate() {} }, modules: { async call(_, method, args) {
+    calls.push(method);
+    if (method === 'view') return view;
+    if (method === 'disconnect' || method === 'connect') return {};
+    throw new Error(method);
+  } } };
+  const walk = n => [unscoped(n), ...(n.children || []).flatMap(walk)];
+  await mod.activate(ctx);
+  await dispatch(mod, ctx, { action: 'toggleMcpPicker', inputs: {} });
+  const button = walk(mod.render()).find(n => n.key === 'reconnect-tools').children.find(n => n.type === 'button');
+  assert.equal(button.text, 'Reconnect MCPs'); assert.equal(button.disabled, false);
+  await dispatch(mod, ctx, { action: button.action, inputs: {} });
+  assert.deepEqual(calls.filter(m => m === 'disconnect' || m === 'connect'), ['disconnect', 'connect']);
+  view.active.live.status = 'busy'; view.active.busy = true;
+  await dispatch(mod, ctx, { action: 'dismissCommands', inputs: {} });
+  assert.equal(walk(mod.render()).find(n => n.key === 'reconnect-tools').children.find(n => n.type === 'button').disabled, true);
 });
