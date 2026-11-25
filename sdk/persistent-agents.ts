@@ -1,4 +1,5 @@
 import type { McpLaunchOptions } from "./provider-mcp";
+import type { ReportedUsage } from "./context-usage";
 import type { ChatMessage } from "./types";
 export interface AgentProfile { id: string; provider: string; name: string; executable: string; args: string[]; mcpLaunch?: McpLaunchOptions; envRefs?: Record<string,string>; enabled?: boolean }
 export type McpTransport = "stdio" | "http" | "sse";
@@ -33,11 +34,16 @@ export interface AgentSession extends AgentSpec {
   /** The agent's own estimate for the current turn (report_progress tool); cleared when a turn starts. */
   progress?: AgentProgress | null;
   handoffPending?: boolean; contextSent?: boolean;
+  /** Internal runner state: trusted context delivered through ACP systemPrompt append. Never public. */
+  systemPrompt?: string | null;
+  systemPromptSent?: boolean;
+  /** Last progress instruction delivered through a user prompt on providers without systemPrompt. */
+  progressInstruction?: string;
   /** Fingerprints of the instruction/skill texts already sent in this provider conversation (path → digest). */
   sentDigests?: Record<string, string>; sessionId: string | null; createdAt: string; updatedAt: string; error: string | null;
   configOptions: any[]; models: any; revision: number;
   /** Legacy ACP session modes, last reported context usage and prompt capabilities of the connected provider. */
-  modes?: any; usage?: { used: number; size: number } | null; promptImages?: boolean;
+  modes?: any; usage?: ReportedUsage | null; promptImages?: boolean;
   /** Desktop list projection of the latest activity; never drives the agent. */
   activity?: string;
 }

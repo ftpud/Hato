@@ -67,10 +67,10 @@ test('New chat creates a daemon session, remembers it, and sends through the bac
   };
   try {
     await mod.activate(ctx);
-    await mod.onEvent(ctx, { action: 'newChat', key: 'new', inputs: {} });
+    await mod.onEvent(ctx, { action: 'newChat', inputs: {} });
     assert.ok(requests.some(request => request.method === 'create' && request.args.mcps.includes('internal-remote-mcp')));
     assert.ok(patches.some(patch => patch.patch.ui.aiBackgroundSession === 'background'));
-    await mod.onEvent(ctx, { action: 'send', key: 'prompt', inputs: { prompt: 'Run in background' } });
+    await mod.onEvent(ctx, { action: 'send', inputs: { prompt: 'Run in background' } });
     assert.ok(requests.some(request => request.method === 'send' && request.args.id === 'background' && request.args.text === 'Run in background'));
     assert.equal((await mod.snapshot()).background.id, 'background');
   } finally { mod.deactivate(); }

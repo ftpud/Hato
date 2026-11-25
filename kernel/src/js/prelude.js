@@ -179,6 +179,7 @@
         info: (handle) => call("process.info", { handle }),
       },
       pty: {
+        spawn: (grant, req) => call("pty.spawn", { grant, request: req }),
         open: (grant, req) => call("pty.open", { grant, request: req }),
         write: (pty, text) => call("pty.write", { handle: pty, text }),
         resize: (pty, columns, rows) => call("pty.resize", { handle: pty, columns, rows }),

@@ -121,7 +121,7 @@ test('existing chatbox binds background session and routes prompts without using
   assert.ok(nodes.some(n=>n.key==='mcp-toggle'));
   assert.ok(nodes.some(n=>n.key==='context-usage'));
   // Provider and model share one composer chip; the provider list lives in its popover.
-  assert.ok(nodes.some(n=>n.key==='cfg-model'&&n.action==='toggleModels'));
+  assert.ok(nodes.some(n=>n.key==='cfg-model'&&n.action?.endsWith(':toggleModels')));
   assert.ok(!nodes.some(n=>n.key==='hdr'),'no toolbar row above the chat');
   const auto=nodes.find(n=>n.key==='auto');
   assert.ok(auto&&!auto.checked&&/even while Hato is closed/.test(auto.tooltip));

@@ -31,7 +31,7 @@ async function fixture() {
       plugins: { list: async () => ({ plugins: [] }) },
       resources: { release: async () => {} },
       ui: { documentOpen: async (_ws, text) => { const h = `doc${documents.size}`; documents.set(h, text); return h; }, toast() {} },
-      db: { openNamespace: async () => 'library', query: async (_, _sql, args) => [...rows.values()].filter(r => r.project_id === args[0]),
+      db: { openNamespace: async () => 'library', query: async (_, _sql, args) => [...rows.values()].filter(r => (!args || r.project_id === args[0])),
         exec: async (_, sql, args) => { if (sql.startsWith('INSERT')) rows.set(args[0], { project_id: args[1], data: args[2] }); if (sql.startsWith('DELETE')) rows.delete(args[0]); } },
     },
     modules: { async call(target, method, args) {

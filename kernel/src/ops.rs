@@ -102,6 +102,7 @@ pub fn host_sync(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: Value) 
         "random.hex" => Ok(json!(random_hex(args.get("bytes").and_then(|b| b.as_u64()).unwrap_or(16).min(64) as usize))),
         "env.info" => Ok(json!({
             "abiVersion": 1,
+            "hostFeatures": ["pty.spawn"],
             "appName": "hato",
             "platform": std::env::consts::OS,
             "arch": std::env::consts::ARCH,
@@ -585,6 +586,25 @@ fn dispatch(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: &Value) -> H
         }
 
         // ---------------------------------------------------------------- PTY
+        "pty.spawn" => {
+            let g = grant(k, gen, args)?;
+            if g.kind != ScopeKind::Process { return Err(HostError::denied("grant does not allow processes")); }
+            let req = args.get("request").ok_or_else(|| HostError::invalid("missing request"))?;
+            if req.get("persist").is_some() { return Err(HostError::invalid("persistent argv terminals are not supported")); }
+            let spec = spawn_spec(k, &g, req)?;
+            // Validate argv rather than silently dropping malformed entries.
+            if spec.executable.is_empty() || spec.executable.contains('\0') || !req["args"].as_array().is_some_and(|a| a.iter().all(|v| v.as_str().is_some_and(|s| !s.contains('\0')))) {
+                return Err(HostError::invalid("invalid terminal executable or args"));
+            }
+            let cols = req["columns"].as_u64().unwrap_or(100).clamp(10, 1000) as u16;
+            let rows = req["rows"].as_u64().unwrap_or(30).clamp(3, 500) as u16;
+            let sess = pty::spawn(spec, cols, rows)?;
+            let h = k.handles.insert("pty", owner, format!("pty {}", sess.cwd), sess.clone());
+            let ui = k.ui.clone(); let h2 = h.clone();
+            *sess.notify.lock() = Some(Arc::new(move || ui.send(UiMsg::TerminalDirty(h2.clone()))));
+            k.audit.record(owner, gen.gen_id, "pty.spawn", &sess.machine_id, "ok", None);
+            Ok(json!({"handle":h,"machineId":sess.machine_id,"cwd":sess.cwd}))
+        }
         "pty.open" => {
             let g = grant(k, gen, args)?;
             if g.kind != ScopeKind::Pty {
@@ -611,7 +631,7 @@ fn dispatch(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: &Value) -> H
                         json!({"sh":sh, "columns":cols, "rows":rows})))?
                 };
                 let sess = pty::open_cloud(PtySpec {
-                    remote: None, program: String::new(), args: vec![], cwd: None, env: vec![],
+                    remote: None, program: String::new(), args: vec![], cwd: None, env: vec![], env_remove: vec![],
                     cols, rows, machine_id: connection.machine_id(), display_cwd: real, answer_queries: key.is_none(),
                 }, program)?;
                 let handle = k.handles.insert("pty", owner, format!("pty {}", sess.cwd), sess.clone());
@@ -632,8 +652,8 @@ fn dispatch(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: &Value) -> H
                     let login = if cfg!(windows) { vec![] } else { vec!["-l".to_string()] };
                     match &persist {
                         Some(p) => PtySpec { remote: None, program: p.bin.clone(), args: vec!["daemon".into(), "pty-attach".into(), "--dir".into(), p.dir.clone(), "--key".into(), p.key.clone(), "--cwd".into(), real.clone(), "--shell".into(), sh],
-                            cwd: Some(real.clone()), env: env_pairs(req)?, cols, rows, machine_id: "local".into(), display_cwd: real, answer_queries: false },
-                        None => PtySpec { remote: None, program: sh, args: login, cwd: Some(real.clone()), env: env_pairs(req)?, cols, rows, machine_id: "local".into(), display_cwd: real, answer_queries: true },
+                            cwd: Some(real.clone()), env: env_pairs(req)?, env_remove: vec![], cols, rows, machine_id: "local".into(), display_cwd: real, answer_queries: false },
+                        None => PtySpec { remote: None, program: sh, args: login, cwd: Some(real.clone()), env: env_pairs(req)?, env_remove: vec![], cols, rows, machine_id: "local".into(), display_cwd: real, answer_queries: true },
                     }
                 }
                 Target::Ssh { machine_id, .. } => {
@@ -652,9 +672,9 @@ fn dispatch(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: &Value) -> H
                     let answer_queries = persist.is_none();
                     if master.is_wsl() {
                         let (program, pty_args) = master.wsl_pty_command(&remote);
-                        PtySpec { remote: None, program, args: pty_args, cwd: None, env: vec![], cols, rows, machine_id: machine_id.clone(), display_cwd: real, answer_queries }
+                        PtySpec { remote: None, program, args: pty_args, cwd: None, env: vec![], env_remove: vec![], cols, rows, machine_id: machine_id.clone(), display_cwd: real, answer_queries }
                     } else {
-                        PtySpec { remote: Some(pty::RemotePty { master: master.clone(), command: remote }), program: String::new(), args: vec![], cwd: None, env: vec![],
+                        PtySpec { remote: Some(pty::RemotePty { master: master.clone(), command: remote }), program: String::new(), args: vec![], cwd: None, env: vec![], env_remove: vec![],
                             cols, rows, machine_id: machine_id.clone(), display_cwd: real, answer_queries }
                     }
                 }
@@ -1110,7 +1130,7 @@ fn dispatch(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: &Value) -> H
                 "cwd": cwd, "key": key, "columns": cols, "rows": rows
             })))?;
             let sess = pty::open_cloud(PtySpec {
-                remote: None, program: String::new(), args: vec![], cwd: None, env: vec![],
+                remote: None, program: String::new(), args: vec![], cwd: None, env: vec![], env_remove: vec![],
                 cols, rows, machine_id: connection.machine_id(), display_cwd: cwd, answer_queries: false,
             }, program)?;
             let h = k.handles.insert("pty", owner, format!("pty {}", sess.cwd), sess.clone());

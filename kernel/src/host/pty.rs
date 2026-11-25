@@ -92,6 +92,7 @@ pub struct PtySpec {
     pub args: Vec<String>,
     pub cwd: Option<String>,
     pub env: Vec<(String, String)>,
+    pub env_remove: Vec<String>,
     pub cols: u16,
     pub rows: u16,
     pub machine_id: String,
@@ -122,6 +123,7 @@ pub fn open(spec: PtySpec) -> HResult<Arc<PtySession>> {
             }
             cmd.env("TERM", "xterm-256color");
             cmd.env("COLORTERM", "truecolor");
+            for key in &spec.env_remove { cmd.env_remove(key); }
             for (k, v) in &spec.env {
                 cmd.env(k, v);
             }
@@ -133,6 +135,29 @@ pub fn open(spec: PtySpec) -> HResult<Arc<PtySession>> {
         }
     };
     attach(spec, backend, reader, writer, description, local)
+}
+
+/// Run an argv process on a native PTY using an already validated process scope.
+pub fn spawn(spec: super::process::SpawnSpec, cols: u16, rows: u16) -> HResult<Arc<PtySession>> {
+    let mut pty = PtySpec { remote: None, program: spec.executable.clone(), args: spec.args.clone(),
+        cwd: Some(spec.cwd.clone()), env: spec.env.clone(), env_remove: spec.env_remove.clone(),
+        cols, rows, machine_id: spec.target.machine_id(), display_cwd: spec.cwd.clone(), answer_queries: true };
+    match &spec.target {
+        crate::grants::Target::Local => open(pty),
+        _ => {
+            let command = crate::quoting::remote_command(&spec.cwd, &spec.executable, &spec.args, &spec.env, &spec.env_remove, spec.login_shell).map_err(HostError::invalid)?;
+            if let Some(connection) = spec.cloud {
+                let program = CloudConnection::wait(connection.program(super::cloud::Kind::Pty, json!({"sh":command,"columns":cols,"rows":rows})))?;
+                return open_cloud(pty, program);
+            }
+            let master = spec.ssh.ok_or_else(|| HostError::new("ENOTCONN", "terminal connection unavailable"))?;
+            if master.is_wsl() {
+                let (program, args) = master.wsl_pty_command(&command);
+                pty.program=program; pty.args=args; pty.cwd=None; pty.env.clear(); pty.env_remove.clear();
+            } else { pty.remote=Some(RemotePty { master, command }); }
+            open(pty)
+        }
+    }
 }
 
 pub fn open_cloud(spec: PtySpec, program: CloudProgram) -> HResult<Arc<PtySession>> {

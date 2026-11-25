@@ -21,13 +21,13 @@ test('Meeting participants retain distinct name colors and left borders across m
   ] } };
   const nodes = blockRunView(run, room, state, 'test');
   const transcript = nodes.find(n => n.key.endsWith(':transcript'));
-  const [alice, bob, again] = transcript.children;
+  const [alice, bob, again] = transcript.children[0].children;
   assert.equal(alice.style.borderLeft, 3);
   assert.equal(alice.style.borderColor, again.style.borderColor);
   assert.notEqual(alice.style.borderColor, bob.style.borderColor);
   assert.equal(alice.children[0].color, alice.style.borderColor);
   assert.equal(bob.style.borderColor, participantColor(run, 'bob'));
-  assert.equal(transcript.scroll, true);
+  assert.equal(transcript.children[0].type, "transcript");
 });
 
 test('Chatbox session status supersedes an old completed invocation and exposes permission review', async () => {

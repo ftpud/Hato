@@ -80,6 +80,14 @@ connections. See the `DaemonTarget` and `NativeHost` types in `sdk/types.ts`.
 
 Requests include `hello`, `resources.list`, `pty.kill`, `proc.kill`, `proc.closeStdin`,
 `plugins.list/push/enable/disable` and `modules.call {target, method, args}`.
+`ctx.host.pty.spawn(processGrant, request)` launches an argv process on an interactive terminal.
+It accepts `SpawnRequest` fields plus `columns`/`rows`, except `persist`. The broker reuses process
+scope, ownership, target and canonical cwd checks. Local execution uses argv directly; SSH/Cloud
+execution uses the shared audited POSIX quoting adapter. `envRemove` applies before explicit env
+entries, matching `process.spawn`. Check `ctx.host.env.info().hostFeatures` for `"pty.spawn"` before
+using it on older hosts. Terminal nodes render the returned handle; use `pty.read`, `write`,
+`resize`, and `close` for control. Authentication policy stays in the ACP module.
+
 Resource keys are scoped to their owning plugin. `pty.open` and `process.spawn` accept
 `persist: {key: "stable-resource-id"}`; reconnect with the same key to reattach. Closing the
 viewer detaches it. Persistent `process.run` is not supported. Terminal settings control

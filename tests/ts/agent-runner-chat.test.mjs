@@ -6,13 +6,21 @@ const load = async path => import('data:text/javascript;base64,' + Buffer.from((
 const configOptions = [
   { id: 'model-id', category: 'model', options: [{ value: 'a', name: 'Model A' }] },
   { id: 'mode', category: 'mode', options: [{ value: 'plan', name: 'Plan' }, { value: 'code', name: 'Code' }] },
+  { id: 'fast', name: 'Fast', type: 'boolean', currentValue: false },
 ];
 
-function harness({ canLoad = true, resume = false } = {}) {
+function harness({ canLoad = true, resume = false, load = false, replay = false, systemPrompt = false } = {}) {
   const listeners = new Map(), requests = [], dbWrites = [], events = [];
   const ctx = { modules: { call: async () => null }, log: { error() {}, info() {}, warn() {} }, events: { emit: (...a) => events.push(a) }, host: {
     env: { info: () => ({ platform: 'linux' }) },
-    db: { openNamespace: async () => 'db', query: async (_db, sql) => sql.startsWith('PRAGMA') ? [{ name: 'images_json' }, { name: 'tool_call_id' }] : sql.startsWith('SELECT seq FROM messages') && dbWrites.some(w => w.sql.startsWith('INSERT INTO messages') && w.args[7] === 'call-1') ? [{ seq: 42 }] : [], exec: async (_db, sql, args) => { dbWrites.push({ sql, args }); return { changes: 1 }; } },
+    db: { openNamespace: async () => 'db', query: async (_db, sql) => {
+      if (sql.startsWith('PRAGMA')) return [{ name: 'images_json' }, { name: 'tool_call_id' }];
+      if (sql.startsWith('SELECT seq,role,turn,provider_message_id')) {
+        const row = [...dbWrites].reverse().find(w => w.sql.startsWith('INSERT INTO messages') && ['assistant', 'thought'].includes(w.args[1]));
+        return row ? [{ seq: row.args.length + 1, role: row.args[1], turn: row.args[5], provider_message_id: row.args[8], provider_session_id: row.args[9] }] : [];
+      }
+      return sql.startsWith('SELECT seq FROM messages') && dbWrites.some(w => w.sql.startsWith('INSERT INTO messages') && w.args[7] === 'call-1') ? [{ seq: 42 }] : [];
+    }, exec: async (_db, sql, args) => { dbWrites.push({ sql, args }); return { changes: 1 }; } },
     capabilities: { request: async () => ({ grant: 'grant' }), release: async () => {} }, resources: { release: async () => {} },
     streams: { listen: async (handle, opts, onData) => { if (opts.channel === 'stdout') listeners.set(handle, onData); return { close: async () => {} }; } },
     process: { run: async () => ({ code: 0, stdout: '__HATO_EXEC__=/usr/local/bin/test\n__HATO_PATH__=/usr/local/bin:/usr/bin\n', stderr: '' }), spawn: async () => ({ handle: 'process' }), closeStdin: async () => {}, write: async (handle, data) => {
@@ -20,11 +28,14 @@ function harness({ canLoad = true, resume = false } = {}) {
       if (request.id === undefined) return;
       if ('result' in request || 'error' in request) return;
       let result;
-      if (request.method === 'initialize') result = { protocolVersion: 1, agentCapabilities: { loadSession: canLoad, promptCapabilities: { image: true }, mcpCapabilities: { http: true } } };
+      if (request.method === 'initialize') result = { protocolVersion: 1, agentCapabilities: { loadSession: canLoad, promptCapabilities: { image: true }, mcpCapabilities: { http: true }, sessionCapabilities: { resume: resume ? {} : undefined, systemPrompt: systemPrompt ? {} : undefined } } };
       else if (request.method === 'session/new') result = { sessionId: 'provider-session', configOptions: structuredClone(configOptions) };
       else if (request.method === 'session/set_config_option') result = { configOptions: structuredClone(configOptions) };
       else if (request.method === 'session/prompt') return;
-      else if (request.method === 'session/load' && resume) result = { configOptions: structuredClone(configOptions) };
+      else if ((request.method === 'session/load' && load) || (request.method === 'session/resume' && resume)) {
+        if (replay && request.method === 'session/load') listeners.get(handle)(JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: request.params.sessionId, update: { sessionUpdate: 'agent_message_chunk', messageId: 'saved-message', content: { type: 'text', text: 'Saved reply' } } } }) + '\n');
+        result = { configOptions: structuredClone(configOptions) };
+      }
       else if (request.method === 'session/load') { queueMicrotask(() => listeners.get(handle)(JSON.stringify({ jsonrpc: '2.0', id: request.id, error: { code: -32002, message: 'Resource not found', data: { sessionId: request.params.sessionId } } }) + '\n')); return; }
       else throw new Error(request.method);
       queueMicrotask(() => listeners.get(handle)(JSON.stringify({ jsonrpc: '2.0', id: request.id, result }) + '\n'));
@@ -39,7 +50,7 @@ const adapter = provider => ({ id: provider, provider, name: provider, executabl
 const meta = { caller: 'workflow-runner' };
 
 for (const provider of ['claude', 'codex']) {
-  test(`${provider} reconnect loads the same provider session with the complete MCP set`, async () => {
+  test(`${provider} reconnect resumes the same provider session with the complete MCP set`, async () => {
     const mod = (await load('Hato-plugins/modules/services/agent-runner/src/index.ts')).default;
     const { ctx, requests, listeners } = harness({ resume: true });
     await mod.activate(ctx);
@@ -56,11 +67,22 @@ for (const provider of ['claude', 'codex']) {
     await update([extra]);
     await update([]);
     assert.equal(requests.filter(r => r.method === 'session/new').length, 1);
-    assert.deepEqual(requests.filter(r => r.method === 'session/load').map(r => [r.params.sessionId, r.params.mcpServers]), [
+    assert.deepEqual(requests.filter(r => r.method === 'session/resume').map(r => [r.params.sessionId, r.params.mcpServers]), [
       ['provider-session', [{ name: extra.name, command: extra.command, args: [], env: [] }]], ['provider-session', []],
     ]);
   });
 }
+
+test('Copilot background reconnect continues to use session/load', async () => {
+  const mod = (await load('Hato-plugins/modules/services/agent-runner/src/index.ts')).default;
+  const { ctx, requests } = harness({ resume: true, load: true });
+  await mod.activate(ctx);
+  await mod.methods.create(ctx, { spec: spec({ profile: adapter('copilot') }) });
+  await mod.methods.reconnect(ctx, { id: 'chat' });
+  assert.ok(requests.some(r => r.method === 'session/load'));
+  assert.ok(!requests.some(r => r.method === 'session/resume'));
+  await mod.methods.stop(ctx, { id: 'chat' });
+});
 
 test('a provider without session load keeps its existing workflow conversation', async () => {
   const mod = (await load('Hato-plugins/modules/services/agent-runner/src/index.ts')).default;
@@ -91,7 +113,7 @@ test('a rejected MCP transport restores the previous workflow endpoint', async (
   assert.equal(restored.status, 'ready');
   assert.equal(restored.sessionId, 'provider-session');
   assert.deepEqual(restored.mcps, [old]);
-  assert.deepEqual(requests.find(r => r.method === 'session/load').params.mcpServers, [{ name: old.name, command: old.command, args: old.args, env: [] }]);
+  assert.deepEqual(requests.find(r => r.method === 'session/resume').params.mcpServers, [{ name: old.name, command: old.command, args: old.args, env: [] }]);
 });
 
 test('only opted-in workflow Claude sessions negotiate autonomous turns and keep tool-card titles', async () => {
@@ -206,6 +228,66 @@ test('reconnect after a configuration change starts a new provider session when 
 });
 
 
+test('background instructions use systemPrompt append and stay out of user messages when supported', async () => {
+  const mod = (await load('Hato-plugins/modules/services/agent-runner/src/index.ts')).default;
+  const { ctx, requests } = harness({ resume: true, systemPrompt: true });
+  ctx.host.fs = { read: async () => ({ text: 'Trusted workspace instructions', binary: false, truncated: false }) };
+  await mod.activate(ctx);
+  const publicSession = await mod.methods.create(ctx, { spec: spec({ agentFile: 'AGENTS.md' }) });
+  assert.equal(publicSession.systemPrompt, undefined, 'trusted instruction text stays inside the runner');
+  const created = requests.find(r => r.method === 'session/new').params.systemPrompt;
+  assert.equal(created.mode, 'append');
+  assert.match(created.content[0].text, /Trusted workspace instructions/);
+  assert.match(created.content[0].text, /report_progress|hato-progress/);
+  await mod.methods.reconnect(ctx, { id: 'chat' });
+  assert.deepEqual(requests.find(r => r.method === 'session/resume').params.systemPrompt, created);
+  await mod.methods.send(ctx, { id: 'chat', text: 'Do the work' });
+  const prompt = requests.find(r => r.method === 'session/prompt').params.prompt;
+  assert.deepEqual(prompt, [{ type: 'text', text: 'Do the work' }]);
+  await mod.methods.stop(ctx, { id: 'chat' });
+});
+
+test('background runner advertises boolean config, preserves structured cost and suppresses replayed transcript rows', async () => {
+  const mod = (await load('Hato-plugins/modules/services/agent-runner/src/index.ts')).default;
+  const { ctx, listeners, requests, dbWrites } = harness({ load: true, replay: true });
+  await mod.activate(ctx);
+  await mod.methods.create(ctx, { spec: spec({ settings: { fast: true } }) });
+  assert.deepEqual(requests.find(r => r.method === 'initialize').params.clientCapabilities.session, { configOptions: { boolean: {} } });
+  assert.deepEqual(requests.find(r => r.method === 'session/set_config_option').params, { sessionId: 'provider-session', configId: 'fast', type: 'boolean', value: true });
+
+  const update = value => listeners.get('process')(JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'provider-session', update: value } }) + '\n');
+  update({ sessionUpdate: 'usage_update', used: 100, size: 1000, cost: { amount: 0.5, currency: 'USD' } });
+  update({ sessionUpdate: 'agent_message_chunk', messageId: 'live-1', content: { type: 'text', text: 'one' } });
+  update({ sessionUpdate: 'agent_message_chunk', messageId: 'live-1', content: { type: 'text', text: ' two' } });
+  update({ sessionUpdate: 'agent_message_chunk', messageId: 'live-2', content: { type: 'text', text: 'three' } });
+  await new Promise(setImmediate);
+  assert.deepEqual((await mod.methods.list())[0].usage, { used: 100, size: 1000, cost: { amount: 0.5, currency: 'USD' } });
+  const assistantInserts = () => dbWrites.filter(w => w.sql.startsWith('INSERT INTO messages') && w.args[1] === 'assistant');
+  assert.equal(assistantInserts().length, 2);
+  assert.deepEqual(assistantInserts().map(w => [w.args[8], w.args[2]]), [['live-1', 'one'], ['live-2', 'three']]);
+  assert.ok(dbWrites.some(w => w.sql.startsWith('UPDATE messages SET text=text||?') && w.args[0] === ' two'));
+
+  await mod.methods.reconnect(ctx, { id: 'chat' });
+  assert.equal(assistantInserts().length, 2, 'session/load replay must not duplicate the persisted reply');
+  await mod.methods.stop(ctx, { id: 'chat' });
+});
+
+test('background transcript projection keeps distinct ACP messageId boundaries', async () => {
+  const mod = (await load('Hato-plugins/modules/services/agent-runner/src/index.ts')).default;
+  const { ctx } = harness();
+  const baseQuery = ctx.host.db.query;
+  ctx.host.db.query = async (db, sql, args) => sql.startsWith('SELECT * FROM messages') ? [
+    { seq: 3, role: 'assistant', text: 'two', turn: 7, provider_message_id: 'm2' },
+    { seq: 2, role: 'assistant', text: ' plus', turn: 7, provider_message_id: 'm1' },
+    { seq: 1, role: 'assistant', text: 'one', turn: 7, provider_message_id: 'm1' },
+  ] : baseQuery(db, sql, args);
+  await mod.activate(ctx);
+  await mod.methods.create(ctx, { spec: spec() });
+  const view = await mod.methods.view(ctx, { id: 'chat' });
+  assert.deepEqual(view.messages.map(message => message.text), ['one plus', 'two']);
+  await mod.methods.stop(ctx, { id: 'chat' });
+});
+
 test('tool updates persist one row per call, including repeated starts and content-only updates', async () => {
   const mod = (await load('Hato-plugins/modules/services/agent-runner/src/index.ts')).default;
   const { ctx, listeners, dbWrites } = harness();
@@ -222,8 +304,8 @@ test('tool updates persist one row per call, including repeated starts and conte
   assert.equal(inserts.length, 1);
   const updates = dbWrites.filter(w => w.sql.startsWith('UPDATE messages SET text=CASE'));
   assert.equal(updates.length, 3);
-  assert.equal(updates.at(-1).args[3], 'completed');
-  assert.equal(updates.at(-1).args[4], 42);
+  assert.equal(updates.at(-1).args[2], 'completed');
+  assert.equal(updates.at(-1).args[3], 42);
   await mod.methods.stop(ctx, { id: 'chat' });
 });
 
@@ -245,4 +327,45 @@ test('provider switches transfer bounded original dialogue once', async () => {
   const second = requests.filter(r => r.method === 'session/prompt').at(-1);
   assert.equal(second.params.prompt[0].text, 'Next');
   await mod.methods.stop(ctx, { id: 'chat' });
+});
+
+test('create allowlists agent configuration and resets caller-supplied runtime context', async () => {
+  const mod = (await load('Hato-plugins/modules/services/agent-runner/src/index.ts')).default;
+  const { ctx, dbWrites } = harness();
+  await mod.activate(ctx);
+  await mod.methods.create(ctx, { spec: spec({ contextSent: true, systemPrompt: 'Caller forged instructions', systemPromptSent: true, sentDigests: { forged: 'digest' }, handoffPending: true, sessionId: 'forged', unexpected: 'injected' }) });
+  const initial = JSON.parse(dbWrites.find(w => w.sql.startsWith('INSERT INTO sessions')).args[1]);
+  assert.equal(initial.contextSent, false); assert.equal(initial.systemPrompt, null); assert.equal(initial.systemPromptSent, false);
+  for (const field of ['sentDigests', 'handoffPending', 'unexpected']) assert.equal(Object.hasOwn(initial, field), false);
+  assert.equal(initial.sessionId, null);
+  await mod.methods.stop(ctx, { id: 'chat' });
+});
+
+test('background system instruction delivery is independent of dialogue delivery and refreshes changed files',async()=>{
+ const mod=(await load('Hato-plugins/modules/services/agent-runner/src/index.ts')).default;
+ const {ctx,requests,dbWrites}=harness({resume:true,systemPrompt:true});
+ let instructions='Original trusted instructions';ctx.host.fs={read:async()=>({text:instructions})};
+ await mod.activate(ctx);await mod.methods.create(ctx,{spec:spec({agentFile:'AGENTS.md'})});
+ let saved=JSON.parse(dbWrites.filter(w=>w.sql.startsWith('INSERT INTO sessions')).at(-1).args[1]);
+ assert.equal(saved.systemPromptSent,true);assert.equal(saved.contextSent,false);
+ instructions='Updated trusted instructions';await mod.methods.send(ctx,{id:'chat',text:'Current request'});
+ assert.match(requests.find(r=>r.method==='session/resume').params.systemPrompt.content[0].text,/Updated trusted instructions/);
+ assert.deepEqual(requests.find(r=>r.method==='session/prompt').params.prompt,[{type:'text',text:'Current request'}]);
+ saved=JSON.parse(dbWrites.filter(w=>w.sql.startsWith('INSERT INTO sessions')).at(-1).args[1]);assert.equal(saved.contextSent,true);
+ await mod.methods.stop(ctx,{id:'chat'});
+});
+
+test('fallback progress instructions refresh when Workspace MCP changes without losing dialogue state',async()=>{
+ const mod=(await load('Hato-plugins/modules/services/agent-runner/src/index.ts')).default;
+ const {ctx,requests,listeners}=harness({resume:true});
+ ctx.modules.call=async(_,method)=>method==='endpoint'?{id:'tools',name:'tools',type:'http',url:'http://fixture.invalid/mcp'}:null;
+ await mod.activate(ctx);const config=spec({profile:adapter('codex')});await mod.methods.create(ctx,{spec:config});
+ await mod.methods.send(ctx,{id:'chat',text:'First'});
+ const first=requests.find(r=>r.method==='session/prompt');listeners.get('process')(JSON.stringify({jsonrpc:'2.0',id:first.id,result:{stopReason:'end_turn'}})+'\n');await new Promise(setImmediate);
+ await mod.methods.update(ctx,{id:'chat',patch:{...config,workspaceMcp:true}},{caller:'daemon-client'});
+ await mod.methods.send(ctx,{id:'chat',text:'Second'});
+ const second=requests.filter(r=>r.method==='session/prompt').at(-1);
+ assert.match(second.params.prompt[0].text,/report_progress tool/);assert.match(second.params.prompt[0].text,/Second/);
+ assert.equal((await mod.methods.list())[0].contextSent,true);
+ await mod.methods.stop(ctx,{id:'chat'});
 });

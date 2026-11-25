@@ -29,8 +29,8 @@ test('numstat -z parses counts, binaries and renames', () => {
 });
 
 test('panel rows show status badge, directory and selection', () => {
-  const [row] = P.changeRows([{ path: 'src/a.ts', origPath: null, kind: 'modified', index: 'M', worktree: 'M', staged: true, unstaged: true, additions: 3, deletions: 1, binary: false }], 'src/a.ts');
-  assert.equal(row.label, 'a.ts'); assert.equal(row.badge, 'M +3 −1'); assert.match(row.detail, /^src · Modified, partly staged$/); assert.ok(row.selected);
+  const row = P.changeFileRow({ path: 'src/a.ts', origPath: null, kind: 'modified', index: 'M', worktree: 'M', staged: true, unstaged: true, additions: 3, deletions: 1, binary: false }, 'src/a.ts');
+  assert.equal(row.label, 'a.ts'); assert.equal(row.badge, 'M +3 −1'); assert.equal(row.detail, "src"); assert.match(row.tooltip, /Modified/); assert.ok(row.selected);
   assert.equal(P.signature({ branch: 'main', files: [] }), 'main\n');
 });
 
