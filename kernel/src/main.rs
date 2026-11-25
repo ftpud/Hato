@@ -85,7 +85,8 @@ fn init_logging(cfg: &Config) {
     impl log::Log for L {
         fn enabled(&self, m: &log::Metadata) -> bool { m.level() <= self.1 }
         fn log(&self, r: &log::Record) {
-            if !self.enabled(r.metadata()) || r.target().starts_with("gpui") && r.level() > log::Level::Warn {
+            // The renderer's damage statistics (vendor/gpui-pre-apple) are kept at info level.
+            if !self.enabled(r.metadata()) || r.target().starts_with("gpui") && !r.target().ends_with("::damage") && r.level() > log::Level::Warn {
                 return;
             }
             let line = format!("{} {:5} {}: {}\n", hato_kernel::util::now_iso(), r.level(), r.target(), r.args());

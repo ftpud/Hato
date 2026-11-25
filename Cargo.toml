@@ -77,6 +77,8 @@ gpui-base = { path = "vendor/gpui-base" }
 # Completion menu rows rendered from module presentation hints; larger hover popover.
 gpui-component = { path = "vendor/gpui-component" }
 gpui-pre-windows = { path = "vendor/gpui-pre-windows" }
+# Damage-region rendering: redraw only changed rectangles (see vendor/gpui-pre-apple/HATO-PATCH.md).
+gpui-pre-apple = { path = "vendor/gpui-pre-apple" }
 
 [profile.dev]
 opt-level = 1
