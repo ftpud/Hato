@@ -438,6 +438,10 @@ export interface UiMotion {
   interaction?: UiMotionTiming;
   /** Opt-in development prototype for clipped split-region motion. Defaults to false. */
   experimentalDockReveal?: boolean;
+  /** Window-wide cap (1–120 FPS) for painted activity animation: spinners, busy tree rows,
+   *  ambient particles, canvas sparks and pulses. Each such frame repaints the whole window,
+   *  so this bounds GPU use while agents work. Omitted means no extra cap. */
+  activityFps?: number;
 }
 
 export interface UiWindowChrome {
@@ -549,7 +553,7 @@ export type UiNode =
   | (Base & { type: "progress"; value?: number; indeterminate?: boolean; label?: string; transition?: UiMotionTiming; color?: UiColor; trackColor?: UiColor })
   | (Base & { type: "meter"; value: number; max: number; segments: number; filledColor: UiColor; emptyColor: UiColor; highlightColor?: UiColor; /** Minimum value, in the same units as max, eligible for the flash. */ highlightFrom?: number;
       segmentWidth: number; segmentHeight: number; gap: number; radius: number; transition?: UiMotionTiming })
-  | (Base & { type: "spinner"; size: number; color: UiColor; thickness: number; /** Max redraw rate, 1–120 (default 30). */ fps?: number })
+  | (Base & { type: "spinner"; size: number; color: UiColor; thickness: number; /** Max redraw rate, 1–120 (default 60, then capped by `UiMotion.activityFps`). */ fps?: number })
   /** Clockwise gauge starting at 12 o'clock. Size and thickness are logical pixels. */
   | (Base & { type: "ring"; value: number; max: number; size: number; thickness: number; color: UiColor; trackColor: UiColor;
       transition?: UiMotionTiming; label?: string })

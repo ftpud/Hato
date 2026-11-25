@@ -17,6 +17,7 @@ import type { AppModule, ModuleContext, UiColor, UiNode } from "./types";
 import { normalizeSidebarButtons, normalizeSidebarOrder, orderedSidebarItems, sidebarPanels, type SidebarButtons, type SidebarOrder } from "./sidebar-placement";
 import { sidebarIcons } from "./sidebar-icons";
 import { loadContributions, watchContributions, type Contributions } from "./plugins";
+import { surfaceEffectsOf, type SurfaceEffects } from "./halo-glass";
 import { haloIcons, haloRail, haloSlotWidth, haloUsage, type HaloChild, type HaloItem, type HaloModel, type HaloSection, type HaloTask } from "./halo-rail";
 
 const fallbackIcon = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="3"/></svg>`;
@@ -54,6 +55,7 @@ export function activitySidebar(id: string, side: "left" | "right"): AppModule {
 
   let theme = "ember";
   let colorMode = "system";
+  let effects: SurfaceEffects = "reduced";
   let expanded = false;
   let query = "";
   let focused: string | null = null;
@@ -278,7 +280,7 @@ export function activitySidebar(id: string, side: "left" | "right"): AppModule {
         visible = next; ctx.ui.invalidate();
       });
       if (typeof s === "function") stops.push(s);
-      watch(ctx, "workspace-layout.appearance", v => { theme = typeof v?.theme === "string" ? v.theme : "ember"; colorMode = typeof v?.mode === "string" ? v.mode : "system"; });
+      watch(ctx, "workspace-layout.appearance", v => { theme = typeof v?.theme === "string" ? v.theme : "ember"; colorMode = typeof v?.mode === "string" ? v.mode : "system"; effects = surfaceEffectsOf(v?.effects); });
       watch(ctx, "workspace-layout.moduleUpdates", v => { updates = Number(v) > 0 ? Number(v) : 0; });
       watch(ctx, "workspace.selected", v => { ws = v; });
       watch(ctx, "acp.limits", v => { limits = v; });
@@ -315,6 +317,7 @@ export function activitySidebar(id: string, side: "left" | "right"): AppModule {
       const m = model(ctx);
       if (!focused || (!visible[focused] && !open[focused])) focused = m.sections.flatMap(s => s.items).find(i => i.active && !i.id.includes(":"))?.id || null;
       m.focused = focused;
+      m.effects = effects;
       return haloRail(m);
     },
     async onEvent(ctx, ev) {

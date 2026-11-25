@@ -8,6 +8,18 @@ export const glassCard: UiStyle = {
   gradient: { angle: 180, from: "cardTop", to: "cardBottom", toAt: 0.34 },
   shadows: [{ y: 1, color: "highlight", inset: true }, { y: 18, blur: 40, color: "depth" }],
 };
+/** Quality of large-surface effects. GPUI rasterizes the whole window for every animation frame,
+ *  so a gradient and blurred shadow on big docked panels cost GPU time on every spinner tick. */
+export type SurfaceEffects = "full" | "reduced" | "flat";
+export const surfaceEffectsOf = (value: unknown): SurfaceEffects =>
+  value === "full" || value === "flat" ? value : "reduced";
+/** Large docked/rail card. `full` is the floating-card look; `reduced` keeps the sheen and lit
+ *  edge but drops the 40 px drop shadow (measured ~1.1 ms/frame on two panels); `flat` also drops
+ *  the gradient (~1.5 ms more) and keeps only the lit edge. Floating surfaces keep `glassCard`. */
+export const dockedCard = (effects: SurfaceEffects): UiStyle =>
+  effects === "full" ? glassCard
+    : effects === "reduced" ? { gradient: glassCard.gradient, shadows: [{ y: 1, color: "highlight", inset: true }] }
+    : { shadows: [{ y: 1, color: "highlight", inset: true }] };
 /** Raised glass chip: active rows, fields, the account box. */
 export const glassChip: UiStyle = {
   gradient: { angle: 180, from: "glassTop", to: "glassBottom" },

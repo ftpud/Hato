@@ -18,6 +18,15 @@ pub fn run(cfg: Config) -> i32 {
         },
         None => None,
     };
+    if let Some(fixture) = tree.as_ref().filter(|tree| !tree["type"].is_string()) {
+        let valid = fixture["tree"]["type"].is_string() && fixture["modules"].as_object().is_some_and(|modules| {
+            modules.iter().all(|(id, tree)| id.starts_with("__") && id != "__snapshot" && tree["type"].is_string())
+        });
+        if !valid {
+            eprintln!("hato: expected a UiNode or {{tree: UiNode, modules: {{__id: UiNode}}}} fixture; module ids must start with __ and cannot be __snapshot");
+            return 2;
+        }
+    }
     let (bridge, rx) = UiBridge::new();
     let kernel = match Kernel::new(cfg, bridge) {
         Ok(k) => k,
@@ -61,7 +70,17 @@ pub fn run(cfg: Config) -> i32 {
         };
         if let Some(t) = tree {
             shell.update(cx, |s, _| {
-                s.trees.insert("__snapshot".into(), Arc::new(t));
+                // Optional fixture bundle exercises real slot/cache boundaries without modules.
+                if t["type"].is_string() {
+                    s.trees.insert("__snapshot".into(), Arc::new(t));
+                } else {
+                    s.trees.insert("__snapshot".into(), Arc::new(t["tree"].clone()));
+                    if let Some(modules) = t["modules"].as_object() {
+                        for (module, tree) in modules {
+                            s.trees.insert(module.clone(), Arc::new(tree.clone()));
+                        }
+                    }
+                }
             });
         } else {
             let k4 = k2.clone();
@@ -108,6 +127,20 @@ pub fn run(cfg: Config) -> i32 {
                     window.draw(cx).clear(cx);
                 });
             }
+            if let Some(report) = &spec.bench {
+                let measured = handle.update(&mut cx.clone(), |_, window, cx| benchmark(window, cx, spec.bench_frames));
+                match measured.and_then(|v| v).and_then(|v| {
+                    std::fs::write(report, serde_json::to_vec_pretty(&v)?)?;
+                    Ok(())
+                }) {
+                    Ok(()) => println!("benchmark: {}", report.display()),
+                    Err(e) => {
+                        eprintln!("hato: benchmark failed: {e:#}");
+                        let _ = cx.update(|cx| cx.quit());
+                        return;
+                    }
+                }
+            }
             let img = handle.update(&mut cx.clone(), |_, window, cx| {
                 window.draw(cx).clear(cx);
                 window.render_to_image()
@@ -128,4 +161,46 @@ pub fn run(cfg: Config) -> i32 {
     });
     kernel.shutdown();
     code.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// Keep measurement mechanics here; fixture composition and sweeps belong in tools/render-bench.
+/// No event pumping in the timed loop: asynchronous services/animation timers cannot change the
+/// fixture. `retained` measures reuse; `invalidated` forces a complete native view rebuild.
+/// Raster timing INCLUDES synchronous GPU completion and CPU pixel readback, not pure GPU time.
+/// Use a Metal trace to attribute GPU work; never subtract these wall timings and call that GPU.
+fn benchmark(window: &mut Window, cx: &mut App, frames: usize) -> anyhow::Result<Value> {
+    fn stats(mut samples: Vec<f64>) -> Value {
+        let mean = samples.iter().sum::<f64>() / samples.len() as f64;
+        samples.sort_by(f64::total_cmp);
+        let percentile = |p: f64| samples[((samples.len() - 1) as f64 * p).round() as usize];
+        json!({ "mean": mean, "p50": percentile(0.5), "p95": percentile(0.95), "min": samples[0], "max": samples[samples.len() - 1] })
+    }
+    let mut modes = serde_json::Map::new();
+    let mut pixels = (0, 0);
+    for (mode, invalidate) in [("retained", false), ("invalidated", true)] {
+        let mut draws = Vec::with_capacity(frames);
+        let mut rasters = Vec::with_capacity(frames);
+        let mut totals = Vec::with_capacity(frames);
+        for i in 0..frames + 16 {
+            if invalidate { window.refresh(); }
+            let start = Instant::now();
+            window.draw(cx).clear(cx);
+            let drawn = Instant::now();
+            let image = window.render_to_image()?;
+            let end = Instant::now();
+            pixels = (image.width(), image.height());
+            if i >= 16 {
+                draws.push((drawn - start).as_secs_f64() * 1000.);
+                rasters.push((end - drawn).as_secs_f64() * 1000.);
+                totals.push((end - start).as_secs_f64() * 1000.);
+            }
+        }
+        modes.insert(mode.into(), json!({ "draw_ms": stats(draws), "raster_readback_ms": stats(rasters), "total_ms": stats(totals) }));
+    }
+    Ok(json!({
+        "schema": 1, "pid": std::process::id(), "frames_per_mode": frames, "warmup_per_mode": 16,
+        "width_px": pixels.0, "height_px": pixels.1, "scale_factor": window.scale_factor(),
+        "quads": window.painted_quads().len(), "modes": modes,
+        "timing_note": "draw is CPU scene construction; raster_readback includes GPU wait and CPU pixel copy; no event-loop timer pumping; not display FPS or pure GPU duration"
+    }))
 }

@@ -1,0 +1,1808 @@
+{
+  "date": "2026-11-25",
+  "machine": "arm64",
+  "profile": "dev, opt-level=1; dependencies opt-level=2; snapshot feature",
+  "logical_size": [
+    1280,
+    832
+  ],
+  "physical_size": [
+    2560,
+    1664
+  ],
+  "case_count": 67,
+  "validated_cpu_measurements": 134,
+  "cases": [
+    {
+      "case": "buttons-128",
+      "cpu_rounds": [
+        {
+          "round": 1,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 2.627375,
+          "invalidated_draw_p50_ms": 2.669708,
+          "invalidated_draw_p95_ms": 2.9120830000000004,
+          "raster_readback_p50_ms": 11.746125
+        },
+        {
+          "round": 2,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 2.62825,
+          "invalidated_draw_p50_ms": 2.597417,
+          "invalidated_draw_p95_ms": 2.718333,
+          "raster_readback_p50_ms": 10.048583
+        }
+      ]
+    },
+    {
+      "case": "buttons-32",
+      "cpu_rounds": [
+        {
+          "round": 1,
+          "source": "/private/tmp/hato-render-repeat-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.633667,
+          "invalidated_draw_p50_ms": 0.629875,
+          "invalidated_draw_p95_ms": 0.691917,
+          "raster_readback_p50_ms": 9.881209
+        },
+        {
+          "round": 2,
+          "source": "/private/tmp/hato-render-repeat-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.7128329999999999,
+          "invalidated_draw_p50_ms": 0.684625,
+          "invalidated_draw_p95_ms": 0.757042,
+          "raster_readback_p50_ms": 11.215541
+        }
+      ]
+    },
+    {
+      "case": "buttons-512",
+      "cpu_rounds": [
+        {
+          "round": 1,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 10.792207999999999,
+          "invalidated_draw_p50_ms": 10.842958999999999,
+          "invalidated_draw_p95_ms": 12.272875,
+          "raster_readback_p50_ms": 11.310832999999999
+        },
+        {
+          "round": 2,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 10.903457999999999,
+          "invalidated_draw_p50_ms": 10.896332999999998,
+          "invalidated_draw_p95_ms": 11.399375,
+          "raster_readback_p50_ms": 11.293707999999999
+        }
+      ]
+    },
+    {
+      "case": "canvas-edges-0",
+      "cpu_rounds": [
+        {
+          "round": 1,
+          "source": "/private/tmp/hato-render-extra-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.176417,
+          "invalidated_draw_p50_ms": 0.152125,
+          "invalidated_draw_p95_ms": 0.20620799999999997,
+          "raster_readback_p50_ms": 9.505542
+        },
+        {
+          "round": 2,
+          "source": "/private/tmp/hato-render-extra-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.152625,
+          "invalidated_draw_p50_ms": 0.150292,
+          "invalidated_draw_p95_ms": 0.16525,
+          "raster_readback_p50_ms": 9.4185
+        }
+      ],
+      "metal": {
+        "source": "/private/tmp/hato-render-metal-20261125/results.json",
+        "frames_per_mode": 120,
+        "pid": 60794,
+        "buffers_found": 274,
+        "buffers_measured": 253,
+        "fragment_ms_per_buffer": {
+          "mean": 3.2789499881422923,
+          "p50": 2.272125,
+          "p95": 8.04025,
+          "min": 1.504083,
+          "max": 10.251042
+        },
+        "vertex_ms_per_buffer_mean": 0.038522245059288536,
+        "fragment_encoders_per_buffer": {
+          "1": 253
+        },
+        "note": "Active GPU intervals; no CPU image readback. Vertex and fragment may overlap. Startup buffers excluded, not all warmup boundaries."
+      }
+    },
+    {
+      "case": "canvas-edges-1",
+      "cpu_rounds": [
+        {
+          "round": 1,
+          "source": "/private/tmp/hato-render-extra-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.167667,
+          "invalidated_draw_p50_ms": 0.154,
+          "invalidated_draw_p95_ms": 0.158833,
+          "raster_readback_p50_ms": 9.304875000000001
+        },
+        {
+          "round": 2,
+          "source": "/private/tmp/hato-render-extra-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.167208,
+          "invalidated_draw_p50_ms": 0.16137500000000002,
+          "invalidated_draw_p95_ms": 0.22962500000000002,
+          "raster_readback_p50_ms": 9.289959
+        }
+      ],
+      "metal": {
+        "source": "/private/tmp/hato-render-metal-20261125/results.json",
+        "frames_per_mode": 120,
+        "pid": 61248,
+        "buffers_found": 274,
+        "buffers_measured": 253,
+        "fragment_ms_per_buffer": {
+          "mean": 6.183453308300395,
+          "p50": 5.743708,
+          "p95": 11.611875,
+          "min": 1.5992499999999998,
+          "max": 15.273708000000001
+        },
+        "vertex_ms_per_buffer_mean": 0.05933196837944664,
+        "fragment_encoders_per_buffer": {
+          "3": 253
+        },
+        "note": "Active GPU intervals; no CPU image readback. Vertex and fragment may overlap. Startup buffers excluded, not all warmup boundaries."
+      }
+    },
+    {
+      "case": "canvas-edges-16",
+      "cpu_rounds": [
+        {
+          "round": 1,
+          "source": "/private/tmp/hato-render-extra-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.236,
+          "invalidated_draw_p50_ms": 0.22908299999999998,
+          "invalidated_draw_p95_ms": 0.293709,
+          "raster_readback_p50_ms": 9.696333
+        },
+        {
+          "round": 2,
+          "source": "/private/tmp/hato-render-extra-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.253084,
+          "invalidated_draw_p50_ms": 0.274833,
+          "invalidated_draw_p95_ms": 0.326875,
+          "raster_readback_p50_ms": 10.632624999999999
+        }
+      ]
+    },
+    {
+      "case": "canvas-edges-64",
+      "cpu_rounds": [
+        {
+          "round": 1,
+          "source": "/private/tmp/hato-render-extra-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.47120799999999996,
+          "invalidated_draw_p50_ms": 0.454542,
+          "invalidated_draw_p95_ms": 0.472542,
+          "raster_readback_p50_ms": 9.957916
+        },
+        {
+          "round": 2,
+          "source": "/private/tmp/hato-render-extra-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.5019170000000001,
+          "invalidated_draw_p50_ms": 0.498959,
+          "invalidated_draw_p95_ms": 0.635833,
+          "raster_readback_p50_ms": 12.26
+        }
+      ]
+    },
+    {
+      "case": "canvas-grid",
+      "cpu_rounds": [
+        {
+          "round": 1,
+          "source": "/private/tmp/hato-render-extra-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.16683299999999998,
+          "invalidated_draw_p50_ms": 0.162583,
+          "invalidated_draw_p95_ms": 0.31604099999999996,
+          "raster_readback_p50_ms": 9.440834
+        },
+        {
+          "round": 2,
+          "source": "/private/tmp/hato-render-extra-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.191125,
+          "invalidated_draw_p50_ms": 0.198917,
+          "invalidated_draw_p95_ms": 0.247834,
+          "raster_readback_p50_ms": 10.032042
+        }
+      ],
+      "metal": {
+        "source": "/private/tmp/hato-render-metal-20261125/results.json",
+        "frames_per_mode": 120,
+        "pid": 61495,
+        "buffers_found": 274,
+        "buffers_measured": 253,
+        "fragment_ms_per_buffer": {
+          "mean": 4.5534487865612645,
+          "p50": 3.516541,
+          "p95": 11.2605,
+          "min": 1.5434590000000001,
+          "max": 16.973416
+        },
+        "vertex_ms_per_buffer_mean": 0.0751871304347826,
+        "fragment_encoders_per_buffer": {
+          "3": 253
+        },
+        "note": "Active GPU intervals; no CPU image readback. Vertex and fragment may overlap. Startup buffers excluded, not all warmup boundaries."
+      }
+    },
+    {
+      "case": "ember-panels-flat",
+      "cpu_rounds": [
+        {
+          "round": 1,
+          "source": "/private/tmp/hato-render-panels-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.299833,
+          "invalidated_draw_p50_ms": 2.663917,
+          "invalidated_draw_p95_ms": 3.032125,
+          "raster_readback_p50_ms": 12.934375
+        },
+        {
+          "round": 2,
+          "source": "/private/tmp/hato-render-panels-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.306583,
+          "invalidated_draw_p50_ms": 2.8133749999999997,
+          "invalidated_draw_p95_ms": 2.939708,
+          "raster_readback_p50_ms": 13.677958
+        }
+      ],
+      "metal": {
+        "source": "/private/tmp/hato-render-metal-panels-20261125/results.json",
+        "frames_per_mode": 120,
+        "pid": 65330,
+        "buffers_found": 274,
+        "buffers_measured": 253,
+        "fragment_ms_per_buffer": {
+          "mean": 3.4163259209486165,
+          "p50": 2.716584,
+          "p95": 8.5085,
+          "min": 1.215125,
+          "max": 12.943084
+        },
+        "vertex_ms_per_buffer_mean": 0.0825974861660079,
+        "fragment_encoders_per_buffer": {
+          "1": 253
+        },
+        "note": "Active GPU intervals; no CPU image readback. Vertex and fragment may overlap. Startup buffers excluded, not all warmup boundaries."
+      }
+    },
+    {
+      "case": "ember-panels-glass",
+      "cpu_rounds": [
+        {
+          "round": 1,
+          "source": "/private/tmp/hato-render-panels-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.322167,
+          "invalidated_draw_p50_ms": 2.803958,
+          "invalidated_draw_p95_ms": 2.961875,
+          "raster_readback_p50_ms": 16.421417
+        },
+        {
+          "round": 2,
+          "source": "/private/tmp/hato-render-panels-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.355958,
+          "invalidated_draw_p50_ms": 2.848625,
+          "invalidated_draw_p95_ms": 3.0867080000000002,
+          "raster_readback_p50_ms": 15.685999999999998
+        }
+      ],
+      "metal": {
+        "source": "/private/tmp/hato-render-metal-panels-20261125/results.json",
+        "frames_per_mode": 120,
+        "pid": 63759,
+        "buffers_found": 274,
+        "buffers_measured": 253,
+        "fragment_ms_per_buffer": {
+          "mean": 6.1579264031620555,
+          "p50": 5.309333,
+          "p95": 10.301083,
+          "min": 3.8245,
+          "max": 13.823834000000002
+        },
+        "vertex_ms_per_buffer_mean": 0.11291912648221343,
+        "fragment_encoders_per_buffer": {
+          "1": 253
+        },
+        "note": "Active GPU intervals; no CPU image readback. Vertex and fragment may overlap. Startup buffers excluded, not all warmup boundaries."
+      }
+    },
+    {
+      "case": "ember-panels-gradient",
+      "cpu_rounds": [
+        {
+          "round": 1,
+          "source": "/private/tmp/hato-render-panels-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.305417,
+          "invalidated_draw_p50_ms": 2.6559169999999996,
+          "invalidated_draw_p95_ms": 2.906542,
+          "raster_readback_p50_ms": 12.964208
+        },
+        {
+          "round": 2,
+          "source": "/private/tmp/hato-render-panels-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.2765,
+          "invalidated_draw_p50_ms": 2.731792,
+          "invalidated_draw_p95_ms": 2.9661660000000003,
+          "raster_readback_p50_ms": 13.914
+        }
+      ],
+      "metal": {
+        "source": "/private/tmp/hato-render-metal-panels-20261125/results.json",
+        "frames_per_mode": 120,
+        "pid": 65403,
+        "buffers_found": 274,
+        "buffers_measured": 253,
+        "fragment_ms_per_buffer": {
+          "mean": 4.7550968537549405,
+          "p50": 4.176625,
+          "p95": 9.153,
+          "min": 1.99475,
+          "max": 12.447375
+        },
+        "vertex_ms_per_buffer_mean": 0.1004298418972332,
+        "fragment_encoders_per_buffer": {
+          "1": 253
+        },
+        "note": "Active GPU intervals; no CPU image readback. Vertex and fragment may overlap. Startup buffers excluded, not all warmup boundaries."
+      }
+    },
+    {
+      "case": "flat",
+      "cpu_rounds": [
+        {
+          "round": 1,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.067292,
+          "invalidated_draw_p50_ms": 0.046208,
+          "invalidated_draw_p95_ms": 0.072542,
+          "raster_readback_p50_ms": 9.592792
+        },
+        {
+          "round": 2,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.057874999999999996,
+          "invalidated_draw_p50_ms": 0.060958,
+          "invalidated_draw_p95_ms": 0.103,
+          "raster_readback_p50_ms": 9.765375
+        }
+      ],
+      "metal": {
+        "source": "/private/tmp/hato-render-metal-20261125/results.json",
+        "frames_per_mode": 120,
+        "pid": 61033,
+        "buffers_found": 274,
+        "buffers_measured": 253,
+        "fragment_ms_per_buffer": {
+          "mean": 3.2950985296442687,
+          "p50": 2.2095,
+          "p95": 8.417958,
+          "min": 1.376667,
+          "max": 10.830875
+        },
+        "vertex_ms_per_buffer_mean": 0.0245657628458498,
+        "fragment_encoders_per_buffer": {
+          "1": 253
+        },
+        "note": "Active GPU intervals; no CPU image readback. Vertex and fragment may overlap. Startup buffers excluded, not all warmup boundaries."
+      }
+    },
+    {
+      "case": "glow-1-radius-320",
+      "cpu_rounds": [
+        {
+          "round": 1,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.05450000000000001,
+          "invalidated_draw_p50_ms": 0.048208,
+          "invalidated_draw_p95_ms": 0.074458,
+          "raster_readback_p50_ms": 9.887833
+        },
+        {
+          "round": 2,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.07225,
+          "invalidated_draw_p50_ms": 0.050457999999999996,
+          "invalidated_draw_p95_ms": 0.076166,
+          "raster_readback_p50_ms": 9.974541
+        }
+      ]
+    },
+    {
+      "case": "glow-1-radius-640",
+      "cpu_rounds": [
+        {
+          "round": 1,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.055541,
+          "invalidated_draw_p50_ms": 0.053959,
+          "invalidated_draw_p95_ms": 0.079959,
+          "raster_readback_p50_ms": 11.209458999999999
+        },
+        {
+          "round": 2,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.10104099999999999,
+          "invalidated_draw_p50_ms": 0.051165999999999996,
+          "invalidated_draw_p95_ms": 0.080083,
+          "raster_readback_p50_ms": 10.053084
+        }
+      ]
+    },
+    {
+      "case": "glow-1-radius-96",
+      "cpu_rounds": [
+        {
+          "round": 1,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.048833,
+          "invalidated_draw_p50_ms": 0.077375,
+          "invalidated_draw_p95_ms": 0.12258399999999998,
+          "raster_readback_p50_ms": 10.334332999999999
+        },
+        {
+          "round": 2,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.051792000000000005,
+          "invalidated_draw_p50_ms": 0.051708,
+          "invalidated_draw_p95_ms": 0.093291,
+          "raster_readback_p50_ms": 9.325125
+        }
+      ]
+    },
+    {
+      "case": "glow-3-radius-640",
+      "cpu_rounds": [
+        {
+          "round": 1,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.0645,
+          "invalidated_draw_p50_ms": 0.065583,
+          "invalidated_draw_p95_ms": 0.095916,
+          "raster_readback_p50_ms": 13.841041
+        },
+        {
+          "round": 2,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.073791,
+          "invalidated_draw_p50_ms": 0.087,
+          "invalidated_draw_p95_ms": 0.104625,
+          "raster_readback_p50_ms": 20.651625
+        }
+      ],
+      "metal": {
+        "source": "/private/tmp/hato-render-metal-20261125/results.json",
+        "frames_per_mode": 120,
+        "pid": 60119,
+        "buffers_found": 274,
+        "buffers_measured": 253,
+        "fragment_ms_per_buffer": {
+          "mean": 10.158983683794466,
+          "p50": 9.605375,
+          "p95": 14.129750000000001,
+          "min": 7.422208,
+          "max": 18.877125
+        },
+        "vertex_ms_per_buffer_mean": 0.08164014624505929,
+        "fragment_encoders_per_buffer": {
+          "1": 253
+        },
+        "note": "Active GPU intervals; no CPU image readback. Vertex and fragment may overlap. Startup buffers excluded, not all warmup boundaries."
+      }
+    },
+    {
+      "case": "glow-ember",
+      "cpu_rounds": [
+        {
+          "round": 1,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.055375,
+          "invalidated_draw_p50_ms": 0.050791,
+          "invalidated_draw_p95_ms": 0.094875,
+          "raster_readback_p50_ms": 9.768334
+        },
+        {
+          "round": 2,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.078792,
+          "invalidated_draw_p50_ms": 0.065375,
+          "invalidated_draw_p95_ms": 0.11587499999999999,
+          "raster_readback_p50_ms": 10.361083
+        }
+      ],
+      "metal": {
+        "source": "/private/tmp/hato-render-metal-20261125/results.json",
+        "frames_per_mode": 120,
+        "pid": 61578,
+        "buffers_found": 274,
+        "buffers_measured": 253,
+        "fragment_ms_per_buffer": {
+          "mean": 3.201656956521739,
+          "p50": 2.338709,
+          "p95": 7.567208,
+          "min": 1.661541,
+          "max": 11.833417
+        },
+        "vertex_ms_per_buffer_mean": 0.03879825296442688,
+        "fragment_encoders_per_buffer": {
+          "1": 253
+        },
+        "note": "Active GPU intervals; no CPU image readback. Vertex and fragment may overlap. Startup buffers excluded, not all warmup boundaries."
+      }
+    },
+    {
+      "case": "gradient-layers-1",
+      "cpu_rounds": [
+        {
+          "round": 1,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.049957999999999995,
+          "invalidated_draw_p50_ms": 0.052584,
+          "invalidated_draw_p95_ms": 0.078958,
+          "raster_readback_p50_ms": 10.597833
+        },
+        {
+          "round": 2,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.044625,
+          "invalidated_draw_p50_ms": 0.047667,
+          "invalidated_draw_p95_ms": 0.087,
+          "raster_readback_p50_ms": 9.314334
+        }
+      ]
+    },
+    {
+      "case": "gradient-layers-32",
+      "cpu_rounds": [
+        {
+          "round": 1,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.13712500000000002,
+          "invalidated_draw_p50_ms": 0.121291,
+          "invalidated_draw_p95_ms": 0.143333,
+          "raster_readback_p50_ms": 13.714333
+        },
+        {
+          "round": 2,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.151375,
+          "invalidated_draw_p50_ms": 0.163583,
+          "invalidated_draw_p95_ms": 0.214083,
+          "raster_readback_p50_ms": 19.507584
+        }
+      ]
+    },
+    {
+      "case": "gradient-layers-8",
+      "cpu_rounds": [
+        {
+          "round": 1,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.074042,
+          "invalidated_draw_p50_ms": 0.06837499999999999,
+          "invalidated_draw_p95_ms": 0.104709,
+          "raster_readback_p50_ms": 10.479833
+        },
+        {
+          "round": 2,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.082333,
+          "invalidated_draw_p50_ms": 0.078625,
+          "invalidated_draw_p95_ms": 0.115333,
+          "raster_readback_p50_ms": 16.698542
+        }
+      ]
+    },
+    {
+      "case": "inputs-32",
+      "cpu_rounds": [
+        {
+          "round": 1,
+          "source": "/private/tmp/hato-render-extra-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.837208,
+          "invalidated_draw_p50_ms": 0.9357080000000001,
+          "invalidated_draw_p95_ms": 1.068375,
+          "raster_readback_p50_ms": 12.253207999999999
+        },
+        {
+          "round": 2,
+          "source": "/private/tmp/hato-render-extra-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.901542,
+          "invalidated_draw_p50_ms": 0.981084,
+          "invalidated_draw_p95_ms": 1.071917,
+          "raster_readback_p50_ms": 15.638040999999998
+        }
+      ]
+    },
+    {
+      "case": "inputs-8",
+      "cpu_rounds": [
+        {
+          "round": 1,
+          "source": "/private/tmp/hato-render-extra-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.274083,
+          "invalidated_draw_p50_ms": 0.257208,
+          "invalidated_draw_p95_ms": 0.371834,
+          "raster_readback_p50_ms": 10.353917000000001
+        },
+        {
+          "round": 2,
+          "source": "/private/tmp/hato-render-extra-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.227459,
+          "invalidated_draw_p50_ms": 0.26483399999999996,
+          "invalidated_draw_p95_ms": 0.333708,
+          "raster_readback_p50_ms": 11.333209
+        }
+      ]
+    },
+    {
+      "case": "labels-eager-100",
+      "cpu_rounds": [
+        {
+          "round": 1,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.454625,
+          "invalidated_draw_p50_ms": 0.442459,
+          "invalidated_draw_p95_ms": 0.482375,
+          "raster_readback_p50_ms": 10.049000000000001
+        },
+        {
+          "round": 2,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.47058300000000003,
+          "invalidated_draw_p50_ms": 0.42362500000000003,
+          "invalidated_draw_p95_ms": 0.47341700000000003,
+          "raster_readback_p50_ms": 9.502292
+        }
+      ]
+    },
+    {
+      "case": "labels-eager-1500",
+      "cpu_rounds": [
+        {
+          "round": 1,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 4.42925,
+          "invalidated_draw_p50_ms": 4.454542,
+          "invalidated_draw_p95_ms": 4.992458,
+          "raster_readback_p50_ms": 10.161875
+        },
+        {
+          "round": 2,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 4.414084000000001,
+          "invalidated_draw_p50_ms": 4.394417000000001,
+          "invalidated_draw_p95_ms": 4.528125,
+          "raster_readback_p50_ms": 10.141292
+        }
+      ]
+    },
+    {
+      "case": "labels-eager-500",
+      "cpu_rounds": [
+        {
+          "round": 1,
+          "source": "/private/tmp/hato-render-repeat-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 1.576291,
+          "invalidated_draw_p50_ms": 1.499916,
+          "invalidated_draw_p95_ms": 1.571792,
+          "raster_readback_p50_ms": 9.970208
+        },
+        {
+          "round": 2,
+          "source": "/private/tmp/hato-render-repeat-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 1.6429159999999998,
+          "invalidated_draw_p50_ms": 1.573667,
+          "invalidated_draw_p95_ms": 1.675167,
+          "raster_readback_p50_ms": 11.093874999999999
+        }
+      ]
+    },
+    {
+      "case": "labels-lazy-100",
+      "cpu_rounds": [
+        {
+          "round": 1,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.321666,
+          "invalidated_draw_p50_ms": 0.29862500000000003,
+          "invalidated_draw_p95_ms": 0.35024999999999995,
+          "raster_readback_p50_ms": 9.445125
+        },
+        {
+          "round": 2,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.411791,
+          "invalidated_draw_p50_ms": 0.339583,
+          "invalidated_draw_p95_ms": 0.445917,
+          "raster_readback_p50_ms": 10.886916999999999
+        }
+      ]
+    },
+    {
+      "case": "labels-lazy-1500",
+      "cpu_rounds": [
+        {
+          "round": 1,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.330917,
+          "invalidated_draw_p50_ms": 0.307125,
+          "invalidated_draw_p95_ms": 0.36666699999999997,
+          "raster_readback_p50_ms": 9.610959000000001
+        },
+        {
+          "round": 2,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.313375,
+          "invalidated_draw_p50_ms": 0.316959,
+          "invalidated_draw_p95_ms": 0.35562499999999997,
+          "raster_readback_p50_ms": 9.464834
+        }
+      ]
+    },
+    {
+      "case": "labels-lazy-500",
+      "cpu_rounds": [
+        {
+          "round": 1,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.306375,
+          "invalidated_draw_p50_ms": 0.318083,
+          "invalidated_draw_p95_ms": 0.40541699999999997,
+          "raster_readback_p50_ms": 9.799083999999999
+        },
+        {
+          "round": 2,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.308875,
+          "invalidated_draw_p50_ms": 0.30737499999999995,
+          "invalidated_draw_p95_ms": 0.368084,
+          "raster_readback_p50_ms": 9.430584000000001
+        }
+      ]
+    },
+    {
+      "case": "markdown-1",
+      "cpu_rounds": [
+        {
+          "round": 1,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.144875,
+          "invalidated_draw_p50_ms": 0.160834,
+          "invalidated_draw_p95_ms": 0.254958,
+          "raster_readback_p50_ms": 10.353917000000001
+        },
+        {
+          "round": 2,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.157625,
+          "invalidated_draw_p50_ms": 0.14175000000000001,
+          "invalidated_draw_p95_ms": 0.205,
+          "raster_readback_p50_ms": 9.595457999999999
+        }
+      ]
+    },
+    {
+      "case": "markdown-10",
+      "cpu_rounds": [
+        {
+          "round": 1,
+          "source": "/private/tmp/hato-render-repeat-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.679709,
+          "invalidated_draw_p50_ms": 0.760208,
+          "invalidated_draw_p95_ms": 0.899416,
+          "raster_readback_p50_ms": 9.633958
+        },
+        {
+          "round": 2,
+          "source": "/private/tmp/hato-render-repeat-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.660917,
+          "invalidated_draw_p50_ms": 0.6637080000000001,
+          "invalidated_draw_p95_ms": 0.9676669999999999,
+          "raster_readback_p50_ms": 9.668708
+        }
+      ]
+    },
+    {
+      "case": "markdown-50",
+      "cpu_rounds": [
+        {
+          "round": 1,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 3.211042,
+          "invalidated_draw_p50_ms": 2.974958,
+          "invalidated_draw_p95_ms": 3.153917,
+          "raster_readback_p50_ms": 10.001375
+        },
+        {
+          "round": 2,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 2.961875,
+          "invalidated_draw_p50_ms": 2.9481669999999998,
+          "invalidated_draw_p95_ms": 3.097375,
+          "raster_readback_p50_ms": 10.148333000000001
+        }
+      ]
+    },
+    {
+      "case": "opaque-layers-1",
+      "cpu_rounds": [
+        {
+          "round": 1,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.063209,
+          "invalidated_draw_p50_ms": 0.057540999999999995,
+          "invalidated_draw_p95_ms": 0.096,
+          "raster_readback_p50_ms": 11.504209
+        },
+        {
+          "round": 2,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.056833,
+          "invalidated_draw_p50_ms": 0.056959,
+          "invalidated_draw_p95_ms": 0.09883399999999999,
+          "raster_readback_p50_ms": 11.059833999999999
+        }
+      ]
+    },
+    {
+      "case": "opaque-layers-32",
+      "cpu_rounds": [
+        {
+          "round": 1,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.161833,
+          "invalidated_draw_p50_ms": 0.14629199999999998,
+          "invalidated_draw_p95_ms": 0.17720799999999998,
+          "raster_readback_p50_ms": 15.280208
+        },
+        {
+          "round": 2,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.151833,
+          "invalidated_draw_p50_ms": 0.14216700000000002,
+          "invalidated_draw_p95_ms": 0.155416,
+          "raster_readback_p50_ms": 18.306666999999997
+        }
+      ]
+    },
+    {
+      "case": "opaque-layers-8",
+      "cpu_rounds": [
+        {
+          "round": 1,
+          "source": "/private/tmp/hato-render-repeat-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.067208,
+          "invalidated_draw_p50_ms": 0.06875,
+          "invalidated_draw_p95_ms": 0.099708,
+          "raster_readback_p50_ms": 9.910166
+        },
+        {
+          "round": 2,
+          "source": "/private/tmp/hato-render-repeat-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.07925,
+          "invalidated_draw_p50_ms": 0.076583,
+          "invalidated_draw_p95_ms": 0.117083,
+          "raster_readback_p50_ms": 12.213833000000001
+        }
+      ]
+    },
+    {
+      "case": "rings-1",
+      "cpu_rounds": [
+        {
+          "round": 1,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.074,
+          "invalidated_draw_p50_ms": 0.066708,
+          "invalidated_draw_p95_ms": 0.1025,
+          "raster_readback_p50_ms": 9.978709
+        },
+        {
+          "round": 2,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.063625,
+          "invalidated_draw_p50_ms": 0.066875,
+          "invalidated_draw_p95_ms": 0.115,
+          "raster_readback_p50_ms": 9.492083000000001
+        }
+      ]
+    },
+    {
+      "case": "rings-128",
+      "cpu_rounds": [
+        {
+          "round": 1,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.9351659999999999,
+          "invalidated_draw_p50_ms": 0.916166,
+          "invalidated_draw_p95_ms": 0.990875,
+          "raster_readback_p50_ms": 10.459916
+        },
+        {
+          "round": 2,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.918833,
+          "invalidated_draw_p50_ms": 0.909041,
+          "invalidated_draw_p95_ms": 0.956125,
+          "raster_readback_p50_ms": 9.719458
+        }
+      ]
+    },
+    {
+      "case": "rings-16",
+      "cpu_rounds": [
+        {
+          "round": 1,
+          "source": "/private/tmp/hato-render-repeat-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.228917,
+          "invalidated_draw_p50_ms": 0.234792,
+          "invalidated_draw_p95_ms": 0.328709,
+          "raster_readback_p50_ms": 10.827375
+        },
+        {
+          "round": 2,
+          "source": "/private/tmp/hato-render-repeat-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.153833,
+          "invalidated_draw_p50_ms": 0.16449999999999998,
+          "invalidated_draw_p95_ms": 0.238166,
+          "raster_readback_p50_ms": 9.681958
+        }
+      ]
+    },
+    {
+      "case": "shadow-1-blur-128",
+      "cpu_rounds": [
+        {
+          "round": 1,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.060875000000000005,
+          "invalidated_draw_p50_ms": 0.0665,
+          "invalidated_draw_p95_ms": 0.096625,
+          "raster_readback_p50_ms": 9.944334000000001
+        },
+        {
+          "round": 2,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.066375,
+          "invalidated_draw_p50_ms": 0.070917,
+          "invalidated_draw_p95_ms": 0.095709,
+          "raster_readback_p50_ms": 14.676417
+        }
+      ]
+    },
+    {
+      "case": "shadow-1-blur-32",
+      "cpu_rounds": [
+        {
+          "round": 1,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.047625,
+          "invalidated_draw_p50_ms": 0.069208,
+          "invalidated_draw_p95_ms": 0.099083,
+          "raster_readback_p50_ms": 10.376750000000001
+        },
+        {
+          "round": 2,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.080125,
+          "invalidated_draw_p50_ms": 0.046459,
+          "invalidated_draw_p95_ms": 0.07212500000000001,
+          "raster_readback_p50_ms": 9.838458
+        }
+      ]
+    },
+    {
+      "case": "shadow-32-blur-128",
+      "cpu_rounds": [
+        {
+          "round": 1,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.146042,
+          "invalidated_draw_p50_ms": 0.146917,
+          "invalidated_draw_p95_ms": 0.174708,
+          "raster_readback_p50_ms": 25.688125
+        },
+        {
+          "round": 2,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.152625,
+          "invalidated_draw_p50_ms": 0.15154099999999998,
+          "invalidated_draw_p95_ms": 0.209208,
+          "raster_readback_p50_ms": 25.686083
+        }
+      ],
+      "metal": {
+        "source": "/private/tmp/hato-render-metal-20261125/results.json",
+        "frames_per_mode": 120,
+        "pid": 62657,
+        "buffers_found": 274,
+        "buffers_measured": 253,
+        "fragment_ms_per_buffer": {
+          "mean": 17.468431280632412,
+          "p50": 16.866459,
+          "p95": 19.167166,
+          "min": 16.59225,
+          "max": 20.733126
+        },
+        "vertex_ms_per_buffer_mean": 0.20673568774703557,
+        "fragment_encoders_per_buffer": {
+          "1": 253
+        },
+        "note": "Active GPU intervals; no CPU image readback. Vertex and fragment may overlap. Startup buffers excluded, not all warmup boundaries."
+      }
+    },
+    {
+      "case": "shadow-32-blur-32",
+      "cpu_rounds": [
+        {
+          "round": 1,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.16154200000000002,
+          "invalidated_draw_p50_ms": 0.15879100000000002,
+          "invalidated_draw_p95_ms": 0.2125,
+          "raster_readback_p50_ms": 21.556417
+        },
+        {
+          "round": 2,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.15175,
+          "invalidated_draw_p50_ms": 0.152125,
+          "invalidated_draw_p95_ms": 0.18504099999999998,
+          "raster_readback_p50_ms": 21.132417
+        }
+      ]
+    },
+    {
+      "case": "shadow-8-blur-128",
+      "cpu_rounds": [
+        {
+          "round": 1,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.077583,
+          "invalidated_draw_p50_ms": 0.07525,
+          "invalidated_draw_p95_ms": 0.09787499999999999,
+          "raster_readback_p50_ms": 12.569166
+        },
+        {
+          "round": 2,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.097916,
+          "invalidated_draw_p50_ms": 0.08679100000000001,
+          "invalidated_draw_p95_ms": 0.112333,
+          "raster_readback_p50_ms": 15.007125
+        }
+      ]
+    },
+    {
+      "case": "shadow-8-blur-32",
+      "cpu_rounds": [
+        {
+          "round": 1,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.101584,
+          "invalidated_draw_p50_ms": 0.070208,
+          "invalidated_draw_p95_ms": 0.11237499999999999,
+          "raster_readback_p50_ms": 11.388459
+        },
+        {
+          "round": 2,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.075958,
+          "invalidated_draw_p50_ms": 0.077875,
+          "invalidated_draw_p95_ms": 0.11412499999999999,
+          "raster_readback_p50_ms": 11.53125
+        }
+      ]
+    },
+    {
+      "case": "spinners-1",
+      "cpu_rounds": [
+        {
+          "round": 1,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.06129199999999999,
+          "invalidated_draw_p50_ms": 0.074875,
+          "invalidated_draw_p95_ms": 0.12825,
+          "raster_readback_p50_ms": 9.966417
+        },
+        {
+          "round": 2,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.059541,
+          "invalidated_draw_p50_ms": 0.060459,
+          "invalidated_draw_p95_ms": 0.103667,
+          "raster_readback_p50_ms": 9.44475
+        }
+      ],
+      "metal": {
+        "source": "/private/tmp/hato-render-metal-20261125/results.json",
+        "frames_per_mode": 120,
+        "pid": 62587,
+        "buffers_found": 274,
+        "buffers_measured": 253,
+        "fragment_ms_per_buffer": {
+          "mean": 2.6074636166007905,
+          "p50": 1.810458,
+          "p95": 7.442791,
+          "min": 0.88975,
+          "max": 12.885917
+        },
+        "vertex_ms_per_buffer_mean": 0.024021407114624506,
+        "fragment_encoders_per_buffer": {
+          "1": 253
+        },
+        "note": "Active GPU intervals; no CPU image readback. Vertex and fragment may overlap. Startup buffers excluded, not all warmup boundaries."
+      }
+    },
+    {
+      "case": "spinners-128",
+      "cpu_rounds": [
+        {
+          "round": 1,
+          "source": "/private/tmp/hato-render-repeat-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.51,
+          "invalidated_draw_p50_ms": 0.522333,
+          "invalidated_draw_p95_ms": 0.6745,
+          "raster_readback_p50_ms": 9.934708
+        },
+        {
+          "round": 2,
+          "source": "/private/tmp/hato-render-repeat-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.5387080000000001,
+          "invalidated_draw_p50_ms": 0.534334,
+          "invalidated_draw_p95_ms": 0.579625,
+          "raster_readback_p50_ms": 10.965041999999999
+        }
+      ],
+      "metal": {
+        "source": "/private/tmp/hato-render-metal-20261125/results.json",
+        "frames_per_mode": 120,
+        "pid": 60919,
+        "buffers_found": 274,
+        "buffers_measured": 253,
+        "fragment_ms_per_buffer": {
+          "mean": 3.4186320869565217,
+          "p50": 2.520875,
+          "p95": 7.69475,
+          "min": 1.391375,
+          "max": 9.743292
+        },
+        "vertex_ms_per_buffer_mean": 0.03028390118577075,
+        "fragment_encoders_per_buffer": {
+          "1": 253
+        },
+        "note": "Active GPU intervals; no CPU image readback. Vertex and fragment may overlap. Startup buffers excluded, not all warmup boundaries."
+      }
+    },
+    {
+      "case": "spinners-16",
+      "cpu_rounds": [
+        {
+          "round": 1,
+          "source": "/private/tmp/hato-render-repeat-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.16175,
+          "invalidated_draw_p50_ms": 0.177625,
+          "invalidated_draw_p95_ms": 0.23675000000000002,
+          "raster_readback_p50_ms": 10.534917
+        },
+        {
+          "round": 2,
+          "source": "/private/tmp/hato-render-repeat-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.10341700000000001,
+          "invalidated_draw_p50_ms": 0.09925,
+          "invalidated_draw_p95_ms": 0.17191700000000001,
+          "raster_readback_p50_ms": 9.658708
+        }
+      ]
+    },
+    {
+      "case": "switches-32",
+      "cpu_rounds": [
+        {
+          "round": 1,
+          "source": "/private/tmp/hato-render-extra-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.597333,
+          "invalidated_draw_p50_ms": 0.579125,
+          "invalidated_draw_p95_ms": 0.6018749999999999,
+          "raster_readback_p50_ms": 9.244417
+        },
+        {
+          "round": 2,
+          "source": "/private/tmp/hato-render-extra-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.6088340000000001,
+          "invalidated_draw_p50_ms": 0.721125,
+          "invalidated_draw_p95_ms": 0.822333,
+          "raster_readback_p50_ms": 11.689958
+        }
+      ]
+    },
+    {
+      "case": "switches-8",
+      "cpu_rounds": [
+        {
+          "round": 1,
+          "source": "/private/tmp/hato-render-extra-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.178584,
+          "invalidated_draw_p50_ms": 0.182542,
+          "invalidated_draw_p95_ms": 0.257625,
+          "raster_readback_p50_ms": 9.472291
+        },
+        {
+          "round": 2,
+          "source": "/private/tmp/hato-render-extra-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.195375,
+          "invalidated_draw_p50_ms": 0.230125,
+          "invalidated_draw_p95_ms": 0.259792,
+          "raster_readback_p50_ms": 9.899709
+        }
+      ]
+    },
+    {
+      "case": "transcript-100",
+      "cpu_rounds": [
+        {
+          "round": 1,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 6.514459,
+          "invalidated_draw_p50_ms": 7.044917000000001,
+          "invalidated_draw_p95_ms": 7.983458000000001,
+          "raster_readback_p50_ms": 10.784500000000001
+        },
+        {
+          "round": 2,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 6.492166,
+          "invalidated_draw_p50_ms": 6.5239579999999995,
+          "invalidated_draw_p95_ms": 6.746125,
+          "raster_readback_p50_ms": 10.278083
+        }
+      ]
+    },
+    {
+      "case": "transcript-25",
+      "cpu_rounds": [
+        {
+          "round": 1,
+          "source": "/private/tmp/hato-render-repeat-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 1.561792,
+          "invalidated_draw_p50_ms": 1.654375,
+          "invalidated_draw_p95_ms": 2.041958,
+          "raster_readback_p50_ms": 10.140292
+        },
+        {
+          "round": 2,
+          "source": "/private/tmp/hato-render-repeat-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 1.771416,
+          "invalidated_draw_p50_ms": 1.571667,
+          "invalidated_draw_p95_ms": 1.7093749999999999,
+          "raster_readback_p50_ms": 9.837375
+        }
+      ]
+    },
+    {
+      "case": "translucent-layers-1",
+      "cpu_rounds": [
+        {
+          "round": 1,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.053833,
+          "invalidated_draw_p50_ms": 0.045625,
+          "invalidated_draw_p95_ms": 0.06949999999999999,
+          "raster_readback_p50_ms": 9.495791
+        },
+        {
+          "round": 2,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.051666000000000004,
+          "invalidated_draw_p50_ms": 0.060292,
+          "invalidated_draw_p95_ms": 0.082958,
+          "raster_readback_p50_ms": 11.088416
+        }
+      ]
+    },
+    {
+      "case": "translucent-layers-32",
+      "cpu_rounds": [
+        {
+          "round": 1,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.140041,
+          "invalidated_draw_p50_ms": 0.139875,
+          "invalidated_draw_p95_ms": 0.16558299999999998,
+          "raster_readback_p50_ms": 17.020041
+        },
+        {
+          "round": 2,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.13487500000000002,
+          "invalidated_draw_p50_ms": 0.148916,
+          "invalidated_draw_p95_ms": 0.188666,
+          "raster_readback_p50_ms": 17.461458
+        }
+      ]
+    },
+    {
+      "case": "translucent-layers-8",
+      "cpu_rounds": [
+        {
+          "round": 1,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.075208,
+          "invalidated_draw_p50_ms": 0.091959,
+          "invalidated_draw_p95_ms": 0.139791,
+          "raster_readback_p50_ms": 10.183667
+        },
+        {
+          "round": 2,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.06866599999999999,
+          "invalidated_draw_p50_ms": 0.062875,
+          "invalidated_draw_p95_ms": 0.080166,
+          "raster_readback_p50_ms": 9.628833
+        }
+      ]
+    },
+    {
+      "case": "tree-fixed-100",
+      "cpu_rounds": [
+        {
+          "round": 1,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.095584,
+          "invalidated_draw_p50_ms": 0.771042,
+          "invalidated_draw_p95_ms": 0.900667,
+          "raster_readback_p50_ms": 9.874667
+        },
+        {
+          "round": 2,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.098083,
+          "invalidated_draw_p50_ms": 0.7240420000000001,
+          "invalidated_draw_p95_ms": 0.777833,
+          "raster_readback_p50_ms": 10.439125
+        }
+      ]
+    },
+    {
+      "case": "tree-fixed-1000",
+      "cpu_rounds": [
+        {
+          "round": 1,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.092042,
+          "invalidated_draw_p50_ms": 0.735375,
+          "invalidated_draw_p95_ms": 0.9072079999999999,
+          "raster_readback_p50_ms": 11.002208
+        },
+        {
+          "round": 2,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.11524999999999999,
+          "invalidated_draw_p50_ms": 0.7062919999999999,
+          "invalidated_draw_p95_ms": 0.766167,
+          "raster_readback_p50_ms": 9.538375
+        }
+      ]
+    },
+    {
+      "case": "tree-fixed-5000",
+      "cpu_rounds": [
+        {
+          "round": 1,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.092833,
+          "invalidated_draw_p50_ms": 0.735333,
+          "invalidated_draw_p95_ms": 0.838958,
+          "raster_readback_p50_ms": 10.179875
+        },
+        {
+          "round": 2,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.09879099999999999,
+          "invalidated_draw_p50_ms": 0.70925,
+          "invalidated_draw_p95_ms": 0.815917,
+          "raster_readback_p50_ms": 9.522457999999999
+        }
+      ]
+    },
+    {
+      "case": "tree-intrinsic-100",
+      "cpu_rounds": [
+        {
+          "round": 1,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.107208,
+          "invalidated_draw_p50_ms": 1.696625,
+          "invalidated_draw_p95_ms": 1.791209,
+          "raster_readback_p50_ms": 10.279
+        },
+        {
+          "round": 2,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.106792,
+          "invalidated_draw_p50_ms": 1.694583,
+          "invalidated_draw_p95_ms": 1.77475,
+          "raster_readback_p50_ms": 10.034125
+        }
+      ]
+    },
+    {
+      "case": "tree-intrinsic-1000",
+      "cpu_rounds": [
+        {
+          "round": 1,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.431125,
+          "invalidated_draw_p50_ms": 17.60725,
+          "invalidated_draw_p95_ms": 18.893417,
+          "raster_readback_p50_ms": 10.5025
+        },
+        {
+          "round": 2,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.402833,
+          "invalidated_draw_p50_ms": 17.614958,
+          "invalidated_draw_p95_ms": 18.702582999999997,
+          "raster_readback_p50_ms": 10.312417
+        }
+      ]
+    },
+    {
+      "case": "tree-intrinsic-5000",
+      "cpu_rounds": [
+        {
+          "round": 1,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 2.9160000000000004,
+          "invalidated_draw_p50_ms": 134.572916,
+          "invalidated_draw_p95_ms": 136.995542,
+          "raster_readback_p50_ms": 12.551582999999999
+        },
+        {
+          "round": 2,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 2.248125,
+          "invalidated_draw_p50_ms": 92.516458,
+          "invalidated_draw_p95_ms": 102.799375,
+          "raster_readback_p50_ms": 11.684667
+        }
+      ]
+    },
+    {
+      "case": "workspace-1-rail",
+      "cpu_rounds": [
+        {
+          "round": 1,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.097834,
+          "invalidated_draw_p50_ms": 0.722625,
+          "invalidated_draw_p95_ms": 0.7976669999999999,
+          "raster_readback_p50_ms": 9.56625
+        },
+        {
+          "round": 2,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.09995799999999999,
+          "invalidated_draw_p50_ms": 0.747,
+          "invalidated_draw_p95_ms": 0.804458,
+          "raster_readback_p50_ms": 10.328834
+        }
+      ]
+    },
+    {
+      "case": "workspace-2-toolbar",
+      "cpu_rounds": [
+        {
+          "round": 1,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.285916,
+          "invalidated_draw_p50_ms": 0.923875,
+          "invalidated_draw_p95_ms": 1.047917,
+          "raster_readback_p50_ms": 9.812084
+        },
+        {
+          "round": 2,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.289958,
+          "invalidated_draw_p50_ms": 0.9146249999999999,
+          "invalidated_draw_p95_ms": 0.9865830000000001,
+          "raster_readback_p50_ms": 10.190207999999998
+        }
+      ]
+    },
+    {
+      "case": "workspace-3-transcript",
+      "cpu_rounds": [
+        {
+          "round": 1,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 2.1824589999999997,
+          "invalidated_draw_p50_ms": 2.763416,
+          "invalidated_draw_p95_ms": 3.0157909999999997,
+          "raster_readback_p50_ms": 10.38625
+        },
+        {
+          "round": 2,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 2.135167,
+          "invalidated_draw_p50_ms": 2.779833,
+          "invalidated_draw_p95_ms": 2.945709,
+          "raster_readback_p50_ms": 10.593791999999999
+        }
+      ]
+    },
+    {
+      "case": "workspace-4-glow",
+      "cpu_rounds": [
+        {
+          "round": 1,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 2.343667,
+          "invalidated_draw_p50_ms": 2.808917,
+          "invalidated_draw_p95_ms": 3.13875,
+          "raster_readback_p50_ms": 13.200750000000001
+        },
+        {
+          "round": 2,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 2.178042,
+          "invalidated_draw_p50_ms": 2.799458,
+          "invalidated_draw_p95_ms": 2.931375,
+          "raster_readback_p50_ms": 13.231334
+        }
+      ]
+    },
+    {
+      "case": "workspace-5-shadows",
+      "cpu_rounds": [
+        {
+          "round": 1,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 2.396292,
+          "invalidated_draw_p50_ms": 2.966834,
+          "invalidated_draw_p95_ms": 3.318375,
+          "raster_readback_p50_ms": 13.926917000000001
+        },
+        {
+          "round": 2,
+          "source": "/private/tmp/hato-render-bench-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 2.2737909999999997,
+          "invalidated_draw_p50_ms": 3.0237089999999998,
+          "invalidated_draw_p95_ms": 3.2313340000000004,
+          "raster_readback_p50_ms": 18.036582999999997
+        }
+      ]
+    },
+    {
+      "case": "workspace-cached-100",
+      "cpu_rounds": [
+        {
+          "round": 1,
+          "source": "/private/tmp/hato-render-extra-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.384375,
+          "invalidated_draw_p50_ms": 7.7086250000000005,
+          "invalidated_draw_p95_ms": 8.227083,
+          "raster_readback_p50_ms": 10.310791
+        },
+        {
+          "round": 2,
+          "source": "/private/tmp/hato-render-extra-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.434625,
+          "invalidated_draw_p50_ms": 7.699791,
+          "invalidated_draw_p95_ms": 8.350208,
+          "raster_readback_p50_ms": 10.281417
+        }
+      ]
+    },
+    {
+      "case": "workspace-cached-25",
+      "cpu_rounds": [
+        {
+          "round": 1,
+          "source": "/private/tmp/hato-render-extra-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.217167,
+          "invalidated_draw_p50_ms": 2.4387499999999998,
+          "invalidated_draw_p95_ms": 2.5852090000000003,
+          "raster_readback_p50_ms": 9.872708
+        },
+        {
+          "round": 2,
+          "source": "/private/tmp/hato-render-extra-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.269375,
+          "invalidated_draw_p50_ms": 2.582708,
+          "invalidated_draw_p95_ms": 2.847709,
+          "raster_readback_p50_ms": 11.462959
+        }
+      ],
+      "metal": {
+        "source": "/private/tmp/hato-render-metal-20261125/results.json",
+        "frames_per_mode": 120,
+        "pid": 62523,
+        "buffers_found": 274,
+        "buffers_measured": 253,
+        "fragment_ms_per_buffer": {
+          "mean": 2.853716177865613,
+          "p50": 2.147834,
+          "p95": 6.648834,
+          "min": 1.637458,
+          "max": 11.947291
+        },
+        "vertex_ms_per_buffer_mean": 0.08171409486166008,
+        "fragment_encoders_per_buffer": {
+          "1": 253
+        },
+        "note": "Active GPU intervals; no CPU image readback. Vertex and fragment may overlap. Startup buffers excluded, not all warmup boundaries."
+      }
+    },
+    {
+      "case": "workspace-cached-ember",
+      "cpu_rounds": [
+        {
+          "round": 1,
+          "source": "/private/tmp/hato-render-extra-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.361375,
+          "invalidated_draw_p50_ms": 2.7121250000000003,
+          "invalidated_draw_p95_ms": 3.008166,
+          "raster_readback_p50_ms": 13.077083
+        },
+        {
+          "round": 2,
+          "source": "/private/tmp/hato-render-extra-20261125/results.json",
+          "frames_per_mode": 60,
+          "retained_draw_p50_ms": 0.24383400000000002,
+          "invalidated_draw_p50_ms": 2.4742919999999997,
+          "invalidated_draw_p95_ms": 2.678625,
+          "raster_readback_p50_ms": 10.161959
+        }
+      ]
+    }
+  ],
+  "note": "Latest rerun replaces same case/round; excludes empty unregistered-slot fixtures and compilation overlap. CPU image readback is not GPU execution.",
+  "fixture_source_sha256": "5c6a1f6ff41127ec80a545e32b7a177a15db5fee364076fee7e6b2fa50e79420",
+  "metal_case_count": 13
+}

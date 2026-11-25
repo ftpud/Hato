@@ -278,6 +278,8 @@ impl Motion {
             _ => MotionMode::System,
         };
         set_motion_mode(mode, cx);
+        let activity = value["activityFps"].as_f64().filter(|fps| fps.is_finite() && *fps >= 1.).map_or(120., |fps| fps.min(120.));
+        cx.set_global(super::node_paint::ActivityFps(activity));
         cx.refresh_windows();
     }
 

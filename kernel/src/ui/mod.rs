@@ -621,10 +621,11 @@ impl Shell {
         let nodes = &nodes[..nodes.len().min(2000)];
         // `visibleWhen` drops a child (no space, no gap) outside its window state. Fullscreen
         // enter/exit resizes the window, which re-renders, so no module round trip is needed.
-        let fullscreen = window.is_fullscreen();
+        let fullscreen = std::cell::OnceCell::new();
+        let visible = |node: &Value| visible_in(node, || *fullscreen.get_or_init(|| window.is_fullscreen()));
         let filtered: Vec<Value>;
-        let nodes = if nodes.iter().any(|node| !visible_in(node, fullscreen)) {
-            filtered = nodes.iter().filter(|node| visible_in(node, fullscreen)).cloned().collect();
+        let nodes = if nodes.iter().any(|node| !visible(node)) {
+            filtered = nodes.iter().filter(|node| visible(node)).cloned().collect();
             filtered.as_slice()
         } else {
             nodes
@@ -646,7 +647,7 @@ impl Shell {
     }
 
     fn node(&mut self, module: &str, n: &Value, parent: &str, depth: usize, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        if !visible_in(n, window.is_fullscreen()) {
+        if !visible_in(n, || window.is_fullscreen()) {
             return div().into_any_element();
         }
         let ty = n["type"].as_str().unwrap_or("");
@@ -2009,10 +2010,10 @@ pub fn run(cfg: Config) {
 }
 
 /// `visibleWhen: "windowed" | "fullscreen"`; absent or unknown values are always visible.
-pub(crate) fn visible_in(node: &Value, fullscreen: bool) -> bool {
+pub(crate) fn visible_in(node: &Value, fullscreen: impl FnOnce() -> bool) -> bool {
     match node["visibleWhen"].as_str() {
-        Some("windowed") => !fullscreen,
-        Some("fullscreen") => fullscreen,
+        Some("windowed") => !fullscreen(),
+        Some("fullscreen") => fullscreen(),
         _ => true,
     }
 }
@@ -2027,9 +2028,10 @@ mod visible_when_tests {
         let windowed = json!({"type": "row", "visibleWhen": "windowed"});
         let full = json!({"type": "row", "visibleWhen": "fullscreen"});
         let plain = json!({"type": "row"});
-        assert!(visible_in(&windowed, false) && !visible_in(&windowed, true));
-        assert!(!visible_in(&full, false) && visible_in(&full, true));
-        assert!(visible_in(&plain, false) && visible_in(&plain, true));
-        assert!(visible_in(&json!({"visibleWhen": "sometimes"}), true));
+        assert!(visible_in(&windowed, || false) && !visible_in(&windowed, || true));
+        assert!(!visible_in(&full, || false) && visible_in(&full, || true));
+        assert!(visible_in(&plain, || false) && visible_in(&plain, || true));
+        assert!(visible_in(&plain, || panic!("unconditional nodes must not query the platform")));
+        assert!(visible_in(&json!({"visibleWhen": "sometimes"}), || panic!("unknown visibility must not query the platform")));
     }
 }

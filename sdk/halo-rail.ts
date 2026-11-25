@@ -8,7 +8,7 @@
 import type { Json, UiColor, UiNode, UiStyle, UiTransition } from "./types";
 import { resetText, type LimitsSnapshot } from "./usage-limits";
 import { haloLogo } from "./halo-logo";
-import { fadeLine, glassCard, glassChip, glassWell, glossyTile, glow } from "./halo-glass";
+import { dockedCard, fadeLine, glassCard, glassChip, glassWell, glossyTile, glow, type SurfaceEffects } from "./halo-glass";
 
 const svg = (paths: string, width = 1.6) => `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${width}" stroke-linecap="round" stroke-linejoin="round">${paths}</svg>`;
 export const haloIcons = {
@@ -100,6 +100,8 @@ export interface HaloModel {
   busy: number;
   usage: HaloUsage[];
   account?: { initials: string; name: string; detail: string; badge?: number; open: boolean; menu: HaloMenuItem[]; status?: UiNode[]; darkMode: boolean };
+  /** Appearance → Effects. The rail card is a large always-visible surface (default "reduced"). */
+  effects?: SurfaceEffects;
 }
 
 const row = (key: string, children: UiNode[], extra: Record<string, unknown> = {}): UiNode => ({ type: "row", key, align: "center", children, ...extra } as UiNode);
@@ -112,7 +114,9 @@ const text = (key: string, value: string, o: { size?: number; color?: UiColor; w
   ...(o.reveal ? { reveal: o.reveal } : {}), ...(o.tween ? { tween: o.tween } : {}),
 } as UiNode);
 const tipSide = (m: HaloModel) => (m.side === "left" ? "right" : "left") as "right" | "left";
-const spinner = (key: string, size = 12, color: UiColor = "muted"): UiNode => ({ type: "spinner", key, size, color, thickness: 1.5 } as UiNode);
+/** Rail spinners follow the window-wide Activity animation cap (Appearance). */
+const SPINNER_FPS = 60;
+const spinner = (key: string, size = 12, color: UiColor = "muted"): UiNode => ({ type: "spinner", key, size, color, thickness: 1.5, fps: SPINNER_FPS } as UiNode);
 
 /** The orange bar on the card's outer edge: one node with a shared layoutId, so it slides. */
 const indicator = (m: HaloModel): UiNode => col("indicator", [], {
@@ -390,7 +394,7 @@ export function haloRail(m: HaloModel): UiNode {
     // The middle band scrolls; header and footer stay put.
     col("sections", list, { grow: true, scroll: true, gap: 2, style: { paddingY: 4 } }),
     col("bottom", bottom, { gap: 3, style: { paddingX: PAD, noShrink: true } }),
-  ], { grow: true, gap: 0, style: { position: "relative", radius: 16, background: "panel", borderWidth: 1, borderColor: "glassEdge", clip: true, ...glassCard } });
+  ], { grow: true, gap: 0, style: { position: "relative", radius: 16, background: "panel", borderWidth: 1, borderColor: "glassEdge", clip: true, ...dockedCard(m.effects ?? "reduced") } });
   const gutter = col("gutter", [], { width: HALO.inset, style: { width: HALO.inset, noShrink: true } });
   return row("halo", m.side === "left" ? [gutter, card] : [card, gutter], { grow: true, align: "stretch", style: { paddingY: HALO.inset } });
 }

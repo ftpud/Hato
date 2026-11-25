@@ -5,6 +5,28 @@ user's MacBook (Built-in Liquid Retina, 2560×1664, ProMotion), running `target/
 
 ## Takeover checkpoint (2026-11-25)
 
+- **Isolated native benchmark built and run:** `tools/render-bench/README.md` documents a
+  development-only extension to snapshot rendering. 67 deterministic UiNode fixtures, two
+  untraced rounds (134 validated measurements), plus 13 per-case Metal traces. Fixed 1280×832
+  points / 2560×1664 pixels, throwaway data, no live modules/services. Retained vs fully
+  invalidated views separate native caching from rebuild cost. `raster_readback_ms` includes
+  CPU pixel copying; only the Metal summaries report direct GPU intervals. Results and limits:
+  **`tools/render-bench/RESULTS.md`**, full summaries **`baseline-2026-11-25.json`** beside it.
+  No live activation or user restart is needed to run this harness.
+- **Proven CPU cliffs:** intrinsic trees rebuild 1,000 rows in ~17.6 ms and 5,000 in 92–135 ms;
+  fixed-height virtualization stays ~0.7 ms at both counts. Most current panels already use
+  `rowHeight`; the browser network tree is a caller worth auditing. 100-message cached workspace
+  draws cost ~0.4 ms retained vs 7.7 ms fully invalidated, validating panel isolation. Streamed
+  transcript updates/scroll interactions still need deterministic replay measurements.
+- **GPU target narrowed:** a single canvas path changes 1→3 encoders (~2.27→5.74 ms median
+  active fragment time in these captures). Spinners remain sprites with one encoder. Real
+  Ember glows are close to flat baseline; three huge glows/32 large shadows are stress cases,
+  not evidence against normal glow defaults. Actual Ember panel styling, identical content and
+  rounded borders: **2.72 ms flat, 4.18 ms gradient, 5.31 ms gradient + card shadows**, all one
+  encoder. Untraced wall measurements also show added cost for the combined card effects.
+  Broad GPU tails limit small-delta claims; don't claim this is a live-app improvement yet.
+  Next useful optimization is large card effects, keeping appearance policy in modules/SDK;
+  follow with controlled streaming/scrolling and resource-backed editor/diff/terminal cases.
 - Baseline changes committed at the user's request: **Hato `7054f5a`** and
   **Hato-plugins `e324a8e`**. Release artifacts are committed locally, not published. The host
   lock remains pinned to the previous published revision; do not pin it to an unpublished SHA.
@@ -179,6 +201,83 @@ Keep marketplace publication separate; prepare a newer release before publishing
 Next: profile remaining eager rendering and GPU fill/compositing while busy spinners keep the
 window active. Remaining panel invalidations may include caret blinking, hover transitions,
 streaming messages and other legitimate control/data changes.
+
+### Checkpoint and focused CPU/Metal profiling
+
+- Current panel/tree caching, scrollbar isolation and ACP prompt clarification were checkpointed
+  in **Hato `bc3d8fa`**. Nothing pushed. The plugin repository had no new source changes.
+- New 5 s non-intrusive CPU sample: `/private/tmp/hato-render-next.sample.txt`. Of 479 sampled
+  main-thread `Window::draw` stacks, 194 included `Shell::render`; layout and paint branches
+  accounted for another 110 and 111 respectively. These are stack-sample counts, not measured
+  exclusive CPU durations. `PanelView` appeared in one stack, with no sampled EditorView or
+  CachedTree rendering. Remaining eager shell/rail construction is still a CPU target.
+- Removed an identified native-call inefficiency: `visibleWhen` now evaluates fullscreen state
+  lazily, and child filtering shares one native fullscreen query per list. Nodes with absent or
+  unknown visibility conditions do not query macOS at all. Existing visibility tests now also
+  enforce that lazy-query behavior.
+- Captured a real 5 s **Metal System Trace**, `/private/tmp/hato-render-gpu.trace`, using
+  Instruments CLI. It is available on this machine; the earlier handover assumption that the
+  user must record it manually no longer applies. Table exports are
+  `/private/tmp/hato-metal-gpu-intervals.xml` and `/private/tmp/hato-render-gpu-toc.xml`.
+- Hato's 171 recorded frame numbers had mean **12.634 ms** / median **11.843 ms** total fragment
+  interval time per frame (range 7.234–18.659 ms); vertex intervals totaled 45.14 ms across
+  the capture (~0.264 ms/frame). There were normally five GPU render commands per frame. This
+  is interval accounting, not a complete shader-level attribution: shader sample/timeline
+  tables were empty, and the default counter capture only exposed an unhelpful ray-tracing
+  activity counter. Do not claim that the trace proves shadows or ambient glows dominate.
+
+### Small arc sprites instead of full-window path passes (new, needs relaunch)
+
+- Reviewing the pinned GPUI Metal renderer explained a concrete cost: every native path batch
+  ends the current render encoder, clears/rasterizes through a **window-sized 4× MSAA texture**,
+  resolves it, then resumes drawing into the window. Even tiny spinner/ring paths take this
+  route. The trace's multiple render commands are consistent with these path-batch passes;
+  the next live trace must confirm how much their removal changes total GPU time.
+- Spinners and ring gauges now use cached SVG alpha-mask sprites. Spinners rotate the same
+  cached sprite via GPUI's existing transform; rings use cached full/partial arc masks. Sizes,
+  thickness, colors/alpha, labels, rounded gauge caps, reduced-motion behavior and clock/FPS
+  scheduling retain the existing module contract. The local glyph cache is bounded at 128
+  variants; sprite rasterization/atlas caching is provided by GPUI. These primitives no longer
+  call `paint_path`; general workflow/canvas paths are unchanged.
+- All **47 native UI tests** pass. Real isolated offscreen renders were inspected before and
+  after at six spinner sizes (8–64 px) and gauge values 0%, 1%, 25%, 74%, 99%, 100%:
+  `/private/tmp/hato-spinner-before.png` and `/private/tmp/hato-spinner-after.png`. The 840×400
+  comparison had mean absolute RGB error 0.1136/255; 1.193% of pixels changed, with 0.165%
+  differing by more than 32/255. Small edge/antialiasing differences are expected between
+  polygonal native paths and rasterized SVG arcs.
+- Native source changes are uncommitted after `bc3d8fa`; the desktop needs a relaunch to use
+  them until the user's restart. That restart is now verified below; sprites are running.
+
+Next: relaunch and repeat the Metal trace plus active CPU/GPU sample. Compare fragment time
+per frame and render-command count, not just process GPU percentage (which varies with FPS).
+Only then decide whether more work on shadows/glow overdraw or eager rail rendering is needed.
+
+### Sprite renderer live verification
+
+- User restarted; binary mtime **19:13:59 local**, startup **19:14:00**, desktop PID **73220**.
+  Background motion remains off. Fresh process samples at 19:14:40 local:
+  CPU **29.63%, 34.09%, 32.38%** (mean **32.03%**), GPU busy **24.67%, 27.38%, 29.69%**
+  (mean **27.25%**), over three ~10 s windows. Redraw intervals were **30.2–33.8 fps**;
+  the previous lower-percentage sample ran around 15–28 fps. Overall process usage did not
+  decrease in these differently paced samples. Raw data:
+  `/private/tmp/hato-sprite-render-sample.json`.
+- Captured a separate 5 s Metal trace after process sampling (to avoid profiler contamination
+  of those samples): `/private/tmp/hato-sprite-render-gpu.trace`. Exported GPU intervals:
+  `/private/tmp/hato-sprite-metal-gpu-intervals.xml`. Analysis helper:
+  `/private/tmp/hato-gpu-summary.py` (XML path and PID arguments).
+- **Every one of 200 recorded frame numbers had one fragment render-command/encoder ID.**
+  Before the sprite conversion, every one of 171 frames had five. This confirms removal of
+  the spinner/gauge path-batch passes in the captured scene.
+- Fragment interval time per frame: **mean 7.970 ms, median 7.576 ms**, range 5.782–11.689 ms;
+  before: mean 12.634 ms, median 11.843 ms. Mean frame fragment cost decreased **~37%** in
+  these captures. Vertex interval time was ~0.200 ms/frame, versus ~0.264 ms previously.
+  Content, GPU clocks and activity were not locked for a laboratory benchmark; the command
+  count change is the clearest structural result, supported by the lower per-frame timings.
+
+Next: optimize remaining eager CPU/layout work and animation frame frequency. A single render
+pass still spends ~8 ms in fragment work; controlled shadow/glow ablation or shader counters
+would be needed to attribute that remaining cost. Do not judge this change solely by total
+GPU percentage when the redraw rate differs.
 
 ## 1. Already committed and pushed (done)
 

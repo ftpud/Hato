@@ -38,6 +38,9 @@ pub struct SnapshotSpec {
     pub delay_ms: u64,
     /// Maximum time to wait for the module's first tree.
     pub timeout_ms: u64,
+    /// Development-only repeated draw/raster timings, without module/service activity.
+    pub bench: Option<PathBuf>,
+    pub bench_frames: usize,
 }
 
 impl Config {
@@ -49,7 +52,7 @@ impl Config {
         let mut dev_watch = false;
         let mut headless = false;
         let mut headless_script = None;
-        let mut snap = SnapshotSpec { out: PathBuf::new(), module: None, tree: None, setup: None, width: 1000.0, height: 700.0, delay_ms: 800, timeout_ms: 20_000 };
+        let mut snap = SnapshotSpec { out: PathBuf::new(), module: None, tree: None, setup: None, width: 1000.0, height: 700.0, delay_ms: 800, timeout_ms: 20_000, bench: None, bench_frames: 80 };
         let mut want_snap = false;
         let mut i = 1;
         while i < args.len() {
@@ -85,13 +88,19 @@ impl Config {
                 }
                 "--snapshot-delay" => snap.delay_ms = next()?.parse()?,
                 "--snapshot-timeout" => snap.timeout_ms = next()?.parse()?,
+                "--snapshot-bench" => snap.bench = Some(std::env::current_dir()?.join(next()?)),
+                "--snapshot-frames" => snap.bench_frames = next()?.parse()?,
                 "--help" | "-h" => {
-                    println!("hato [--root PATH] [--data-dir PATH] [--repo-root PATH] [--safe-mode] [--dev-watch] [--headless] [--headless-script FILE]\n     dev builds (--features snapshot): --snapshot OUT.png [--snapshot-module ID | --snapshot-tree FILE.json] [--snapshot-setup SCRIPT.js] [--snapshot-size WxH] [--snapshot-delay MS] [--snapshot-timeout MS]");
+                    println!("hato [--root PATH] [--data-dir PATH] [--repo-root PATH] [--safe-mode] [--dev-watch] [--headless] [--headless-script FILE]\n     dev builds (--features snapshot): --snapshot OUT.png [--snapshot-module ID | --snapshot-tree FILE.json] [--snapshot-setup SCRIPT.js] [--snapshot-size WxH] [--snapshot-delay MS] [--snapshot-timeout MS] [--snapshot-bench REPORT.json --snapshot-frames N]");
                     std::process::exit(0);
                 }
                 other => anyhow::bail!("unknown argument {other}"),
             }
             i += 1;
+        }
+        if snap.bench.is_some() {
+            anyhow::ensure!(want_snap && snap.tree.is_some(), "--snapshot-bench requires --snapshot and --snapshot-tree (isolated fixtures only)");
+            anyhow::ensure!((1..=10_000).contains(&snap.bench_frames), "--snapshot-frames must be 1..10000");
         }
         let cwd = std::env::current_dir()?;
         let repo_root = match repo_root {

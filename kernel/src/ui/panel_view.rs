@@ -177,7 +177,7 @@ impl Render for PanelView {
 
 impl Shell {
     fn prepare_panel_inputs(&mut self, module: &str, node: &Value, window: &mut Window, cx: &mut Context<Self>) {
-        if !visible_in(node, window.is_fullscreen()) { return; }
+        if !visible_in(node, || window.is_fullscreen()) { return; }
         if node["type"] == "textInput" {
             self.ensure_input_slot(module, node["key"].as_str().unwrap_or("_"), node, window, cx);
         }

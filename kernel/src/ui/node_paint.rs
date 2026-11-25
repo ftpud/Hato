@@ -94,7 +94,7 @@ pub(super) fn meter(n: &Value, id: SharedString, window: &mut Window, cx: &mut A
 }
 
 #[derive(Default)]
-struct PaintClock {
+pub(super) struct PaintClock {
     last: Cell<Option<Instant>>,
     seconds: Cell<f32>,
     /// A shared spinner clock can paint in several cached views and windows. Each visible
@@ -105,16 +105,28 @@ struct PaintClock {
 /// Frame-rate cap for a painted animation: the node's `fps` (1..=120), else `default`. gpui
 /// repaints the whole window for any frame, so an ambient effect redrawn at the display's refresh
 /// rate (120 Hz on ProMotion) re-laid out and repainted every panel continuously.
-fn frame_interval(n: &Value, default: f64) -> Duration {
+fn frame_interval(n: &Value, default: f64, cx: &App) -> Duration {
     let fps = n["fps"].as_f64().filter(|f| f.is_finite()).unwrap_or(default).clamp(1., 120.);
-    quantize(Duration::from_secs_f64(1. / fps))
+    activity_interval(fps, cx)
+}
+
+/// Upper bound for painted activity animation (spinners, busy tree rows, ambient particles,
+/// canvas sparks and pulses), supplied by the root module as `theme.motion.activityFps`.
+/// Every such frame repaints the whole window, so this is the main GPU dial while agents work.
+pub(super) struct ActivityFps(pub f64);
+impl gpui_kit::Global for ActivityFps {}
+
+/// Throttle interval for an animation that wants `fps`, after the window-wide activity cap.
+pub(super) fn activity_interval(fps: f64, cx: &App) -> Duration {
+    let cap = cx.try_global::<ActivityFps>().map_or(120., |cap| cap.0);
+    quantize(Duration::from_secs_f64(1. / fps.min(cap).clamp(1., 120.)))
 }
 
 /// Throttled redraws land on one shared grid of `GRID` steps: several animated elements (each
 /// spinner, the ambient dust) then share frames instead of each adding its own, unsynchronized.
-const GRID: Duration = Duration::from_nanos(33_333_333);
+const GRID: Duration = Duration::from_nanos(16_666_667);
 
-fn quantize(interval: Duration) -> Duration {
+pub(super) fn quantize(interval: Duration) -> Duration {
     if interval <= EVERY_FRAME {
         return interval;
     }
@@ -129,10 +141,11 @@ fn until_next_tick(interval: Duration) -> Duration {
     Duration::from_nanos((step - since % step) as u64)
 }
 
-/// At or above this rate, redraw on the next display frame instead of a timer.
-const EVERY_FRAME: Duration = Duration::from_millis(17);
+/// Above this rate, redraw on the next display frame instead of a timer. Kept below the 60 Hz
+/// grid step so a 60 FPS cap stays 60 on 120 Hz (ProMotion) displays.
+const EVERY_FRAME: Duration = Duration::from_millis(8);
 
-fn elapsed(
+pub(super) fn elapsed(
     id: SharedString,
     channel: &'static str,
     window: &mut Window,
@@ -150,7 +163,7 @@ fn elapsed(
 
 impl PaintClock {
     /// Seconds of animation time, and the next redraw at most `interval` from now.
-    fn sample(self: &Rc<Self>, enabled: bool, interval: Duration, window: &Window, cx: &App) -> f32 {
+    pub(super) fn sample(self: &Rc<Self>, enabled: bool, interval: Duration, window: &Window, cx: &App) -> f32 {
         if !enabled || !window.is_visible() {
             self.last.set(None);
             return self.seconds.get();
@@ -192,8 +205,8 @@ pub(super) fn spinner(
     let thickness = motion::number(&n["thickness"], 1.5, 0.25, f64::from(extent) / 2.);
     let color = style::color_of(cx, n, "color").unwrap_or(cx.theme().foreground);
     let (clock, animate) = elapsed(id, "spinner-clock", window, cx);
-    let interval = frame_interval(n, 30.);
-    spinner_canvas(clock, animate, interval, extent, thickness, color)
+    let interval = frame_interval(n, 60., cx);
+    spinner_sprite(clock, animate, interval, extent, thickness, color)
 }
 
 /// A spinner for places without a window to keep per-element state (tree rows). All of them
@@ -204,38 +217,57 @@ pub(super) fn shared_spinner(extent: f32, color: Hsla, cx: &App) -> AnyElement {
     }
     let animate = surface_motion(cx) == SurfaceMotion::Full;
     let clock = SHARED.with(Rc::clone);
-    spinner_canvas(clock, animate, quantize(Duration::from_secs_f64(1. / 30.)), extent, (extent / 8.).max(1.25), color)
+    spinner_sprite(clock, animate, activity_interval(60., cx), extent, (extent / 8.).max(1.25), color)
 }
 
-fn spinner_canvas(clock: Rc<PaintClock>, animate: bool, interval: Duration, extent: f32, thickness: f32, color: Hsla) -> AnyElement {
-    canvas(
-        |_, _, _| {},
-        move |bounds, _, window, cx| {
-            let seconds = clock.sample(animate, interval, window, cx);
-            let angle = if animate {
-                seconds % 0.85 / 0.85 * std::f32::consts::TAU
+/// Native paths require a full-window MSAA intermediate render/resolve in GPUI's Metal
+/// renderer. Reuse SVG alpha-mask sprites for small arcs instead; rotation is a sprite transform.
+fn arc_icon(extent: f32, thickness: f32, fraction: f32, gauge: bool) -> gpui_component::Icon {
+    thread_local! {
+        static ARCS: RefCell<HashMap<(u32, u32, u32, bool), gpui_component::Icon>> = RefCell::default();
+    }
+    let key = (extent.to_bits(), thickness.to_bits(), fraction.to_bits(), gauge);
+    ARCS.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if cache.len() >= 128 && !cache.contains_key(&key) { cache.clear(); }
+        cache.entry(key).or_insert_with(|| {
+            let center = extent / 2.;
+            let radius = (extent - thickness) / 2.;
+            let shape = if fraction >= 1. {
+                format!(r#"<circle cx="{center}" cy="{center}" r="{radius}"/>"#)
             } else {
-                0.
+                let start = if gauge { -std::f32::consts::FRAC_PI_2 } else { 0. };
+                let end = start + fraction * std::f32::consts::TAU;
+                let (x0, y0) = (center + radius * start.cos(), center + radius * start.sin());
+                let (x1, y1) = (center + radius * end.cos(), center + radius * end.sin());
+                let large = u8::from(fraction > 0.5);
+                format!(r#"<path d="M{x0} {y0} A{radius} {radius} 0 {large} 1 {x1} {y1}"/>"#)
             };
-            let radius = px((extent - thickness) / 2.);
-            let mut arc = PathBuilder::stroke(px(thickness));
-            for i in 0..=28 {
-                let angle = angle + i as f32 / 28. * std::f32::consts::TAU * 0.74;
-                let position = bounds.center() + point(radius * angle.cos(), radius * angle.sin());
-                if i == 0 {
-                    arc.move_to(position);
-                } else {
-                    arc.line_to(position);
-                }
-            }
-            if let Ok(path) = arc.build() {
-                window.paint_path(path, color);
-            }
-        },
-    )
-    .size(px(extent))
-    .flex_none()
-    .into_any_element()
+            let cap = if gauge { "round" } else { "butt" };
+            let svg = format!(r#"<svg xmlns="http://www.w3.org/2000/svg" width="{extent}" height="{extent}" viewBox="0 0 {extent} {extent}" fill="none" stroke="currentColor" stroke-width="{thickness}" stroke-linecap="{cap}">{shape}</svg>"#);
+            gpui_component::Icon::default().data(svg.as_bytes()).with_size(px(extent))
+        }).clone()
+    })
+}
+
+#[derive(IntoElement)]
+struct SpinnerSprite {
+    clock: Rc<PaintClock>,
+    animate: bool,
+    interval: Duration,
+    color: Hsla,
+    icon: gpui_component::Icon,
+}
+impl RenderOnce for SpinnerSprite {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let seconds = self.clock.sample(self.animate, self.interval, window, cx);
+        let angle = if self.animate { seconds % 0.85 / 0.85 * std::f32::consts::TAU } else { 0. };
+        self.icon.text_color(self.color).rotate(radians(angle))
+    }
+}
+
+fn spinner_sprite(clock: Rc<PaintClock>, animate: bool, interval: Duration, extent: f32, thickness: f32, color: Hsla) -> AnyElement {
+    SpinnerSprite { clock, animate, interval, color, icon: arc_icon(extent, thickness, 0.74, false) }.into_any_element()
 }
 
 struct Glow {
@@ -282,7 +314,7 @@ pub(super) fn ambient(
     let speed = motion::number(&config["speed"], 3., 0., 128.);
     let color = style::color_of(cx, config, "color").unwrap_or(transparent_black());
     let (clock, animate) = elapsed(id, "ambient-clock", window, cx);
-    let interval = frame_interval(n, 30.);
+    let interval = frame_interval(n, 30., cx);
     let particles: Vec<_> = (0..count)
         .map(|i| {
             let sample =
@@ -355,33 +387,16 @@ fn ring_fraction(value: &Value, max: &Value) -> f32 {
 
 pub(super) fn ring(n: &Value, id: SharedString, window: &mut Window, cx: &mut App) -> AnyElement {
     let extent = motion::number(&n["size"], 22., 1., 512.);
-    let thickness = px(motion::number(
-        &n["thickness"],
-        2.,
-        0.25,
-        f64::from(extent) / 2.,
-    ));
+    let thickness = motion::number(&n["thickness"], 2., 0.25, f64::from(extent) / 2.);
     let target = ring_fraction(&n["value"], &n["max"]);
     let timing = motion::timing(&n["transition"]).unwrap_or_else(|| default_timing(240));
     let fraction = animate::transition((id, "ring-fill"), target, policy(&timing, cx), window, cx)
         .clamp(0., 1.);
     let color = style::color_of(cx, n, "color").unwrap_or(cx.theme().primary);
     let track = style::color_of(cx, n, "trackColor").unwrap_or(cx.theme().muted);
-    let paint = canvas(
-        |_, _, _| {},
-        move |bounds, _, window, _| {
-            let radius = (bounds.size.width - thickness) / 2.;
-            let center = bounds.center();
-            if let Some(path) = gauge_arc(center, radius, thickness, 1.) {
-                window.paint_path(path, track);
-            }
-            if let Some(path) = gauge_arc(center, radius, thickness, fraction) {
-                window.paint_path(path, color);
-            }
-        },
-    )
-    .absolute()
-    .inset_0();
+    let paint = div().absolute().inset_0()
+        .child(arc_icon(extent, thickness, 1., true).text_color(track).absolute().inset_0())
+        .when(fraction > 0., |d| d.child(arc_icon(extent, thickness, fraction, true).text_color(color).absolute().inset_0()));
     div()
         .relative()
         .size(px(extent))
@@ -405,62 +420,6 @@ pub(super) fn ring(n: &Value, id: SharedString, window: &mut Window, cx: &mut Ap
             },
         )
         .into_any_element()
-}
-
-fn gauge_arc(
-    center: Point<Pixels>,
-    radius: Pixels,
-    thickness: Pixels,
-    fraction: f32,
-) -> Option<Path<Pixels>> {
-    use std::f32::consts::{FRAC_PI_2, PI, TAU};
-    if fraction <= 0. || radius <= px(0.) {
-        return None;
-    }
-    let polar = |angle: f32, r: Pixels| point(r * angle.cos(), r * angle.sin());
-    let start = -FRAC_PI_2;
-    let end = start + fraction * TAU;
-    let steps = (fraction * (f32::from(radius) * 2.).clamp(48., 192.)).ceil() as usize;
-    if fraction >= 1. {
-        let mut path = PathBuilder::stroke(thickness);
-        path.move_to(center + polar(start, radius));
-        for i in 1..steps {
-            path.line_to(center + polar(start + TAU * i as f32 / steps as f32, radius));
-        }
-        path.close();
-        return path.build().ok();
-    }
-
-    // One filled contour gives both caps the same alpha as the body.
-    let half_width = thickness / 2.;
-    let points =
-        (0..=steps)
-            .map(|i| {
-                center
-                    + polar(
-                        start + (end - start) * i as f32 / steps as f32,
-                        radius + half_width,
-                    )
-            })
-            .chain((1..=10).map(|i| {
-                center + polar(end, radius) + polar(end + PI * i as f32 / 10., half_width)
-            }))
-            .chain((0..steps).rev().map(|i| {
-                center
-                    + polar(
-                        start + (end - start) * i as f32 / steps as f32,
-                        radius - half_width,
-                    )
-            }))
-            .chain((1..10).map(|i| {
-                center + polar(start, radius) + polar(start + PI + PI * i as f32 / 10., half_width)
-            }))
-            .collect::<Vec<_>>();
-    let mut path = PathBuilder::fill().with_style(PathStyle::Fill(
-        FillOptions::default().with_fill_rule(FillRule::NonZero),
-    ));
-    path.add_polygon(&points, true);
-    path.build().ok()
 }
 
 #[cfg(all(test, feature = "snapshot"))]
@@ -508,22 +467,15 @@ mod clock_tests {
 
 #[cfg(test)]
 mod ring_tests {
-    use super::{gauge_arc, ring_fraction};
-    use gpui_kit::{point, px};
+    use super::ring_fraction;
     use serde_json::json;
 
     #[test]
-    fn ring_clamps_values_and_draws_clockwise_from_twelve() {
+    fn ring_clamps_values() {
         assert_eq!(ring_fraction(&json!(25), &json!(100)), 0.25);
         assert_eq!(ring_fraction(&json!(8), &json!(0)), 0.);
         assert_eq!(ring_fraction(&json!(-1), &json!(4)), 0.);
         assert_eq!(ring_fraction(&json!(5), &json!(4)), 1.);
-        let center = point(px(11.), px(11.));
-        assert!(gauge_arc(center, px(10.), px(2.), 0.).is_none());
-        let quarter = gauge_arc(center, px(10.), px(2.), 0.25).unwrap().bounds;
-        assert!(quarter.left() >= px(9.9) && quarter.top() <= px(0.1));
-        assert!(quarter.right() >= px(21.9) && quarter.bottom() <= px(12.1));
-        let full = gauge_arc(center, px(10.), px(2.), 1.).unwrap().bounds;
-        assert!(full.left() <= px(0.1) && full.bottom() >= px(21.9));
+
     }
 }

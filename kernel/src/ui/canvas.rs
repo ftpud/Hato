@@ -22,6 +22,16 @@ use std::rc::Rc;
 const MAX_ITEMS: usize = 500;
 const MAX_EDGES: usize = 2000;
 const PORT: f32 = 12.0;
+/// Sparks and pulse rings redraw the whole window. They share one capped paint clock (aligned
+/// with spinners) instead of requesting every display frame (up to 120 Hz on ProMotion).
+const ANIM_FPS: f64 = 60.0;
+const PULSE_MS: f32 = 1600.0;
+
+/// The breathing alpha the pulse ring used as a GPUI animation (`pulsating_between(0.15, 0.95)`).
+fn pulse_alpha(phase: f32) -> f32 {
+    let t = (phase * std::f32::consts::TAU).sin();
+    0.15 + ((t * t * t + t) / 2.0 + 1.0) / 2.0 * 0.8
+}
 
 fn f(n: &Value, k: &str) -> Option<f32> { n.get(k).and_then(|v| v.as_f64()).map(|v| v as f32).filter(|v| v.is_finite()) }
 fn s(n: &Value, k: &str) -> Option<String> { n.get(k).and_then(|v| v.as_str()).map(|v| v.to_string()) }
@@ -236,6 +246,14 @@ impl Shell {
             connect_action: s(n, "connectAction"),
         });
 
+        // Pulse rings are painted with the connectors so they share the capped clock.
+        let pulses: Vec<([f32; 4], f32, Hsla)> = items.iter().filter_map(|(_, r, it)| {
+            let c = theme::color(cx, &s(it, "pulse")?, primary);
+            Some((*r, it["style"]["radius"].as_f64().unwrap_or(6.0) as f32 + 3.0, c))
+        }).collect();
+        let (clock, motion_on) = super::node_paint::elapsed(SharedString::from(format!("{id}#motion")), "canvas-clock", window, cx);
+        let anim_interval = super::node_paint::activity_interval(ANIM_FPS, cx);
+
         let grid = f(n, "grid").unwrap_or(0.0);
         let grid_color = border.opacity(0.45);
         let weak = cx.entity().downgrade();
@@ -247,38 +265,41 @@ impl Shell {
                 b
             },
             move |_, b, window, cx| {
+                // Grid lines are axis-aligned, so plain quads draw them. A path here would add a
+                // window-sized 4x MSAA pass to every frame while anything else animates.
                 if grid >= 8.0 {
                     let (w, h) = (px_f(b.size.width), px_f(b.size.height));
-                    let mut g = PathBuilder::stroke(px(1.0));
                     let mut x = grid;
                     while x < w {
-                        g.move_to(point(b.origin.x + px(x), b.origin.y));
-                        g.line_to(point(b.origin.x + px(x), b.origin.y + px(h)));
+                        window.paint_quad(fill(Bounds::new(point(b.origin.x + px(x - 0.5), b.origin.y), size(px(1.0), b.size.height)), grid_color));
                         x += grid;
                     }
                     let mut y = grid;
                     while y < h {
-                        g.move_to(point(b.origin.x, b.origin.y + px(y)));
-                        g.line_to(point(b.origin.x + px(w), b.origin.y + px(y)));
+                        window.paint_quad(fill(Bounds::new(point(b.origin.x, b.origin.y + px(y - 0.5)), size(b.size.width, px(1.0))), grid_color));
                         y += grid;
-                    }
-                    if let Ok(path) = g.build() {
-                        window.paint_path(path, grid_color);
                     }
                 }
                 for c in &curves {
                     paint_curve(c, b.origin, window);
                 }
-                // Active connections animate while they are shown (staggered so parallel ones differ).
-                if !cx.reduce_motion() && curves.iter().any(|c| c.spark.is_some()) {
-                    let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
+                // Sparks on active connections (staggered so parallel ones differ) and pulse rings
+                // on running items advance on the shared capped clock; reduced motion holds them.
+                let sparks = curves.iter().any(|c| c.spark.is_some());
+                let seconds = clock.sample(motion_on && (sparks || !pulses.is_empty()), anim_interval, window, cx);
+                let ms = (seconds * 1000.0) as u64;
+                for (r, radius, c) in &pulses {
+                    let alpha = if motion_on { pulse_alpha((ms as f32 % PULSE_MS) / PULSE_MS) } else { 0.6 };
+                    let ring = Bounds::new(point(b.origin.x + px(r[0] - 3.0), b.origin.y + px(r[1] - 3.0)), size(px(r[2] + 6.0), px(r[3] + 6.0)));
+                    window.paint_quad(fill(ring, c.opacity(alpha * 0.14)).corner_radii(px(*radius)).border_widths(px(2.0)).border_color(c.opacity(alpha)));
+                }
+                if motion_on && sparks {
                     for (i, c) in curves.iter().enumerate() {
                         if let Some(color) = c.spark {
                             let phase = ((ms + i as u64 * 337) % 1400) as f32 / 1400.0;
                             paint_spark(c, color, phase, b.origin, window);
                         }
                     }
-                    { crate::ui::redraw_stats::cause(concat!("anim:", file!(), ":", line!())); window.request_animation_frame(); }
                 }
                 // Pointer tracking for this canvas's gesture works in whichever window shows it.
                 if dragging {
@@ -327,15 +348,6 @@ impl Shell {
                     cx.stop_propagation();
                     cx.notify();
                 }));
-            if let Some(pc) = s(it, "pulse") {
-                let c = theme::color(cx, &pc, primary);
-                let radius = it["style"]["radius"].as_f64().unwrap_or(6.0) as f32 + 3.0;
-                content = content.child(
-                    div().absolute().left(px(r[0] - 3.0)).top(px(r[1] - 3.0)).w(px(r[2] + 6.0)).h(px(r[3] + 6.0)).rounded(px(radius)).border_2().border_color(c)
-                        .with_animation(sid(module, &format!("{path}/pulse/{ik}")), Animation::new(Duration::from_millis(1600)).repeat().with_easing(pulsating_between(0.15, 0.95)),
-                            move |d, delta| d.border_color(c.opacity(delta)).bg(c.opacity(delta * 0.14))),
-                );
-            }
             content = content.child(el);
             if it["port"].as_bool().unwrap_or(false) {
                 let (id_p, ik_p) = (id.clone(), ik.clone());
