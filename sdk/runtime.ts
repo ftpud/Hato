@@ -195,6 +195,14 @@ export class JsonRpcPeer {
     });
   }
 
+  cancelRequest(id: number | string, reason = "Request cancelled") {
+    const pending = this.pending.get(id);
+    if (!pending) return;
+    this.pending.delete(id);
+    pending.reject(Object.assign(new Error(reason), { code: "ECANCELLED" }));
+    void this.notify("$/cancel_request", { requestId: id }).catch(() => {});
+  }
+
   notify(method: string, params?: any) { return this.send(JSON.stringify({ jsonrpc: "2.0", method, params })); }
 
   failAll(reason: string) {

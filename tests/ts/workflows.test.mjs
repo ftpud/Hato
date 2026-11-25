@@ -419,7 +419,7 @@ test('meetings keep attributed transcripts and per-participant cursors', async (
   assert.ok(out(run, 'room').log.some(entry => entry.kind === 'response' && entry.text.includes('proposal A')));
   const { blockRunView } = await load('Hato-plugins/modules/ui/workflows-panel/src/runs.ts');
   const nodes = blockRunView(run, run.definition.blocks.find(b => b.id === 'room'), out(run, 'room'), 'test');
-  assert.ok(nodes.some(n => n.key.endsWith(':transcript') && n.scroll));
+  assert.ok(nodes.some(n => (n.children||[]).some(c=>c.type==='transcript' && c.key.startsWith('meeting-transcript:'))));
   assert.ok(nodes.some(n => n.key.endsWith(':activity-section') && n.children.some(c => c.action === 'toggleActivity')));
 });
 

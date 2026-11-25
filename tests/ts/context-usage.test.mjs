@@ -6,6 +6,8 @@ const result = await esbuild.build({ entryPoints: ['sdk/context-usage.ts'], bund
 const { contextUsage, reportedUsage } = await import('data:text/javascript;base64,' + Buffer.from(result.outputFiles[0].text).toString('base64'));
 test('context meter uses reported capacity and supports empty context and compaction', () => {
   assert.deepEqual(reportedUsage({ used: 53000, size: 200000, cost: {} }), { used: 53000, size: 200000 });
+  assert.deepEqual(reportedUsage({ used: 53000, size: 200000, cost: { amount: 1.25, currency: 'EUR' } }), { used: 53000, size: 200000, cost: { amount: 1.25, currency: 'EUR' } });
+  assert.match(contextUsage({ used: 53000, size: 200000, cost: { amount: 1.25, currency: 'EUR' } }).tooltip, /1.25 EUR/);
   assert.equal(contextUsage({ used: 53000, size: 200000 }).value, 0.265);
   assert.match(contextUsage({ used: 53000, size: 200000 }).tooltip, /27%.*53,000 \/ 200,000/);
   assert.equal(contextUsage({ used: 0, size: 200000 }).value, 0);

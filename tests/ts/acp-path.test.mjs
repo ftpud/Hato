@@ -47,7 +47,7 @@ test('SSH ACP detects interactive-only tools and carries their PATH into npm ins
     assert.equal(adapter.pathEnv, `${bin}:/usr/bin:/bin`);
     const result = await mod.methods.installAdapter(ctx, { workspaceId: desc.id, adapterId: 'codex' }, { caller: 'ai-sessions' });
     assert.equal(result.ok, true);
-    assert.match(result.output, /npm:install -g @agentclientprotocol\/codex-acp@latest/);
+    assert.match(result.output, /npm:install -g (?:--prefix .* )?@agentclientprotocol\/codex-acp@latest/);
     assert.equal(calls.at(-1).env.PATH, adapter.pathEnv);
     assert.equal((await detect(ctx, desc, 'missing; touch injected')).found, false);
     assert.equal((await detect(ctx, desc, '/bin/sh')).found, true);

@@ -153,7 +153,7 @@ fn built_in_client_against_openssh() {
     // Terminals: remote PTY with its size, then a resize.
     let s = pty::open(PtySpec {
         remote: Some(RemotePty { master: m.clone(), command: "printf 'pty-ok\\n'; stty size; read x; stty size; sleep 0.2".into() }),
-        program: String::new(), args: vec![], cwd: None, env: vec![], cols: 100, rows: 30, machine_id: "ssh:t2".into(), display_cwd: "/tmp".into(), answer_queries: true,
+        program: String::new(), args: vec![], cwd: None, env: vec![], env_remove: vec![], cols: 100, rows: 30, machine_id: "ssh:t2".into(), display_cwd: "/tmp".into(), answer_queries: true,
     }).unwrap();
     wait_for("pty output", Duration::from_secs(10), || s.screen_text().contains("30 100"));
     assert!(s.screen_text().contains("pty-ok"));

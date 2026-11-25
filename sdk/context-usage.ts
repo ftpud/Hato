@@ -1,14 +1,21 @@
-export interface ReportedUsage { used: number; size: number }
+export interface ReportedCost { amount: number; currency: string }
+export interface ReportedUsage { used: number; size: number; cost?: ReportedCost }
 export function reportedUsage(value: any): ReportedUsage | null {
-  return value && typeof value.used === "number" && Number.isFinite(value.used) && value.used >= 0
-    && typeof value.size === "number" && Number.isFinite(value.size) && value.size >= 0
-    ? { used: value.used, size: value.size } : null;
+  if (!value || typeof value.used !== "number" || !Number.isFinite(value.used) || value.used < 0
+    || typeof value.size !== "number" || !Number.isFinite(value.size) || value.size < 0) return null;
+  const cost = value.cost && typeof value.cost === "object" && !Array.isArray(value.cost)
+    && typeof value.cost.amount === "number" && Number.isFinite(value.cost.amount) && value.cost.amount >= 0
+    && typeof value.cost.currency === "string" && value.cost.currency.trim()
+    ? { amount: value.cost.amount, currency: value.cost.currency } : undefined;
+  return { used: value.used, size: value.size, ...(cost ? { cost } : {}) };
 }
 export function contextUsage(value: unknown): { value: number | null; tooltip: string } {
   const usage = reportedUsage(value);
   if (!usage || usage.size === 0) return { value: null, tooltip: "Context usage unavailable — the agent has not reported a context capacity." };
   const fraction = usage.used / usage.size;
-  return { value: Math.min(1, fraction), tooltip: `${Math.round(fraction * 100)}% context used · ${String(usage.used).replace(/\B(?=(\d{3})+(?!\d))/g, ",")} / ${String(usage.size).replace(/\B(?=(\d{3})+(?!\d))/g, ",")} tokens` };
+  const tokens = `${String(usage.used).replace(/\B(?=(\d{3})+(?!\d))/g, ",")} / ${String(usage.size).replace(/\B(?=(\d{3})+(?!\d))/g, ",")} tokens`;
+  const amount = usage.cost ? usage.cost.amount.toFixed(4).replace(/\.?0+$/, "") : null;
+  return { value: Math.min(1, fraction), tooltip: `${Math.round(fraction * 100)}% context used · ${tokens}${amount ? ` · ${amount} ${usage.cost!.currency}` : ""}` };
 }
 
 /** Context usage pie as inline SVG: a filled sector for known usage, a dashed ring when unknown. */

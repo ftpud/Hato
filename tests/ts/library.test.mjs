@@ -6,7 +6,7 @@ async function load(file){const r=await esbuild.build({entryPoints:[file],bundle
 async function fixture(){
  const mod=(await load('Hato-plugins/modules/services/library/src/index.ts')).default;
  const rows=new Map(),listeners={},events=[];
- const ctx={moduleId:'library',generation:1,state:{set(){}},events:{on:(key,fn)=>listeners[key]=fn,emit:(key,p)=>events.push({key,p})},modules:{call:async(_,method,a)=>({projectId:a.workspaceId==='task'?'p1':a.workspaceId})},host:{db:{openNamespace:async()=> 'library',query:async(_,sql,args)=>[...rows.values()].filter(r=>r.project_id===args[0]),exec:async(_,sql,args)=>{if(sql.startsWith('INSERT'))rows.set(args[0],{project_id:args[1],data:args[2]});if(sql.startsWith('DELETE'))rows.delete(args[0]);}}}};
+ const ctx={moduleId:'library',generation:1,state:{set(){},get(){},watch(){}},events:{on:(key,fn)=>listeners[key]=fn,emit:(key,p)=>events.push({key,p})},modules:{call:async(_,method,a)=>({projectId:a.workspaceId==='task'?'p1':a.workspaceId})},host:{db:{openNamespace:async()=> 'library',query:async(_,sql,args)=>[...rows.values()].filter(r=>(!args || r.project_id===args[0])),exec:async(_,sql,args)=>{if(sql.startsWith('INSERT'))rows.set(args[0],{project_id:args[1],data:args[2]});if(sql.startsWith('DELETE'))rows.delete(args[0]);}}}};
  await mod.activate(ctx);return {mod,ctx,rows,listeners,events};
 }
 test('Library keeps project/task scope, nested pages and shell text outside workspaces',async()=>{
@@ -49,7 +49,7 @@ test('desktop provider handoff is delivered once; stored user messages stay orig
  let row={id:'c',workspaceId:'ws',title:'Build it',acpProfileId:'old',config:{}},live={status:'ready',sessionId:'old-session'};
  const messages=[{id:'u',sequence:1,kind:'user',payload:{text:'Build a release tool'}},{id:'a',sequence:2,kind:'assistant',payload:{text:'The parser is complete'}}];
  const prompts=[],listeners={};
- const ctx={moduleId:'ai-sessions',generation:1,state:{set(){}},events:{on:(k,f)=>listeners[k]=f,emit(){}},log:{warn(){}},modules:{call:async(_,method,a)=>{
+ const ctx={moduleId:'ai-sessions',generation:1,state:{set(){},get(){},watch(){}},events:{on:(k,f)=>listeners[k]=f,emit(){}},log:{warn(){}},modules:{call:async(_,method,a)=>{
   if(method==='conversations.get')return {...row};
   if(method==='messages.list')return structuredClone(messages);
   if(method==='state')return live;

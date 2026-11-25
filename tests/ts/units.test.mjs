@@ -74,9 +74,9 @@ test("persistence: migrations are transactional, idempotent and owned by TS", as
   };
   const ctx = { host, log: { info() {}, warn() {} } };
   await m.activate(ctx);
-  assert.deepEqual(applied, [1, 2, 3, 4, 5]);
+  assert.deepEqual(applied, [1, 2, 3, 4, 5, 6]);
   await m.activate(ctx);
-  assert.deepEqual(applied, [1, 2, 3, 4, 5], "re-activation must not re-apply migrations");
+  assert.deepEqual(applied, [1, 2, 3, 4, 5, 6], "re-activation must not re-apply migrations");
 });
 
 test("persistence refuses private key material", async () => {
@@ -90,6 +90,7 @@ test("projects-panel renders keyed tree rows with separate select/expand actions
   const m = (await load("Hato-plugins/modules/ui/projects-panel/src/index.ts")).default;
   const state = new Map();
   const ctx = {
+    host: { env: { info: () => ({platform:"linux"}) } },
     state: { get: (k) => state.get(k), watch() {}, set() {} },
     events: { on() {} },
     ui: { invalidate() {} },
@@ -115,13 +116,14 @@ test("projects-panel animates rows whose workspace has an active AI chat or back
   let expanded = true;
   const state = new Map([["ai-sessions.busy", { "task:t1": 2 }]]);
   const ctx = {
+    host: { env: { info: () => ({platform:"linux"}) } },
     state: { get: (k) => state.get(k), watch: (k, fn) => watchers.set(k, fn), set() {} },
     events: { on() {} }, ui: { invalidate() {} },
     modules: { call: async () => [{ id: "p1", name: "Alpha", kind: "local", rootPath: "/a", expanded, tasks: [{ id: "t1", name: "T", branch: "task/t-1", status: "ready" }] }] },
   };
   await m.activate(ctx);
   try {
-    const spinning = (r) => r.iconColor === "primary" && /rotate\(/.test(r.iconSvg);
+    const spinning = (r) => r.iconColor === "primary" && r.iconBusy === true;
     let rows = m.render(ctx).children.find((c) => c.type === "tree").rows;
     assert.deepEqual(rows.map(spinning), [false, true]);
     assert.equal(rows[1].detail, "AI working (2) · task/t-1");

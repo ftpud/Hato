@@ -14,8 +14,46 @@
 | SFTP | own SFTP v3 client (kernel/src/host/sftp.rs) over the `sftp` subsystem | realpath, stat, readdir, read, atomic write (posix-rename) |
 | TS build | `esbuild 0.24.2`, `typescript 5.7.3` (typecheck only) | Dev-time only; artifacts are plain ESM run by QuickJS |
 | Node.js | 20.17 (dev machine) | Build tooling, the tiny MCP stdio proxy, and Node-based ACP adapters; never embedded |
-| ACP adapters previously tested | `@agentclientprotocol/claude-agent-acp 0.100.0`, `@zed-industries/codex-acp 0.16.0` | Installed by the user on each workspace machine; Hato never installs agents |
+| ACP adapters captured 2026-11-25 | `@agentclientprotocol/codex-acp 2.10.0`, GitHub Copilot CLI 1.0.109, OpenCode CLI 2.4.1, `@agentclientprotocol/claude-agent-acp 0.110.0` | Isolated live initialize/new/minimal prompts and advertised lifecycle methods verified on 2026-11-26; no installs or logouts |
 | MCP | protocol versions `2025-06-18`, `2025-03-26`, `2024-11-05` (stdio framing) | Server implemented in TS (`modules/services/internal-mcp`) |
+
+## ACP v1 client behavior
+
+The desktop client and background runner negotiate ACP protocol v1. The current implementation is
+covered by deterministic stdio/JSON-RPC fixtures, native PTY/SQLite integration, and isolated live
+checks of all four installed adapters.
+
+* Advertises `session.configOptions.boolean` and `elicitation.form`. It does **not**
+  advertise `session.compaction`; raw compaction updates may be observed, but the ID-addressed
+  timeline/patch/replay contract is not implemented.
+* Sends `type: "boolean"` for boolean config setters and preserves usage cost as `{ amount, currency }`.
+* Sends `additionalDirectories` only when `sessionCapabilities.additionalDirectories` is advertised;
+  otherwise it returns an explicit unsupported error.
+* Uses cursor-only `session/list` pagination. Reconnect prefers `session/resume`, falls back to
+  `session/load` only for session-not-found (`-32002`), and keeps Copilot on load. Replay is deduplicated by provider session/message IDs
+  with a transcript-content fallback and actual submitted prompt correlation. Persistence reconciles
+  the full history and inserts missing messages beside known anchors while chat remains paginated.
+  Failed loads discard staged replay.
+* Exposes agent-driven authentication through ACP `authenticate`. Terminal authentication is gated
+  on native `pty.spawn`, uses a real PTY, and previews the configured invocation before launch.
+  Auth-method environment overrides cannot change startup/loading/PATH/proxy/TLS settings or
+  reintroduce credentials removed by policy. Older hosts keep terminal login disabled.
+* Provides a provider Sessions UI for list/resume/load/new/fork/close/delete where advertised, while
+  retaining Hato's local transcript. Slash commands use `available_commands_update` for composer
+  suggestions and are submitted as ordinary prompt text.
+* Sends trusted Hato/instruction-file context through `systemPrompt` append only when advertised.
+  Dialogue handoffs and other model-generated content remain user-message content.
+* Renders restricted flat-object form schemas with defaults, required fields, enums, primitive
+  validation, multi-selects, and accept/decline/cancel. Unknown property types are rejected rather
+  than invented as controls.
+* The background runner has boolean config, structured cost, resume/load selection, system prompts,
+  and replay suppression. Desktop-only authentication, provider-session browsing, slash UI, and form
+  elicitation are intentionally not cloned into the background runtime.
+
+See [`capability_matrix.md`](../capability_matrix.md) for per-adapter advertisements and deferred work.
+
+Validation follows the [official ACP v1 schema](https://github.com/agentclientprotocol/agent-client-protocol/blob/main/schema/v1/schema.json)
+and [authentication contract](https://github.com/agentclientprotocol/agent-client-protocol/blob/main/docs/protocol/v1/authentication.mdx).
 
 ## Platforms
 
@@ -60,8 +98,9 @@ input is not guaranteed to be wiped.
 All remote command lines are built by one audited POSIX quoting adapter (`kernel/src/quoting.rs`).
 
 The configured Codex install/update package is now `@agentclientprotocol/codex-acp`
-(executable `codex-acp`). The historical test results above predate this switch; the new adapter
-has not yet been verified with a live authenticated session.
+(executable `codex-acp`). Its current initialization/session handshake is captured above, but it has
+not yet been verified with a live authenticated model session; the historical model results below
+predate this switch.
 
 ## Known limitations
 

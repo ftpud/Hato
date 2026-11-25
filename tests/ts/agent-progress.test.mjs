@@ -142,6 +142,29 @@ test("a chat without Hato's tools is asked for markers once per connection and r
   assert.equal(values.get("ai-sessions.progress")?.c1?.percent, 30);
 });
 
+test("desktop moves trusted progress instructions to advertised systemPrompt append", async () => {
+  const calls = [], prompts = [];
+  const sessions = (await load("Hato-plugins/modules/services/ai-sessions/src/index.ts")).default;
+  const { ctx } = stateCtx(calls);
+  const row = { id: "system-chat", workspaceId: "p:1", acpProfileId: "claude", title: "Chat", approvalPolicy: "ask", mcpSelection: [], config: {} };
+  ctx.modules.call = async (target, method, args) => {
+    calls.push([target, method, args]);
+    if (method === "settings.get") return undefined;
+    if (target === "persistence" && method === "conversations.get") return row;
+    if (target === "persistence" && method === "messages.list") return [];
+    if (target === "persistence" && method.startsWith("messages")) return null;
+    if (target === "acp" && method === "prompt") { prompts.push(args.text); return {}; }
+    if (target === "acp" && (method === "state" || method === "start")) return { status: "ready", sessionId: "s1", configOptions: [], agentCapabilities: { sessionCapabilities: { systemPrompt: {} } } };
+    return null;
+  };
+  await sessions.activate(ctx);
+  await sessions.methods.connect(ctx, { conversationId: "system-chat" });
+  await sessions.methods.send(ctx, { conversationId: "system-chat", text: "Fix the build" });
+  const start = calls.find(([, method]) => method === "start");
+  assert.deepEqual(start[2].systemPrompt, PA.PROGRESS_MARKER_INSTRUCTION);
+  assert.deepEqual(prompts, ["Fix the build"]);
+});
+
 test("the rail prefers the newest of tool and marker reports for a chat", async () => {
   const sidebar = (await load("Hato-plugins/modules/ui/sidebar/src/index.ts")).default;
   const { ctx } = stateCtx();

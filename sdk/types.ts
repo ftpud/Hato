@@ -121,6 +121,8 @@ export interface NativeHost {
     info(handle: Handle): Promise<Json>;
   };
   pty: {
+    /** Scoped argv process on an interactive terminal. Requires process scope. No persistence. */
+    spawn(grant: Handle, req: Omit<SpawnRequest, "persist"> & { columns: number; rows: number }): Promise<{ handle: Handle; machineId: string; cwd: string }>;
     open(grant: Handle, req: PtyRequest): Promise<{ handle: Handle; machineId: string; cwd: string }>;
     write(pty: Handle, text: string): Promise<void>;
     resize(pty: Handle, columns: number, rows: number): Promise<void>;
@@ -263,6 +265,7 @@ export interface NativeHost {
 }
 
 export interface EnvInfo {
+  hostFeatures?: string[];
   abiVersion: 1; appName: string; platform: string; arch: string; home: string | null;
   dataDir: string; sharedDir: string; initialRoot: string | null; repoRoot: string; uptimeMs: number; headless: boolean;
   /** UiNode types added after abiVersion 1 that this host renders (absent on older hosts). */

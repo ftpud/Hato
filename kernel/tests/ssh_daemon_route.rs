@@ -150,7 +150,7 @@ fn daemon_route_bypasses_the_session_limit() {
     // Terminals: size, resize, exit code.
     let t = pty::open(PtySpec {
         remote: Some(RemotePty { master: m.clone(), command: "printf 'pty-ok\\n'; stty size; read x; stty size; sleep 0.2".into() }),
-        program: String::new(), args: vec![], cwd: None, env: vec![], cols: 100, rows: 30, machine_id: "ssh:route".into(), display_cwd: "/tmp".into(), answer_queries: true,
+        program: String::new(), args: vec![], cwd: None, env: vec![], env_remove: vec![], cols: 100, rows: 30, machine_id: "ssh:route".into(), display_cwd: "/tmp".into(), answer_queries: true,
     }).unwrap();
     wait_for("pty output", Duration::from_secs(10), || t.screen_text().contains("30 100"));
     assert!(t.screen_text().contains("pty-ok"));
