@@ -50,7 +50,7 @@ checks of all four installed adapters.
   and replay suppression. Desktop-only authentication, provider-session browsing, slash UI, and form
   elicitation are intentionally not cloned into the background runtime.
 
-See [`capability_matrix.md`](../capability_matrix.md) for per-adapter advertisements and deferred work.
+See [ACP capabilities](ACP_CAPABILITIES.md) for per-adapter advertisements and deferred work.
 
 Validation follows the [official ACP v1 schema](https://github.com/agentclientprotocol/agent-client-protocol/blob/main/schema/v1/schema.json)
 and [authentication contract](https://github.com/agentclientprotocol/agent-client-protocol/blob/main/docs/protocol/v1/authentication.mdx).

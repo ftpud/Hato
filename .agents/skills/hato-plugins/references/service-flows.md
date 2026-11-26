@@ -84,7 +84,7 @@ Protocol helpers live in SDK and ACP module sources. Conversation/provider/tool 
 outside Rust. `internal-mcp` provides the agent-facing application tool surface; `module-dev`
 implements module editing/build/activation policy over constrained native APIs. Remote daemon
 support does not automatically make ACP re-handshake or offline agent tools persistent; verify
-those separately against implementation and `handover.md` follow-ups.
+those separately against implementation and [the background agent guide](../../../../docs/PERSISTENT_AGENTS.md).
 
 ## Independent background agents
 

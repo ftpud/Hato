@@ -1,8 +1,8 @@
 # UI performance findings
 
 Recorded 2026-11-25. This document consolidates the UI investigation, implemented fixes,
-live profiles, and isolated primitive benchmarks. It describes the latest findings; older
-entries in [ui-optimization.md](ui-optimization.md) include plans that have since been completed.
+live profiles, and isolated primitive benchmarks. These measurements describe the implementation at that date. Benchmark instructions and retained
+results live under `tools/render-bench/`.
 
 ## Conclusion
 
@@ -52,9 +52,9 @@ requirement of native UI, nor a reason to rebuild every control for each frame.
 
 The `ember-panels-*` fixtures retain the same two panels, content, rounded corners, borders,
 spacing, and normal Ember ambient glows. They add the actual dark panel gradient and card
-shadows from [sdk/halo-glass.ts](sdk/halo-glass.ts),
-[workspace-layout](Hato-plugins/modules/ui/workspace-layout/src/index.ts), and
-[the Ember palette](Hato-plugins/modules/ui/workspace-layout/src/ember.ts).
+shadows from [sdk/halo-glass.ts](../sdk/halo-glass.ts),
+[workspace-layout](../Hato-plugins/modules/ui/workspace-layout/src/index.ts), and
+[the Ember palette](../Hato-plugins/modules/ui/workspace-layout/src/ember.ts).
 
 | Appearance | Median active GPU fragment time | Fragment encoders per command buffer |
 | --- | ---: | ---: |
@@ -87,7 +87,7 @@ The cost depends on more than the visible size of the path. The relevant depende
 `draw_primitives_to_texture` and `update_path_intermediate_textures`.
 
 Spinners and ring gauges now use cached SVG alpha-mask sprites in
-[node_paint.rs](kernel/src/ui/node_paint.rs). Spinners rotate an existing mask; gauges use
+[node_paint.rs](../kernel/src/ui/node_paint.rs). Spinners rotate an existing mask; gauges use
 cached partial/full arc masks. The variant cache is bounded at 128 entries. The existing
 module contract, sizes, thickness, color/alpha, labels, gauge caps, reduced-motion behavior,
 and clock/FPS scheduling were preserved. General canvas paths were not converted.
@@ -162,10 +162,10 @@ history paging, and scroll anchoring.
 
 ### Implemented native cache boundaries
 
-- [tree.rs](kernel/src/ui/tree.rs): trees with independent layout allocations (`grow`, `height`,
+- [tree.rs](../kernel/src/ui/tree.rs): trees with independent layout allocations (`grow`, `height`,
   or `style.height`) use stable `CachedTree` entities. Intrinsically allocated tree controls
   retain the eager path; their row list can still be virtualized when a fixed row height exists.
-- [panel_view.rs](kernel/src/ui/panel_view.rs): eligible module bodies use stable views per
+- [panel_view.rs](../kernel/src/ui/panel_view.rs): eligible module bodies use stable views per
   window/slot mount, planned once per immutable tree snapshot. Ordinary content, transcripts,
   Markdown, inputs, images, and native splits can reuse cached scenes.
 - Eligibility is deliberately conservative. Frame-collected nodes, including popovers, modals,
@@ -187,7 +187,7 @@ Scrollbar fade and hover-width animations originally notified the containing AI 
 unchanged transcript content to rebuild. Adding a cache inside that dirty parent did not solve
 it: GPUI refreshes cached descendants when their dirty cached parent is rendered.
 
-[scrollbar_layer.rs](kernel/src/ui/scrollbar_layer.rs) now renders transcript scrollbars in a
+[scrollbar_layer.rs](../kernel/src/ui/scrollbar_layer.rs) now renders transcript scrollbars in a
 sibling native layer with window-scoped viewport geometry and clipping. Deferred prepaint
 runs after the content has measured its bounds. Fades notify the scrollbar layer; actual native
 scroll-offset changes also notify the content owner after event handling. Removed transcripts
@@ -250,10 +250,10 @@ on the different-rate samples, or claim the earlier percentage decreases as cont
 
 ## Benchmark methodology and confidence
 
-The reusable harness is [tools/render-bench/run.mjs](tools/render-bench/run.mjs), backed by the
-development-only [snapshot renderer](kernel/src/ui/snapshot.rs). See its
-[README](tools/render-bench/README.md), [results](tools/render-bench/RESULTS.md), and
-[complete baseline JSON](tools/render-bench/baseline-2026-11-25.json).
+The reusable harness is [tools/render-bench/run.mjs](../tools/render-bench/run.mjs), backed by the
+development-only [snapshot renderer](../kernel/src/ui/snapshot.rs). See its
+[README](../tools/render-bench/README.md), [results](../tools/render-bench/RESULTS.md), and
+[complete baseline JSON](../tools/render-bench/baseline-2026-11-25.json).
 
 - 67 deterministic cases; two untraced rounds; **134 validated CPU measurements**.
 - 60 measured frames plus 16 warmup frames per mode for this baseline. The runner default is 80
@@ -319,7 +319,7 @@ live window yet. Use controlled comparisons and direct GPU intervals for current
   prepared artifacts. Keep the nested plugin repository's commits/releases separate.
 - Sidebar progress failures were stale MCP transports (`Transport closed`), not evidence of
   rendering failure. The current session's working progress endpoint acknowledged updates.
-  [sdk/persistent-agents.ts](sdk/persistent-agents.ts) now specifies exact JSON, start/milestone/
+  [sdk/persistent-agents.ts](../sdk/persistent-agents.ts) now specifies exact JSON, start/milestone/
   finish percentages, the accepted-percent acknowledgement, and checking `isError`/closed
   transports before assuming delivery. All consumers were rebuilt; active bundles were checked
   after module reload. TypeScript checks and all nine progress tests passed.
@@ -364,7 +364,7 @@ Temporary artifacts may be removed by the operating system. The source fixtures 
 repository baseline JSON preserve reproduction and summarized measurements. The baseline files
 are present in the workspace; that does not imply they have already been committed/published.
 
-Live diagnostics are implemented in [redraw_stats.rs](kernel/src/ui/redraw_stats.rs), logging
+Live diagnostics are implemented in [redraw_stats.rs](../kernel/src/ui/redraw_stats.rs), logging
 busy windows every ~10 s with causes such as `anim:paint-clock`, `panel:<module>`, `tree:<module>`,
 `view:scrollbars`, transcript follow/anchor, terminal output, and surface frames. Prefer passive
 sampling and Instruments. Debugger breakpoints on hot UI functions previously froze the app;
@@ -373,7 +373,7 @@ they are unsuitable for this profiling workflow.
 ## Appendix: complete accepted primitive sweep
 
 The following tables are generated from
-[baseline-2026-11-25.json](tools/render-bench/baseline-2026-11-25.json).
+[baseline-2026-11-25.json](../tools/render-bench/baseline-2026-11-25.json).
 CPU and raster/readback columns show the range of the two runs' medians, in milliseconds.
 Retained frames can still rebuild eager content. Raster/readback values include CPU copying.
 

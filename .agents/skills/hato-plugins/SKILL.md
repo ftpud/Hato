@@ -56,5 +56,5 @@ Read only the branches needed for the current task:
    activated, or require restart. Preserve existing uncommitted work.
 
 For the public API overview, see [docs/PLUGINS.md](../../../docs/PLUGINS.md). For integration
-fixtures and SSH setup, see [docs/TESTING.md](../../../docs/TESTING.md). Treat
-[handover.md](../../../handover.md) as historical status and limitations, not an API contract.
+fixtures and SSH setup, see [docs/TESTING.md](../../../docs/TESTING.md). Use
+[ARCHITECTURE.md](../../../ARCHITECTURE.md) for the current system overview.

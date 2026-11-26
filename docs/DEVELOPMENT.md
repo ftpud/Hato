@@ -7,7 +7,7 @@ SSH workflow, files, terminals, the ACP agent client, conversations, the interna
 UI panel. An agent can patch, build, activate and roll back those modules through MCP, with explicit
 native approval, **without rebuilding or restarting the Rust kernel**.
 
-Spec: [architecture-2.md](../architecture-2.md). Versions/platforms: [COMPATIBILITY.md](COMPATIBILITY.md).
+Architecture: [ARCHITECTURE.md](../ARCHITECTURE.md). Versions/platforms: [COMPATIBILITY.md](COMPATIBILITY.md).
 
 ```
 ┌ Rust microkernel (kernel/src) ───────────────────────────────────────────────────────────┐
