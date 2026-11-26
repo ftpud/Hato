@@ -5,6 +5,8 @@ locally or over SSH. Its features and interface live in hot-swappable TypeScript
 on a Rust kernel. Background agents and workflows run on workspace daemons and can continue
 after the desktop disconnects.
 
+<img width="1582" height="946" alt="image" src="https://github.com/user-attachments/assets/db2dbda2-24f5-4eaa-819f-89f53fedd251" />
+
 ## Run from source
 
 For macOS, install Xcode with the Metal toolchain, Rust stable, Node.js 20+, Git and OpenSSH.
