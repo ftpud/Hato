@@ -36,6 +36,20 @@ pub struct TerminalView {
     /// Link under the pointer while Cmd/Ctrl is held: (url, [(viewport row, col start, col end)]).
     hover_link: Option<(String, Vec<(usize, usize, usize)>)>,
     last_mouse: Option<Point<Pixels>>,
+    scroll: SmoothScroll,
+}
+
+/// Alacritty indexes whole rows; keep the remaining fraction for native pixel scrolling.
+#[derive(Default)]
+struct SmoothScroll { fraction: f64 }
+impl SmoothScroll {
+    fn update(&mut self, delta: f64, offset: usize, history: usize) -> usize {
+        if !delta.is_finite() { return offset; }
+        let position = (offset as f64 + self.fraction + delta).clamp(0.0, history as f64);
+        let row = position.ceil() as usize;
+        self.fraction = position - row as f64;
+        row
+    }
 }
 
 /// Character span [start, end) of the http(s) URL covering `idx` in a logical line.
@@ -123,7 +137,7 @@ fn resolve(c: &AnsiColor, colors: &alacritty_terminal::term::color::Colors, fg: 
 impl TerminalView {
     pub fn new(session: Arc<PtySession>, cx: &mut Context<Self>) -> Self {
         TerminalView { session, focus: cx.focus_handle(), cell: None, font_size: px(13.0), measured_font: None,
-            bounds: Rc::new(StdCell::new(None)), selecting: false, hover_link: None, last_mouse: None }
+            bounds: Rc::new(StdCell::new(None)), selecting: false, hover_link: None, last_mouse: None, scroll: SmoothScroll::default() }
     }
 
     /// Viewport cell under a window position, clamped to the grid, plus the cell half.
@@ -132,9 +146,10 @@ impl TerminalView {
         let b = self.bounds.get()?;
         let (rows, cols) = { let t = self.session.term.lock(); (t.screen_lines(), t.columns()) };
         let fx = ((pos.x - b.origin.x - px(4.0)) / cw).max(0.0);
-        let fy = ((pos.y - b.origin.y - px(2.0)) / ch).max(0.0);
+        let fy = ((pos.y - b.origin.y - px(2.0)) / ch - self.scroll.fraction as f32).max(0.0);
         let col = (fx.floor() as usize).min(cols.saturating_sub(1));
-        let row = (fy.floor() as usize).min(rows.saturating_sub(1));
+        let extra = usize::from(self.scroll.fraction < 0.0 && self.session.term.lock().grid().display_offset() > 0);
+        let row = (fy.floor() as usize).min((rows + extra).saturating_sub(1));
         Some((row, col, if fx.fract() < 0.5 { Side::Left } else { Side::Right }))
     }
 
@@ -146,7 +161,8 @@ impl TerminalView {
     /// The web link at a viewport cell, following soft-wrapped rows.
     fn link_at(&self, row: usize, col: usize) -> Option<(String, Vec<(usize, usize, usize)>)> {
         let term = self.session.term.lock();
-        let (rows, cols, offset) = (term.screen_lines(), term.columns(), term.grid().display_offset());
+        let (mut rows, cols, offset) = (term.screen_lines(), term.columns(), term.grid().display_offset());
+        rows += usize::from(self.scroll.fraction < 0.0 && offset > 0);
         let cell = |r: usize, c: usize| &term.grid()[viewport_to_point(offset, GridPoint::new(r, Column(c)))];
         let wraps = |r: usize| cell(r, cols - 1).flags.contains(Flags::WRAPLINE);
         let (mut r0, mut r1) = (row, row);
@@ -301,21 +317,23 @@ impl Render for TerminalView {
             self.cell = Some((w, (font_size * 1.35).round()));
         }
         let (cw, ch) = self.cell.unwrap();
+        let mut paint_shift = px(0.0);
         // Snapshot the grid (brief lock; parsing continues on the reader thread).
         let frame = {
             let term = self.session.term.lock();
             let content = term.renderable_content();
-            let rows = term.screen_lines();
+            if content.display_offset == 0 { self.scroll.fraction = 0.0; }
+            paint_shift += ch * self.scroll.fraction as f32;
+            let rows = term.screen_lines() + usize::from(self.scroll.fraction < 0.0);
             let cols = term.columns();
             let colors = content.colors;
             let selection = content.selection;
             let mut grid: Vec<Vec<(char, Hsla, Hsla, bool)>> = vec![vec![(' ', default_fg, default_bg, false); cols]; rows];
             let offset = content.display_offset as i32;
-            for cell in content.display_iter {
-                let line = cell.point.line.0 + offset;
-                if line < 0 || line as usize >= rows || cell.point.column.0 >= cols {
-                    continue;
-                }
+            // Include the next row while translating, so fractional scrolling never leaves a gap.
+            for (line, column) in (0..rows).flat_map(|r| (0..cols).map(move |c| (r, c))) {
+                let point = viewport_to_point(content.display_offset, GridPoint::new(line, Column(column)));
+                let cell = &term.grid()[point];
                 let mut fg = resolve(&cell.fg, colors, true, default_fg, default_bg, palette);
                 let mut bg = resolve(&cell.bg, colors, false, default_fg, default_bg, palette);
                 if cell.flags.contains(Flags::INVERSE) {
@@ -324,11 +342,11 @@ impl Render for TerminalView {
                 if cell.flags.contains(Flags::DIM) {
                     fg.l *= 0.7;
                 }
-                if selection.is_some_and(|s| s.contains(cell.point)) {
+                if selection.is_some_and(|s| s.contains(point)) {
                     bg = selection_bg;
                 }
                 let c = if cell.flags.intersects(Flags::WIDE_CHAR_SPACER | Flags::HIDDEN) { ' ' } else { cell.c };
-                grid[line as usize][cell.point.column.0] = (c, fg, bg, cell.flags.contains(Flags::BOLD));
+                grid[line][column] = (c, fg, bg, cell.flags.contains(Flags::BOLD));
             }
             let cur = content.cursor.point;
             let cursor_line = cur.line.0 + offset;
@@ -364,6 +382,7 @@ impl Render for TerminalView {
             .key_context("Terminal")
             .track_focus(&self.focus)
             .size_full()
+            .overflow_hidden()
             .bg(default_bg);
         let root = if link_cursor { root.cursor_pointer() } else { root.cursor(CursorStyle::IBeam) };
         root
@@ -433,11 +452,15 @@ impl Render for TerminalView {
             }))
             .on_scroll(cx.listener(move |this, ev: &ScrollEvent, _, cx| {
                 let d = ev.delta.pixel_delta(ch);
-                let lines = (d.y / ch).round() as i32;
-                if lines != 0 {
-                    this.session.term.lock().scroll_display(alacritty_terminal::grid::Scroll::Delta(lines));
-                    cx.notify();
-                }
+                let mut term = this.session.term.lock();
+                let offset = term.grid().display_offset();
+                if offset == 0 { this.scroll.fraction = 0.0; }
+                let target = this.scroll.update((d.y / ch) as f64, offset, term.history_size());
+                term.scroll_display(alacritty_terminal::grid::Scroll::Delta(target as i32 - offset as i32));
+                drop(term);
+                this.update_hover(&ev.modifiers, cx);
+                cx.notify();
+                cx.stop_propagation();
             }))
             .child(
                 canvas(
@@ -449,7 +472,7 @@ impl Render for TerminalView {
                         frame
                     },
                     move |bounds, frame, window, cx| {
-                        let origin = bounds.origin + point(px(4.0), px(2.0));
+                        let origin = bounds.origin + point(px(4.0), px(2.0) + paint_shift);
                         for (y, (runs, bgs)) in frame.rows.iter().enumerate() {
                             let top = origin.y + ch * y as f32;
                             for (x0, x1, bg) in bgs {
@@ -493,7 +516,36 @@ impl Render for TerminalView {
 
 #[cfg(test)]
 mod tests {
-    use super::find_link;
+    use super::{find_link, SmoothScroll};
+    #[test]
+    fn touch_scroll_preserves_small_deltas_and_reaches_both_ends() {
+        let mut scroll = SmoothScroll::default();
+        let mut offset = 0;
+        for _ in 0..100 { offset = scroll.update(0.1, offset, 100); }
+        assert!((offset as f64 + scroll.fraction - 10.0).abs() < 1e-10);
+        for _ in 0..110 { offset = scroll.update(-0.1, offset, 100); }
+        assert_eq!(offset, 0);
+        assert_eq!(scroll.fraction, 0.0);
+        offset = scroll.update(200.0, offset, 100);
+        assert_eq!(offset, 100);
+        assert_eq!(scroll.fraction, 0.0);
+        offset = scroll.update(-0.05, offset, 100);
+        assert!((offset as f64 + scroll.fraction - 99.95).abs() < 1e-10);
+    }
+    #[test]
+    fn scroll_handles_direction_changes_line_wheels_and_empty_history() {
+        let mut scroll = SmoothScroll::default();
+        let offset = scroll.update(0.25, 0, 30);
+        assert_eq!(offset, 1);
+        let offset = scroll.update(-0.125, offset, 30);
+        assert_eq!(offset, 1);
+        assert_eq!(scroll.fraction, -0.875);
+        assert_eq!(scroll.update(-0.125, offset, 30), 0);
+        assert_eq!(scroll.update(3.0, 0, 30), 3);
+        assert_eq!(scroll.fraction, 0.0);
+        assert_eq!(scroll.update(100.0, 0, 0), 0);
+        assert_eq!(scroll.update(f64::NAN, 0, 0), 0);
+    }
     fn link(text: &str, at: usize) -> Option<String> {
         let chars: Vec<char> = text.chars().collect();
         find_link(&chars, at).map(|(a, b)| chars[a..b].iter().collect())
