@@ -240,16 +240,18 @@ test("first-run setup opens once on a fresh profile and applies empty, default a
   // Existing users (projects or a setup record) are not interrupted.
   assert.equal((await fresh({}, [{ id: "p" }])).m.setupOpen(), false);
   assert.equal((await fresh({ "setup.v1": { profile: "default" } })).m.setupOpen(), false);
-  // Default: baseline + remote + chosen providers (Claude and Codex preselected, Copilot opt-in).
+  // Default includes Background Agents. Claude/Codex start selected; OpenCode/Copilot are optional.
   let s = await fresh();
   assert.equal(s.m.setupOpen(), true);
   const labels = () => walk(s.m.setupModal()).filter(n => n.key === "name").map(n => n.text);
+  assert.ok(walk(s.m.setupModal()).some(n => n.key === "opencode-acp"));
+  await s.m.setupEvent(s.ctx, "setup.provider:opencode-acp", null, async () => {});
   await s.m.setupEvent(s.ctx, "setup.provider:copilot-acp", null, async () => {});
   await s.m.setupEvent(s.ctx, "setup.provider:codex-acp", null, async () => {});
-  assert.equal(walk(s.m.setupModal()).find(n => n.key === "start").text, "Set up 5 plugins");
+  assert.equal(walk(s.m.setupModal()).find(n => n.key === "start").text, "Set up 7 plugins");
   await s.m.setupEvent(s.ctx, "setup.start", null, async () => {});
   // Some AI Chat modules are missing here, so a catalogue check precedes the downloads.
-  assert.deepEqual(labels(), ["Check the plugin catalogue", "AI Chat", "Git", "Remote workspaces", "Claude", "GitHub Copilot"]);
+  assert.deepEqual(labels(), ["Check the plugin catalogue", "AI Chat", "Git", "Background Agents", "Remote workspaces", "Claude", "OpenCode", "GitHub Copilot"]);
   assert.equal(s.saved.get("setup.v1").profile, "default");
   assert.ok(walk(s.m.setupModal()).some(n => n.type === "progress" && n.value === 1));
   // Empty: turns the shipped AI chat and Git packages off; nothing is installed.
