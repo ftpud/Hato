@@ -123,6 +123,13 @@ test('existing chatbox binds background session and routes prompts without using
   // Provider and model share one composer chip; the provider list lives in its popover.
   assert.ok(nodes.some(n=>n.key==='cfg-model'&&n.action?.endsWith(':toggleModels')));
   assert.ok(!nodes.some(n=>n.key==='hdr'),'no toolbar row above the chat');
+  const rows=nodes.filter(n=>n.key==='chat-tools'||n.key==='act');
+  assert.deepEqual(rows.map(n=>n.key),['chat-tools','act'],'model and actions stay on separate rows');
+  const chip=nodes.find(n=>n.key==='cfg-model');
+  assert.equal(chip.grow,true,'model chip fills the first row');
+  assert.equal(chip.style.height,undefined,'a fixed height would pin the chip to its text width');
+  assert.equal(chip.style.minHeight,32);
+  assert.ok(nodes.some(n=>n.key==='chat-gap'&&n.type==='spacer'),'actions row keeps its spacer');
   const auto=nodes.find(n=>n.key==='auto');
   assert.ok(auto&&!auto.checked&&/even while Hato is closed/.test(auto.tooltip));
   const before=calls.length;
