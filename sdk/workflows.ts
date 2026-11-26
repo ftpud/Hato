@@ -7,13 +7,42 @@ import type { ChatMessage } from "./types";
 import type { AgentMcp, AgentProfile } from "./persistent-agents";
 
 /** Bumped whenever the daemon runtime changes behavior; the gateway pushes a newer runtime when idle. */
-export const WORKFLOW_RUNNER_VERSION = "10";
+export const WORKFLOW_RUNNER_VERSION = "13";
 
 export type WorkflowBlockType =
   | "start_button" | "start_input" | "ai" | "chatbox" | "skill" | "mcp" | "task_controls" | "terminal_control"
-  | "meeting" | "text" | "timer" | "user_prompt" | "yes_no_prompt" | "markdown" | "script" | "run_app" | "browser";
+  | "meeting" | "text" | "timer" | "user_prompt" | "yes_no_prompt" | "markdown" | "script" | "run_app" | "browser"
+  | "http_trigger" | "socket_trigger" | "file_trigger" | "text_input";
 
 export type WorkflowAppAction = "start" | "status" | "kill" | "tail";
+export type WorkflowTriggerAction = "status" | "configure" | "arm" | "disarm" | "wait" | "fetch";
+
+export interface WorkflowTriggerConfig {
+  /** http_trigger, socket_trigger (tcp): loopback TCP port (1024–65535, or 0 for an automatic free port). */
+  port?: number;
+  /** http_trigger: request path (default "/"). socket_trigger (unix) or file_trigger: workspace-relative path. */
+  path?: string;
+  /** http_trigger: HTTP method filter ("ANY", "GET", "POST", "PUT", "PATCH", "DELETE"; default "ANY"). */
+  method?: string;
+  /** http_trigger: HTTP response status code returned to the client (default 200). */
+  statusCode?: number;
+  /** http_trigger, socket_trigger: response body or acknowledgment reply sent to the client. */
+  responseBody?: string;
+  /** http_trigger: shared secret checked against Authorization (Bearer) or X-Hato-Token header. */
+  secret?: string;
+  /** socket_trigger: "tcp" (loopback TCP, default) or "unix" (Unix domain socket). */
+  protocol?: "tcp" | "unix";
+  /** socket_trigger, file_trigger: "line" (newline-delimited), "message" (each chunk/edit) or "eof" (on close). */
+  framing?: "line" | "message" | "eof";
+  /** file_trigger: "auto" (detect file or FIFO pipe), "file" (regular file) or "pipe" (named pipe / FIFO). */
+  mode?: "auto" | "file" | "pipe";
+  /** file_trigger: create the file or FIFO pipe on workflow start when missing. */
+  createIfMissing?: boolean;
+  /** Keep the trigger armed after firing (otherwise it disarms after maxEvents, default 1). */
+  continuous?: boolean;
+  /** Maximum trigger events before disarming (when continuous is not set). */
+  maxEvents?: number;
+}
 
 export interface WorkflowDataSchema {
   type: "string" | "number" | "boolean" | "object" | "array";
@@ -41,18 +70,22 @@ export interface WorkflowBlock {
   /** skill: workspace-relative SKILL.md path of an existing skill (otherwise `prompt` holds instructions). */ skillId?: string;
   /** mcp: a configured MCP server id (MCP servers panel). */ mcp?: { serverId: string };
   /** browser: a browser session (Browser panel) its connected agents drive. */ browser?: { sessionId: string; name?: string };
+  /** http_trigger, socket_trigger, file_trigger */ trigger?: WorkflowTriggerConfig;
+  /** text_input: keep the run open waiting for text (default true); otherwise sending reopens a finished run. */ keepOpen?: boolean;
   /** Fan-in policy for converging follow/path connections. */ join?: "all" | "any";
   inputSchema?: WorkflowDataSchema; outputSchema?: WorkflowDataSchema;
 }
 
-export type WorkflowEdgeType = "follow" | "use" | "path";
+export type WorkflowEdgeType = "follow" | "use" | "path" | "queue";
 export interface WorkflowEdge {
   id: string; from: string; to: string;
-  /** follow (default): run `to` with this block's output. use: `to` is a tool of `from`. path: an AI-chosen route. */
+  /** follow (default): run `to` with this block's output. use: `to` is a tool of `from`. path: an AI-chosen route.
+   *  queue: like follow, but while `to` is busy outputs wait in a FIFO and run one at a time. */
   type?: WorkflowEdgeType;
   /** path: the route name the source chooses. */ label?: string;
   /** Mark a connection that intentionally closes a cycle. */ loop?: boolean;
   /** use: how long a tool call waits before returning timed_out (default 300 s). */ timeoutMs?: number;
+  /** queue: maximum waiting items on this connection (default 100); further items are rejected. */ queueLimit?: number;
 }
 
 export interface WorkflowSettings { maxLoopCount?: number; maxSteps?: number; outputLimitChars?: number; promptLimitChars?: number; maxRunDurationMs?: number }
@@ -65,8 +98,18 @@ export interface WorkflowDefinition {
 export interface WorkflowIssue { code: string; message: string; blockId?: string; edgeId?: string; severity?: "error" | "warning" }
 
 export type WorkflowBlockStatus = "idle" | "queued" | "running" | "succeeded" | "failed" | "cancelled" | "skipped"
-  | "waiting_timer" | "awaiting_user_input" | "awaiting_permission";
+  | "waiting_timer" | "waiting_trigger" | "waiting_input" | "awaiting_user_input" | "awaiting_permission";
 export type WorkflowRunStatus = "running" | "waiting" | "succeeded" | "failed" | "cancelled";
+
+/** A run that is still open, as summarized for the activity rail (`persistent-agents.workflows`). */
+export interface WorkflowActiveRun {
+  runId: string; workflowId: string; name: string; projectId: string; workspaceId: string;
+  status: "running" | "waiting"; createdAt: string;
+  /** Blocks currently running, triggers armed and Text Inputs waiting for text. */
+  running: number; armed: number; inputs: number;
+  /** Blocks waiting on the user: a question to answer or a permission to approve. */
+  attention: { blockId: string; label: string; kind: "question" | "permission"; text?: string }[];
+}
 
 export interface WorkflowLog { at: string; kind: "lifecycle" | "prompt" | "response" | "error" | "tool"; text: string }
 export interface WorkflowChatMessage { id: string; role: "user" | "assistant"; text: string; at: string }
@@ -80,6 +123,8 @@ export interface WorkflowBlockState {
   /** The block prompt last delivered to its session; a hot-updated prompt is re-sent once. */ appliedPrompt?: string;
   /** Signature of the session-level configuration (provider, model, MCP servers) the session runs with. */ sessionConfig?: string;
   selectedRoute?: string; question?: string; pauseId?: string; waitingUntil?: string;
+  /** Bound HTTP URL, socket endpoint or watched file/pipe path while a trigger block is armed. */ triggerEndpoint?: string;
+  /** Inputs waiting on incoming queue connections while this block is busy. */ queueDepth?: number;
   permissionId?: string; chat?: WorkflowChatMessage[];
   /** Last referenced excerpts delivered to this chatbox session. */
   referenceContext?: { sessionId: string; values: Record<string, string> };
@@ -116,10 +161,14 @@ export interface WorkflowRun {
 export const WORKFLOW_BLOCKS: { type: WorkflowBlockType; label: string; summary: string; fields: string[]; tool: boolean }[] = [
   { type: "start_button", label: "Start button", summary: "Starts the run with its prompt as the input.", fields: ["prompt"], tool: false },
   { type: "start_input", label: "Start with text", summary: "Starts the run with text typed when it is run.", fields: [], tool: false },
+  { type: "http_trigger", label: "HTTP Trigger", summary: "Listens on a loopback HTTP endpoint; armed on workflow start and passes matching requests to followers.", fields: ["trigger", "prompt"], tool: true },
+  { type: "socket_trigger", label: "Socket Trigger", summary: "Listens on a loopback TCP port or Unix socket; armed on workflow start and passes incoming messages to followers.", fields: ["trigger", "prompt"], tool: true },
+  { type: "file_trigger", label: "File/Pipe Trigger", summary: "Watches a workspace file or named pipe (FIFO); armed on workflow start and passes edits or pipe data to followers.", fields: ["trigger", "prompt"], tool: true },
+  { type: "text_input", label: "Text Input", summary: "Type text into a running workflow at any time; each Send passes it to connected blocks.", fields: ["prompt", "description", "keepOpen"], tool: false },
   { type: "ai", label: "AI Agent", summary: "A background agent session that runs its prompt template and returns its final answer.", fields: ["prompt", "profileId", "model", "reasoning", "autopilot", "agentFile"], tool: true },
   { type: "chatbox", label: "Chatbox", summary: "A persistent conversation; every outgoing connection is a tool it can call.", fields: ["prompt", "profileId", "model", "reasoning", "autopilot", "agentFile"], tool: true },
   { type: "skill", label: "SKILL", summary: "Reusable instructions, custom or loaded from a workspace SKILL.md.", fields: ["description", "prompt", "skillId"], tool: true },
-  { type: "text", label: "Text input", summary: "Fixed text (supports templates) passed on or returned to the caller.", fields: ["prompt"], tool: true },
+  { type: "text", label: "Fixed text", summary: "Fixed text (supports templates) passed on or returned to the caller.", fields: ["prompt"], tool: true },
   { type: "markdown", label: "Markdown document", summary: "Renders its template, or its input, as a Markdown document.", fields: ["prompt"], tool: true },
   { type: "script", label: "Script execution", summary: "Runs a shell command in the workspace; stdin and $HATO_WORKFLOW_INPUT receive the input.", fields: ["command", "timeoutSeconds"], tool: true },
   { type: "run_app", label: "Run App", summary: "Starts, checks, kills or tails a named long-lived app.", fields: ["command", "app"], tool: true },
@@ -149,12 +198,46 @@ export const isCapabilityBlock = (b: { type: string }) => b.type === "terminal_c
 export const capabilityMcpServer = (b: { type: string; mcp?: { serverId: string } }): string | undefined =>
   b.type === "mcp" ? b.mcp?.serverId : b.type === "browser" ? "internal-local-mcp" : undefined;
 export const isStartBlock = (b: { type: string }) => b.type === "start_button" || b.type === "start_input";
+const TRIGGER_TYPES = new Set(["http_trigger", "socket_trigger", "file_trigger"]);
+export const isTriggerBlock = (b: { type: string }) => TRIGGER_TYPES.has(b.type);
+/** Blocks that wait for outside events during a run instead of running as roots. */
+export const isEventSource = (b: { type: string }) => TRIGGER_TYPES.has(b.type) || b.type === "text_input";
 export const edgeType = (e: WorkflowEdge): WorkflowEdgeType => e.type || "follow";
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/;
 const now = () => new Date().toISOString();
 const clip = (v: unknown, n: number) => typeof v === "string" ? v.slice(0, n) : "";
 const num = (v: unknown) => typeof v === "number" && Number.isFinite(v) ? v : undefined;
+
+const TRIGGER_TYPE_ALIASES: Record<string, WorkflowBlockType> = {
+  file_pipe_trigger: "file_trigger",
+  file_edited_trigger: "file_trigger",
+  pipe_trigger: "file_trigger",
+};
+
+/** Normalize trigger configuration from a nested `trigger` object and/or flat block fields. */
+export function normalizeTriggerConfig(raw: any): WorkflowTriggerConfig | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const src = raw.trigger && typeof raw.trigger === "object" ? { ...raw, ...raw.trigger } : raw;
+  const t: WorkflowTriggerConfig = {};
+  if (num(src.port) !== undefined) t.port = Math.round(num(src.port)!);
+  if (typeof src.path === "string" && src.path.trim()) t.path = clip(src.path.trim(), 500);
+  if (typeof src.method === "string" && src.method.trim()) t.method = clip(src.method.trim().toUpperCase(), 20);
+  const sc = num(src.statusCode ?? src.status_code);
+  if (sc !== undefined) t.statusCode = Math.round(sc);
+  const rb = src.responseBody ?? src.response_body;
+  if (typeof rb === "string") t.responseBody = clip(rb, 64_000);
+  if (typeof src.secret === "string" && src.secret) t.secret = clip(src.secret, 400);
+  if (src.protocol === "tcp" || src.protocol === "unix") t.protocol = src.protocol;
+  if (src.framing === "line" || src.framing === "message" || src.framing === "eof") t.framing = src.framing;
+  if (src.mode === "auto" || src.mode === "file" || src.mode === "pipe") t.mode = src.mode;
+  const cim = src.createIfMissing ?? src.create_if_missing;
+  if (typeof cim === "boolean") t.createIfMissing = cim;
+  if (typeof src.continuous === "boolean") t.continuous = src.continuous;
+  const me = num(src.maxEvents ?? src.max_events);
+  if (me !== undefined) t.maxEvents = Math.round(me);
+  return Object.keys(t).length ? t : undefined;
+}
 
 /** Coerce untrusted JSON (designer, import, agent writes) into a definition. Unknown fields are dropped. */
 export function normalizeDefinition(raw: any, fallback?: Partial<WorkflowDefinition>): WorkflowDefinition {
@@ -163,8 +246,10 @@ export function normalizeDefinition(raw: any, fallback?: Partial<WorkflowDefinit
   if (raw.edges !== undefined && !Array.isArray(raw.edges)) throw new Error("edges must be an array");
   if ((raw.blocks?.length || 0) > 300 || (raw.edges?.length || 0) > 1000) throw new Error("A workflow is limited to 300 blocks and 1000 connections");
   const blocks: WorkflowBlock[] = (raw.blocks || []).map((b: any, i: number) => {
+    const rawType = String(b?.type || "");
+    const type = (TRIGGER_TYPE_ALIASES[rawType] || rawType) as WorkflowBlockType;
     const block: WorkflowBlock = {
-      id: clip(b?.id, 80) || `block-${i + 1}`, type: String(b?.type || "") as WorkflowBlockType,
+      id: clip(b?.id, 80) || `block-${i + 1}`, type,
       label: clip(b?.label, 200), prompt: clip(b?.prompt, 200_000),
       position: { x: Math.round(num(b?.position?.x) ?? 40 + (i % 5) * 260), y: Math.round(num(b?.position?.y) ?? 40 + Math.floor(i / 5) * 170) },
     };
@@ -182,6 +267,11 @@ export function normalizeDefinition(raw: any, fallback?: Partial<WorkflowDefinit
     if (typeof b?.autopilot === "boolean") block.autopilot = b.autopilot;
     if (b?.mcp && typeof b.mcp.serverId === "string") block.mcp = { serverId: clip(b.mcp.serverId, 120) };
     if (b?.browser && typeof b.browser.sessionId === "string") block.browser = { sessionId: clip(b.browser.sessionId, 80), ...(typeof b.browser.name === "string" ? { name: clip(b.browser.name, 80) } : {}) };
+    if (isTriggerBlock(block)) {
+      const trigger = normalizeTriggerConfig(b);
+      if (trigger) block.trigger = trigger;
+    }
+    if (block.type === "text_input" && typeof b?.keepOpen === "boolean") block.keepOpen = b.keepOpen;
     if (b?.join === "any" || b?.join === "all") block.join = b.join;
     if (b?.inputSchema && typeof b.inputSchema === "object") block.inputSchema = b.inputSchema;
     if (b?.outputSchema && typeof b.outputSchema === "object") block.outputSchema = b.outputSchema;
@@ -189,7 +279,8 @@ export function normalizeDefinition(raw: any, fallback?: Partial<WorkflowDefinit
   });
   const edges: WorkflowEdge[] = (raw.edges || []).map((e: any, i: number) => {
     const edge: WorkflowEdge = { id: clip(e?.id, 120) || `edge-${i + 1}`, from: clip(e?.from, 80), to: clip(e?.to, 80) };
-    if (["follow", "use", "path"].includes(e?.type)) edge.type = e.type;
+    if (["follow", "use", "path", "queue"].includes(e?.type)) edge.type = e.type;
+    if (num(e?.queueLimit) !== undefined) edge.queueLimit = Math.round(num(e.queueLimit)!);
     if (typeof e?.label === "string" && e.label) edge.label = clip(e.label, 80);
     if (e?.loop === true) edge.loop = true;
     if (num(e?.timeoutMs)) edge.timeoutMs = num(e.timeoutMs);
@@ -245,6 +336,27 @@ export function validateWorkflow(def: WorkflowDefinition, available?: { profiles
     if (b.type === "mcp" && b.mcp?.serverId && available?.mcps && !available.mcps.some(m => m.id === b.mcp!.serverId)) warn("unavailable-mcp", `MCP server for '${name}' is not configured or enabled`, { blockId: b.id });
     if (b.type === "browser" && !b.browser?.sessionId) err("invalid-browser", `Browser block '${name}' needs a browser session`, { blockId: b.id });
     if (b.type === "browser" && available?.mcps && !available.mcps.some(m => m.id === "internal-local-mcp")) warn("unavailable-browser", `Browser block '${name}' needs the Hato desktop tools, which this workspace cannot reach`, { blockId: b.id });
+    if (b.type === "http_trigger") {
+      const p = b.trigger?.port;
+      if (p !== undefined && p !== 0 && !(Number.isInteger(p) && p >= 1024 && p <= 65535)) err("invalid-trigger", `HTTP Trigger '${name}' port must be 0 (auto) or 1024–65535`, { blockId: b.id });
+      const sc = b.trigger?.statusCode;
+      if (sc !== undefined && !(Number.isInteger(sc) && sc >= 100 && sc <= 599)) err("invalid-trigger", `HTTP Trigger '${name}' status code must be 100–599`, { blockId: b.id });
+      if (b.trigger?.path && !b.trigger.path.startsWith("/")) err("invalid-trigger", `HTTP Trigger '${name}' path must start with /`, { blockId: b.id });
+    }
+    if (b.type === "socket_trigger") {
+      const proto = b.trigger?.protocol || (b.trigger?.path && !b.trigger?.port ? "unix" : "tcp");
+      if (proto === "unix") {
+        if (!b.trigger?.path?.trim()) err("invalid-trigger", `Socket Trigger '${name}' needs a Unix socket path`, { blockId: b.id });
+        else if (b.trigger.path.split("/").includes("..")) err("invalid-trigger", `Socket Trigger '${name}' path cannot contain '..'`, { blockId: b.id });
+      } else {
+        const p = b.trigger?.port;
+        if (p !== undefined && p !== 0 && !(Number.isInteger(p) && p >= 1024 && p <= 65535)) err("invalid-trigger", `Socket Trigger '${name}' port must be 0 (auto) or 1024–65535`, { blockId: b.id });
+      }
+    }
+    if (b.type === "file_trigger") {
+      if (!b.trigger?.path?.trim()) err("invalid-trigger", `File/Pipe Trigger '${name}' needs a file or pipe path`, { blockId: b.id });
+      else if (b.trigger.path.startsWith("/") || b.trigger.path.split("/").includes("..")) err("invalid-trigger", `File/Pipe Trigger '${name}' path must be workspace-relative`, { blockId: b.id });
+    }
     if (isAgentBlock(b) && available?.profiles) {
       const ok = b.profileId ? available.profiles.some(p => p.id === b.profileId) : b.provider ? available.profiles.some(p => p.provider === b.provider) : available.profiles.length > 0;
       if (!ok) err("unavailable-provider", `No enabled AI provider matches '${name}' on this machine`, { blockId: b.id });
@@ -269,8 +381,11 @@ export function validateWorkflow(def: WorkflowDefinition, available?: { profiles
     if (t === "path" && from.type === "yes_no_prompt" && e.label && !["yes", "no"].includes(e.label)) err("route-label", "Yes/No paths are named yes or no", { edgeId: e.id });
     if (t !== "use" && from.type !== "chatbox" && isCapabilityBlock(to)) err("invalid-capability", `'${to.label}' adds tools to agents; connect it with a Use connection`, { edgeId: e.id });
     if (t !== "use" && isStartBlock(to)) err("invalid-follow", "Start blocks cannot have incoming connections", { edgeId: e.id });
+    if (to.type === "text_input") err("invalid-follow", `Text Input '${to.label}' is typed into by the user and cannot have incoming connections`, { edgeId: e.id });
+    if (t === "queue" && e.queueLimit !== undefined && !(Number.isInteger(e.queueLimit) && e.queueLimit >= 1 && e.queueLimit <= 10_000)) err("invalid-queue", `Queue '${from.label}' → '${to.label}' limit must be 1–10000`, { edgeId: e.id });
+    if (t === "queue" && isTriggerBlock(to)) err("invalid-queue", `Triggers cannot receive queue connections ('${to.label}')`, { edgeId: e.id });
     if (t !== "use" && from.type === "chatbox") warn("chatbox-follow", `Chatbox '${from.label}' exposes every outgoing connection as a tool; follow connections do not run automatically`, { edgeId: e.id });
-    if (t !== "use" && !e.loop && reaches(def.edges.filter(x => x.id !== e.id), e.to, e.from) && !["timer", "user_prompt", "yes_no_prompt"].includes(from.type) && !isAgentBlock(to))
+    if (t !== "use" && !e.loop && reaches(def.edges.filter(x => x.id !== e.id), e.to, e.from) && !["timer", "user_prompt", "yes_no_prompt"].includes(from.type) && !isTriggerBlock(from) && !isAgentBlock(to))
       warn("cycle", `Connection '${from.label}' → '${to.label}' closes a cycle; mark it as a loop if intended`, { edgeId: e.id });
   }
   return issues;
@@ -335,6 +450,11 @@ designer coordinates in pixels; place new blocks about 260 px apart horizontally
 - use: the target becomes a tool of the source AI Agent or Chatbox, called with workflow_use_block.
 - path: a named route (label). An AI Agent with paths must call workflow_choose_path before it
   finishes; only matching path connections run. Yes/No Prompts select the "yes" or "no" path.
+- queue: like follow, but when the target is still busy the source's output waits in a FIFO and
+  runs as soon as the target is free, one item at a time (use it after triggers, timers or loops
+  that may fire faster than the target finishes). queueLimit caps waiting items per connection
+  (default 100, max 10000); when full the item is rejected (an HTTP Trigger answers 503). Queue
+  connections do not take part in joins.
 - loop: true marks a follow/path that intentionally returns to an earlier block (bounded by
   settings.maxLoopCount, default 100).
 
@@ -349,6 +469,10 @@ output, previewed to 8,000 characters). AI prompts without {{input}} get the inp
 | --- | --- | --- |
 | start_button | prompt | Starts a run; its prompt becomes the input. |
 | start_input | — | Starts a run with text typed by the user. |
+| http_trigger | trigger {port?, path?, method?, statusCode?, responseBody?, secret?, continuous?, maxEvents?}, prompt (optional template) | Armed on workflow start on 127.0.0.1:port (0/omitted picks a free port). Fails the run on start if the port cannot be bound. Matching HTTP requests pass request JSON (or rendered prompt) to followers. |
+| socket_trigger | trigger {protocol? ("tcp" \| "unix"), port?, path?, framing? ("line" \| "message" \| "eof"), responseBody?, continuous?, maxEvents?}, prompt (optional template) | Armed on workflow start on a loopback TCP port or Unix socket path. Fails the run on start if binding fails. Incoming socket messages pass to followers. |
+| file_trigger | trigger {path, mode? ("auto" \| "file" \| "pipe"), framing? ("message" \| "line"), createIfMissing?, continuous?, maxEvents?}, prompt (optional template) | Armed on workflow start watching a workspace file or named pipe (FIFO). Fails the run on start if the target cannot be watched or opened. File edits or pipe writes pass to followers. |
+| text_input | prompt (optional template; {{input}} is the typed text), description (hint shown by the text box), keepOpen (default true) | Available throughout a run: each text the user sends (designer/run view, or the send_text tool) passes to its follow/queue connections. With keepOpen the run stays waiting until cancelled; otherwise sending reopens a finished run. Blocks added by a hot update become available immediately. |
 | ai | prompt, profileId or provider, model, reasoning, autopilot, agentFile | Background agent session. Returns its final answer. Keeps its context for later invocations in the run. |
 | chatbox | prompt (session guidance), profileId, model, reasoning, autopilot | Persistent conversation the user chats with. All outgoing connections are its tools. |
 | skill | description, prompt or skillId (workspace SKILL.md path) | Instructions loaded on demand by connected agents. |
@@ -373,7 +497,11 @@ instead name a provider (claude, codex, gemini, …); the first enabled matching
 - workflow_connections: list connected tools.
 - workflow_use_block {block_id, input?, action?, lines?, timeout_seconds?}: run or control a connected block.
   AI/Chatbox actions: (omitted) run and wait, start, status, tail, steer. Run App: start, status,
-  kill, tail. Meeting: publish {message}, tail, diff (default), wait, status, shake {peer_block_id, message} (a specific nonempty message is required).
+  kill, tail. Triggers (http_trigger, socket_trigger, file_trigger): status, configure/arm/start
+  (accepts port, path, method, status_code, response_body, secret, protocol, framing, mode,
+  create_if_missing, continuous, max_events), disarm/stop/cancel, wait, fetch. Meeting: publish
+  {message}, tail, diff (default), wait, status, shake {peer_block_id, message} (a specific
+  nonempty message is required).
   Any data block: fetch returns output not yet fetched by this caller.
 - workflow_block_output {block_id, offset?, limit?}: page through retained output.
 - workflow_block_messages {block_id, count?}: recent messages of a connected agent.

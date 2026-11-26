@@ -16,6 +16,7 @@
 //   workspace-layout.appearance / moduleUpdates
 import type { AppModule, ModuleContext, UiColor, UiNode } from "./types";
 import type { AcpSubagent, FinishedSubagents } from "./acp-subagents";
+import type { WorkflowActiveRun } from "./workflows";
 import { normalizeSidebarButtons, normalizeSidebarOrder, orderedSidebarItems, sidebarPanels, type SidebarButtons, type SidebarOrder } from "./sidebar-placement";
 import { sidebarIcons } from "./sidebar-icons";
 import { loadContributions, watchContributions, type Contributions } from "./plugins";
@@ -71,6 +72,8 @@ export function activitySidebar(id: string, side: "left" | "right"): AppModule {
   let projects: { selected: string | null; activeGroup?: string; groups?: { id: string; name: string; projectIds: string[] }[]; projects: any[] } | null = null;
   let workingChats: any[] | null = null;
   let workingAgents: any[] | null = null;
+  /** Open workflow runs from the daemons (`persistent-agents.workflows`). */
+  let workflowRuns: WorkflowActiveRun[] | null = null;
   /** conversationId → { percent, note } from chats' report_progress calls. */
   let chatProgress: Record<string, any> | null = null;
   let chats: any = null;
@@ -185,6 +188,10 @@ export function activitySidebar(id: string, side: "left" | "right"): AppModule {
     if (Array.isArray(v)) for (const e of v as FinishedSubagents[]) if (e && typeof e.id === "string" && Array.isArray(e.children)) finalChildren.set(prefix + e.id, e.children);
   };
   const workExpires = new Map<string, number>();
+  /** Workflow row id → its agent rows, including ones that just finished their turn. */
+  const workflowChildren = new Map<string, Map<string, HaloTask>>();
+  /** Workflow rows whose run just closed, shown as "Ended" until `until`. */
+  const endedRuns = new Map<string, { task: HaloTask; until: number }>();
   /** Finished rows already shown and cleared; they stay hidden until they run again. */
   const workGone = new Set<string>();
   /** Subagent rows seen running in this rail; only those may show an "Unknown" ending. */
@@ -247,29 +254,82 @@ export function activitySidebar(id: string, side: "left" | "right"): AppModule {
   const workingSection = (ctx: ModuleContext): HaloSection | null => {
     const count = busyCount();
     const running: HaloTask[] = [];
-    if (workingChats || workingAgents) {
+    if (workingChats || workingAgents || workflowRuns) {
       const fraction = (p: any) => p && Number.isFinite(p.percent) ? Math.max(0, Math.min(100, p.percent)) / 100 : null;
       const where = (p: any, place?: string) => [p?.note, place].filter(Boolean).join(" · ") || undefined;
       for (const c of workingChats || []) running.push(withChildren({ id: `chat:${c.id}`, label: c.title || "Chat", detail: where(chatProgress?.[c.id], placeName(c.workspaceId)), iconSvg: haloIcons.chat,
         progress: fraction(chatProgress?.[c.id]), state: "running",
         action: "openAgent", value: { kind: "chat", id: c.id, workspaceId: c.workspaceId }, tooltip: "Open this chat and its project" }, c.children));
-      for (const a of workingAgents || []) {
+      const agentProgress = (a: any) => {
         // Desktop tools bind persistent sessions by the same ID as their workspace endpoint.
         const desktop = chatProgress?.[a.id];
-        const progress = desktop && (!a.progress || Number(desktop.at) >= Number(a.progress.at || 0)) ? desktop : a.progress;
-        running.push(withChildren({ id: `agent:${a.id}`, label: a.name || (a.workflow ? "Workflow agent" : "Background agent"),
-          detail: where(progress, [a.workflow ? "Workflow" : null, placeName(a.workspaceId)].filter(Boolean).join(" · ")), progress: fraction(progress), state: "running",
-          iconSvg: a.workflow ? sidebarIcons.workflow : sidebarIcons.bot,
-          action: "openAgent", value: { kind: a.workflow ? "workflow" : "agent", id: a.id, workspaceId: a.workspaceId, workflow: a.workflow || null }, tooltip: "Open this agent and its project" }, a.children));
+        return desktop && (!a.progress || Number(desktop.at) >= Number(a.progress.at || 0)) ? desktop : a.progress;
+      };
+      /** Workflow agents are named "Workflow · Block"; the run groups them under one workflow row. */
+      const split = (name: string) => { const i = name.indexOf(" · "); return i > 0 ? [name.slice(0, i), name.slice(i + 3)] : [name, name]; };
+      const groups = new Map<string, any[]>();
+      for (const a of workingAgents || []) {
+        if (a.workflow?.runId) { const g = groups.get(a.workflow.runId) || []; g.push(a); groups.set(a.workflow.runId, g); continue; }
+        const progress = agentProgress(a);
+        running.push(withChildren({ id: `agent:${a.id}`, label: a.name || "Background agent",
+          detail: where(progress, placeName(a.workspaceId)), progress: fraction(progress), state: "running", iconSvg: sidebarIcons.bot,
+          action: "openAgent", value: { kind: "agent", id: a.id, workspaceId: a.workspaceId, workflow: null }, tooltip: "Open this agent and its project" }, a.children));
       }
+      const runs = new Map((workflowRuns || []).map(r => [r.runId, r]));
+      for (const runId of new Set([...runs.keys(), ...groups.keys()])) {
+        const agents = groups.get(runId) || [], run = runs.get(runId), first = agents[0];
+        const groupId = `workflow:${runId}`, workspaceId: string = run?.workspaceId || first.workspaceId;
+        const workflow = first?.workflow || { workflowId: run!.workflowId, runId };
+        const agentRows = agents.map((a): HaloTask => {
+          const progress = agentProgress(a), [, block] = split(String(a.name || "Workflow agent"));
+          return withChildren({ id: `${groupId}:child:agent:${a.id}`, label: block, detail: progress?.note || (a.status === "waiting" ? "Waiting for approval" : undefined),
+            progress: fraction(progress), state: a.status === "waiting" ? "waiting" : "running", iconSvg: sidebarIcons.bot,
+            action: "openAgent", value: { kind: "workflow", id: a.id, workspaceId: a.workspaceId, workflow: a.workflow }, tooltip: "Open this workflow agent" }, a.children);
+        });
+        // Questions and approvals waiting on the user, shown until answered.
+        const attention = run?.attention || [];
+        const askRows = attention.map((q): HaloTask => ({ id: `${groupId}:child:ask:${q.blockId}`, label: q.label, detail: q.text,
+          state: "waiting", statusLabel: q.kind === "permission" ? "Approve" : "Answer", iconSvg: sidebarIcons.workflow,
+          action: "openAgent", value: { kind: "workflow", id: runId, workspaceId, workflow }, tooltip: q.kind === "permission" ? "Open the run to review this permission" : "Open the run to answer" }));
+        const live = [...askRows, ...agentRows];
+        // Agents that finished their turn while the run goes on show "done" briefly, then clear.
+        const liveIds = new Set(live.map(t => t.id));
+        const before = workflowChildren.get(groupId) || new Map<string, HaloTask>();
+        for (const [id, t] of before) if (!liveIds.has(id) && t.state !== "done") before.set(id, { ...t, state: "done", progress: 1, detail: undefined, statusLabel: id.includes(":child:ask:") ? "Answered" : undefined, children: finishedChildren(t.children) });
+        for (const t of live) before.set(t.id, t);
+        for (const id of [...before.keys()]) if (workGone.has(id) && !liveIds.has(id)) before.delete(id);
+        workflowChildren.set(groupId, before);
+        const workflowName = run?.name || split(String(first.name || "Workflow"))[0];
+        const n = (k: number, one: string, many = `${one}s`) => `${k} ${k === 1 ? one : many}`;
+        const doing = attention.length ? n(attention.length, attention.some(q => q.kind === "question") ? "question" : "approval") + " waiting"
+          : agents.length ? `${n(agents.length, "agent")} working`
+          : run?.running ? `${n(run.running, "block")} running`
+          : run?.armed ? `Listening · ${n(run.armed, "trigger")}`
+          : run?.inputs ? "Waiting for text" : "Running";
+        running.push({ id: groupId, label: workflowName, iconSvg: sidebarIcons.workflow, progress: null,
+          // Only real work spins: a run that just listens for triggers or text sits idle.
+          ...(attention.length ? { state: "waiting" as const, statusLabel: "Needs you" }
+            : agents.length || run?.running ? { state: "running" as const }
+            : { state: "idle" as const, statusLabel: run?.armed ? "Listening" : run?.inputs ? "Ready" : "Idle" }),
+          detail: [doing, placeName(workspaceId)].filter(Boolean).join(" · "),
+          action: "openAgent", value: { kind: "workflow", id: first?.id || runId, workspaceId, workflow }, tooltip: "Open this workflow run",
+          children: [...before.values()], open: workOpen[groupId] !== false, toggleAction: "toggleWork" });
+      }
+      for (const id of [...workflowChildren.keys()]) { const runId = id.slice("workflow:".length); if (!groups.has(runId) && !runs.has(runId)) workflowChildren.delete(id); }
       // An agent that left the working lists finished its turn: briefly show its result.
       const now = new Map(running.map(t => [t.id, t]));
       for (const [id, t] of lastRunning) if (!now.has(id)) {
         finishedRows.delete(id);
+        // A workflow run that closed (finished or cancelled) shows "Ended" briefly, then clears.
+        if (id.startsWith("workflow:")) {
+          endedRuns.set(id, { task: { ...t, children: undefined, state: "done", statusLabel: "Ended", progress: 1, detail: placeName((t.value as any)?.workspaceId) }, until: Date.now() + WORK_LINGER_MS });
+          setTimeout(() => ctx.ui.invalidate(), WORK_LINGER_MS + 50);
+          continue;
+        }
         finishedRows.set(id, { ...t, children: finishedChildren(t.children), state: "done", progress: 1, detail: (t.value as any)?.workspaceId ? placeName((t.value as any).workspaceId) : undefined,
           value: { ...(t.value as any), dismiss: id }, tooltip: "Finished · open it to dismiss" });
       }
-      for (const id of now.keys()) finishedRows.delete(id); // running again
+      for (const id of now.keys()) { finishedRows.delete(id); endedRuns.delete(id); } // running again
       // Prefer the publishers' final child states over the last (possibly stale) running snapshot.
       for (const [id, row] of finishedRows) {
         const final = finalChildren.get(id);
@@ -278,10 +338,11 @@ export function activitySidebar(id: string, side: "left" | "right"): AppModule {
       while (finishedRows.size > FINISHED_LIMIT) finishedRows.delete(finishedRows.keys().next().value!);
       lastRunning = now;
     } else if (count) running.push({ id: "agents-working", label: `${count} agent${count === 1 ? "" : "s"} working`, iconSvg: sidebarIcons.bot, progress: null, state: "running" });
-    const done = [...finishedRows.values()].reverse().map(currentDisclosure);
+    for (const [id, e] of endedRuns) if (e.until <= Date.now()) endedRuns.delete(id);
+    const done = [...[...endedRuns.values()].map(e => e.task), ...[...finishedRows.values()].reverse().map(currentDisclosure)];
     const tasks = visibleWork(ctx, [...running, ...done]);
     if (!tasks.length) return null;
-    const title = running.length ? `Working · ${count || running.length}` : "Finished";
+    const title = running.length ? `Working · ${Math.max(count, running.length)}` : "Finished";
     return { key: "working", title, items: [], tasks: tasks.slice(0, 10), collapsed: "none" };
   };
 
@@ -368,6 +429,7 @@ export function activitySidebar(id: string, side: "left" | "right"): AppModule {
       watch(ctx, "ai.rail", v => { chats = v && Array.isArray(v.conversations) ? v : null; });
       watch(ctx, "ai-sessions.working", v => { workingChats = Array.isArray(v) ? v : null; });
       watch(ctx, "persistent-agents.working", v => { workingAgents = Array.isArray(v) ? v : null; });
+      watch(ctx, "persistent-agents.workflows", v => { workflowRuns = Array.isArray(v) ? v.filter((r: any) => r && typeof r.runId === "string" && typeof r.workspaceId === "string") : null; });
       watch(ctx, "ai-sessions.finished", v => setFinal("chat:", v));
       watch(ctx, "persistent-agents.finished", v => setFinal("agent:", v));
       // Chats report through the report_progress tool (internal-mcp) or, without Hato's tools, reply
