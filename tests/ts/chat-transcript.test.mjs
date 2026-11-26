@@ -43,3 +43,12 @@ test("reasoning is muted italic text without bold summary markers", () => {
   assert.equal(body.style.italic, true);
   assert.equal(body.style.fontWeight, 400);
 });
+
+test("thinking indicator follows the last message and disappears when the turn ends", () => {
+  const messages = [{ key: "answer", role: "assistant", text: "Working" }];
+  const active = T.transcriptItems(messages, { thinking: true });
+  assert.equal(active.at(-1).key, "thinking");
+  assert.ok(walk(active.at(-1)).some(node => node.type === "spinner"));
+  assert.ok(walk(active.at(-1)).some(node => node.text === "Thinking…"));
+  assert.ok(!T.transcriptItems(messages).some(node => node.key === "thinking"));
+});

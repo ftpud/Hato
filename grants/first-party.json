@@ -35,6 +35,7 @@
     "viewer":           { "kind": "ui", "capabilities": [], "calls": ["files", "workspace", "persistence", "git", "language-service", "debug"] },
     "git-history": { "kind": "ui", "capabilities": [], "calls": ["git", "persistence"] },
     "git-task-changes": { "kind": "ui", "capabilities": [], "calls": ["git"] },
+    "prompt-history":   { "kind": "ui", "capabilities": ["ui.document"], "calls": ["ai-sessions", "persistent-agents", "viewer", "workspace"] },
     "git-panel":        { "kind": "ui", "capabilities": [], "calls": ["git", "workspace", "persistence"] },
     "git-branch":       { "kind": "ui", "capabilities": [], "calls": ["git"] },
     "git-changes":      { "kind": "ui", "capabilities": [], "calls": ["git", "persistence"] },

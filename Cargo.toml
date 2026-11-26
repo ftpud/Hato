@@ -58,13 +58,15 @@ snow = "0.10"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-objc2-app-kit = { version = "=0.2.2", features = ["NSApplication", "NSImage"], optional = true }
+objc2-app-kit = { version = "=0.2.2", features = ["NSApplication", "NSImage", "NSResponder", "NSView", "NSWindow", "NSControl", "NSButton"], optional = true }
+# Same version GPUI links; reaches the NSWindow behind a GPUI window (window-button visibility).
+raw-window-handle = { version = "0.6", optional = true }
 objc2-foundation = { version = "=0.2.2", features = ["NSData", "NSThread"], optional = true }
 
 [features]
 # The desktop window. Build the headless remote daemon with `--no-default-features`.
 default = ["gui"]
-gui = ["dep:lsp-types", "dep:regex", "dep:tree-sitter", "dep:gpui-kit", "dep:gpui-component", "dep:image", "dep:objc2-app-kit", "dep:objc2-foundation"]
+gui = ["dep:lsp-types", "dep:regex", "dep:tree-sitter", "dep:gpui-kit", "dep:gpui-component", "dep:image", "dep:objc2-app-kit", "dep:objc2-foundation", "dep:raw-window-handle"]
 
 # Development-only: `hato --snapshot out.png --snapshot-module ID` renders a panel offscreen to a PNG.
 # Kept out of `default` because gpui's test-support changes executor behavior.

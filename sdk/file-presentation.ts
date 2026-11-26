@@ -66,9 +66,13 @@ export function presentFile(rules: CompiledFileRule[], entry: FilePresentationEn
   return result;
 }
 
-/** Nonblocking, bounded batch adapter shared by explorer rows and viewer tabs. */
+/** Nonblocking, bounded batch adapter shared by explorer rows and viewer tabs.
+ * Invalidation is stale-while-revalidate: rows keep their last known look until the refetch
+ * lands, so bursts of file events (builds, indexing) never flash icons back to the defaults. */
 export class FilePresentationClient {
   private cache = new Map<string, FilePresentation>();
+  /** Values from before the last invalidation, served until fresh ones arrive. */
+  private stale = new Map<string, FilePresentation>();
   private queued = new Map<string, FilePresentationEntry>();
   private workspace: string | null = null;
   private revision = 0;
@@ -82,25 +86,29 @@ export class FilePresentationClient {
   }
   get(workspaceId: string, path: string, kind: "file" | "dir" = "file"): FilePresentation {
     if (this.ctx.state.get("files.presentationRuleCount") === 0) return {};
-    if (this.workspace !== workspaceId) { this.clear(); this.workspace = workspaceId; }
+    if (this.workspace !== workspaceId) { this.clear(); this.stale.clear(); this.workspace = workspaceId; }
     const key = `${kind}:${path}`;
     const cached = this.cache.get(key);
     if (cached) return cached;
     this.queued.set(key, { path, kind });
     if (!this.timer && !this.busy && !this.stopped) this.timer = setTimeout(() => { this.timer = undefined; void this.flush(); }, 30);
-    return {};
+    return this.stale.get(key) || {};
   }
-  clear() { this.revision++; this.cache.clear(); this.queued.clear(); this.ctx.ui.invalidate(); }
+  clear() {
+    this.revision++;
+    for (const [key, value] of this.cache) this.stale.set(key, value);
+    this.cache.clear(); this.queued.clear(); this.ctx.ui.invalidate();
+  }
   dispose() { this.stopped = true; this.revision++; if (this.timer) clearTimeout(this.timer); for (const stop of this.stops) if (typeof stop === "function") stop(); }
   private async flush() {
     if (this.stopped || this.busy || !this.workspace) return;
     this.busy = true;
     const revision = this.revision, workspaceId = this.workspace;
     const batch = [...this.queued.entries()].slice(0, 64);
-    for (const [key] of batch) { this.queued.delete(key); this.cache.set(key, {}); }
+    for (const [key] of batch) { this.queued.delete(key); this.cache.set(key, this.stale.get(key) || {}); }
     try {
       const result = await this.ctx.modules.call("files", "presentations", { workspaceId, entries: batch.map(([, entry]) => entry) }, { timeoutMs: 45000 });
-      if (revision === this.revision && !this.stopped) for (const [key, entry] of batch) this.cache.set(key, result?.[entry.path] || {});
+      if (revision === this.revision && !this.stopped) for (const [key, entry] of batch) { this.cache.set(key, result?.[entry.path] || {}); this.stale.delete(key); }
     } catch { /* Ordinary file icons remain usable if a provider/read fails. */ }
     finally {
       this.busy = false;

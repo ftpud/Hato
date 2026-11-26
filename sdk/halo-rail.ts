@@ -45,8 +45,9 @@ export const haloMotion = {
   value: { durationMs: 600, easing: ease.out },
 };
 
-/** Card widths. The collapsed left card is wide enough for the macOS window buttons it hosts. */
-export const HALO = { inset: 8, expanded: 240, collapsed: { left: 64, right: 48 }, chrome: 24 };
+/** Card widths. Both collapsed rails are 48 px; the collapsed left card is narrower than the macOS
+ *  window buttons, so the layout hides them until the pointer reaches the top strip (`hidden: "hover"`). */
+export const HALO = { inset: 8, expanded: 240, collapsed: { left: 48, right: 48 }, chrome: 24 };
 /** Horizontal card padding. Lives on each band (not the card) so the scroll band's padding keeps the
  *  edge indicator inside its clip. */
 const PAD = 6;
@@ -101,6 +102,9 @@ export interface HaloModel {
   sections: HaloSection[];
   busy: number;
   usage: HaloUsage[];
+  /** Native content pinned to the bottom band above the account (e.g. run controls). Shown in both
+   *  widths; the embedded module adapts to the rail's published `<rail>.expanded` state. */
+  dock?: UiNode;
   account?: { initials: string; name: string; detail: string; badge?: number; open: boolean; menu: HaloMenuItem[]; status?: UiNode[]; darkMode: boolean };
   /** Appearance → Effects. The rail card is a large always-visible surface (default "reduced"). */
   effects?: SurfaceEffects;
@@ -406,6 +410,10 @@ export function haloRail(m: HaloModel): UiNode {
     else list.push(lane(`lane:${s.key}`, [...head, ...rows]));
   }
   const bottom: UiNode[] = [];
+  if (m.dock) bottom.push(m.expanded
+    ? col("dock", [m.dock], { style: { paddingY: 6, paddingX: 3, borderTop: 1, borderColor: "border" } })
+    // Collapsed: no full-width rule; the dock's own content is the visual unit.
+    : col("dock", [m.dock], { align: "center", style: { paddingY: 4 } }));
   const usage = usageNode(m); if (usage) bottom.push(usage);
   bottom.push(...footer(m));
   const card = col("halo-card", [

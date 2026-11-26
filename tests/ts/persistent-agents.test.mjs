@@ -114,7 +114,7 @@ test('existing chatbox binds background session and routes prompts without using
   await new Promise(setImmediate);
   const walk=n=>[n,...(n.children||[]).flatMap(walk)];
   let nodes=walk(mod.render());
-  assert.ok(nodes.some(n=>n.key==='background-session'));
+  assert.equal(nodes.find(n=>n.key==='background-session').style.background,'transparent');
   assert.equal(nodes.find(n=>n.type==='transcript').scrollKey,'worker');
   // Background chats offer the same composer tools as desktop chats.
   assert.ok(nodes.some(n=>n.key==='attach'));

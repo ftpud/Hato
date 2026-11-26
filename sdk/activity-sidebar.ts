@@ -6,6 +6,7 @@
 //
 // State read from other modules (all optional):
 //   <module>.panelBadge.<panel>     positive count → orange dot + count
+//   <module>.panelHidden.<panel>    true → no rail button (the panel has nothing to offer right now)
 //   <module>.panelChildren.<panel>  [{ id, label, count?, selected? }] → inline navigation; clicks emit `<sidebar>.panelChild`
 //   <module>.panelTasks.<panel>     [{ id, label, progress?, state? }] → progress rows
 //   projects-panel.rail             projects, tasks, selection (selected via projects-panel.selectWorkspace)
@@ -39,13 +40,14 @@ export function activitySidebar(id: string, side: "left" | "right"): AppModule {
   const badges: Record<string, unknown> = {};
   const children: Record<string, unknown> = {};
   const tasks: Record<string, unknown> = {};
+  const hidden: Record<string, unknown> = {};
   const panelStops = new Map<string, () => void>();
   const syncPanels = (ctx: ModuleContext) => {
     const panels = Object.values(contributions?.panels || {});
     const wanted = new Set(panels.map(p => p.id));
-    for (const [pid, stopIt] of panelStops) if (!wanted.has(pid)) { stopIt(); panelStops.delete(pid); delete badges[pid]; delete children[pid]; delete tasks[pid]; }
+    for (const [pid, stopIt] of panelStops) if (!wanted.has(pid)) { stopIt(); panelStops.delete(pid); delete badges[pid]; delete children[pid]; delete tasks[pid]; delete hidden[pid]; }
     for (const panel of panels) if (!panelStops.has(panel.id)) {
-      const watches = ([["panelBadge", badges], ["panelChildren", children], ["panelTasks", tasks]] as const).map(([kind, into]) => {
+      const watches = ([["panelBadge", badges], ["panelChildren", children], ["panelTasks", tasks], ["panelHidden", hidden]] as const).map(([kind, into]) => {
         const key = `${panel.module}.${kind}.${panel.id}`;
         into[panel.id] = ctx.state.get(key);
         return ctx.state.watch(key, value => { into[panel.id] = value; ctx.ui.invalidate(); });
@@ -75,7 +77,7 @@ export function activitySidebar(id: string, side: "left" | "right"): AppModule {
   let updates = 0;
   let error: string | null = null;
   const busyCount = () => sum(busyAi) + sum(busyAgents);
-  const publishWidth = (ctx: ModuleContext) => ctx.state.set(`${id}.preferredWidth`, haloSlotWidth(side, expanded));
+  const publishWidth = (ctx: ModuleContext) => { ctx.state.set(`${id}.preferredWidth`, haloSlotWidth(side, expanded)); ctx.state.set(`${id}.expanded`, expanded); };
   const enabled = (module: string) => !!contributions && (Object.values(contributions.panels).some(p => p.module === module) || (contributions.barItems || []).some(b => b.module === module));
 
   /** Finished tasks linger briefly as "Done" before collapsing away. */
@@ -103,7 +105,7 @@ export function activitySidebar(id: string, side: "left" | "right"): AppModule {
     const q = query.trim().toLowerCase();
     return orderedSidebarItems(contributions, choices, order, pos).flatMap((pid): HaloItem[] => {
       if (pid.startsWith("@spacer:") || skip.includes(pid)) return [];
-      const panel = panels.find(p => p.id === pid); if (!panel) return [];
+      const panel = panels.find(p => p.id === pid); if (!panel || hidden[pid] === true) return [];
       const title = panel.activity?.title || panel.title;
       if (q && !title.toLowerCase().includes(q)) return [];
       const count = badges[panel.id];
@@ -288,12 +290,13 @@ export function activitySidebar(id: string, side: "left" | "right"): AppModule {
     if (side === "left") {
       const machine = !ws ? "No project" : ws.location === "ssh" ? (ws.ssh?.host || "SSH") : ws.location === "cloud" ? "Cloud" : "This computer";
       const sections = [projectsSection(),
-        ...(enabled("run-bar") ? [{ key: "run", title: "Run", items: [], embed: { type: "slot", key: "run-bar", module: "run-bar", height: 62, grow: true } as UiNode, collapsed: "none" } as HaloSection] : []),
         { key: "menu", title: "Panels", items: panelItems(ctx, "left-top", ["projects"]) },
         { key: "tools", title: "Tools", items: panelItems(ctx, "left-bottom", ["projects"]) },
       ].filter(Boolean) as HaloSection[];
       return {
         side, expanded, focused, sections, busy: busyCount(), usage: [],
+        // Run controls sit at the bottom: a picker + buttons expanded, stacked ▶/■ collapsed (run-bar reads `${id}.expanded`).
+        dock: enabled("run-bar") && ws ? { type: "slot", key: "run-bar", module: "run-bar", height: expanded ? 62 : 56, ...(expanded ? { grow: true } : { width: 34 }) } as UiNode : undefined,
         header: { title: ws?.name || "Hato", subtitle: ws ? undefined : "Select a project", logo: true,
           embed: enabled("git-branch") && ws ? { type: "slot", key: "git-branch", module: "git-branch", height: 28 } as UiNode : undefined },
         search: { placeholder: "Search…", query },

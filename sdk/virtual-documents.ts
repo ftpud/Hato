@@ -30,6 +30,8 @@ export interface VirtualShow {
   reveal?: boolean;
   /** Show this instead of content (e.g. the entry was deleted). */
   error?: string;
+  /** `document` holds a unified patch (language "diff"): shown read-only in the native diff view. */
+  diff?: boolean;
 }
 
 export const virtualTab = (provider: string, key: string) => `${VIRTUAL_TAB_PREFIX}${provider}/${key}`;

@@ -116,7 +116,7 @@ test("collapsed panes use full-name restore buttons without reserving columns or
 test('new default-hidden panels stay hidden in older saved layouts instead of docking', () => {
   const saved = { v: 1, columns: [{ panels: ['projects', 'files', 'viewer', 'ai'], size: 1, sizes: [0.25, 0.25, 0.25, 0.25] }], bottom: { panels: ['terminal'], sizes: [1], collapsed: false }, hidden: [] };
   const l = M.repair(saved);
-  assert.deepEqual([...l.hidden].sort(), ['agents', 'cloud', 'git-changes', 'git', 'mcps', 'remote', 'workflows', 'git-history', 'git-task-changes'].sort());
+  assert.deepEqual([...l.hidden].sort(), ['agents', 'cloud', 'git-changes', 'git', 'mcps', 'remote', 'workflows', 'git-history', 'git-task-changes', 'prompt-history'].sort());
   assert.ok(!l.columns.some((c) => c.panels.includes('git')));
   const shown = M.dropPanel(l, 'git', 'files', 'bottom');
   assert.deepEqual(shown.columns[0].panels.slice(0, 3), ['projects', 'files', 'git']);

@@ -450,8 +450,10 @@ export interface UiMotion {
 export interface UiWindowChrome {
   /** Hides the primary window’s titleBar nodes. Windows and Linux retain caption controls. */
   titlebar: "hidden";
-  /** macOS only. Top-left of the close button in window-relative logical pixels. */
-  trafficLights?: { x: number; y: number };
+  /** macOS only. Top-left of the close button in window-relative logical pixels.
+   *  `hidden`: true hides the close/minimise/zoom buttons; "hover" shows them only while the pointer
+   *  is near their position. Fullscreen always shows them. */
+  trafficLights?: { x: number; y: number; hidden?: boolean | "hover" };
 }
 
 export type UiNode =
@@ -694,7 +696,10 @@ export interface WorkingConversation {
   status: "starting" | "busy";
   children?: import("./acp-subagents").AcpSubagent[];
 }
-export interface ChatMessage { images?: ImageAttachment[]; key: string; role: "user" | "assistant" | "thought" | "tool" | "system" | "error" | "plan"; text: string; title?: string; status?: string }
+/** A file edit from an agent tool call, as compact unified-diff hunk lines ("@@ …", "+…", "-…", " …"). */
+export interface ChatDiff { path: string; lines: string[]; added: number; removed: number; newFile?: boolean; deletedFile?: boolean; /** Lines beyond the stored cap were dropped. */ truncated?: boolean }
+export interface ChatMessage { at?: string | number; images?: ImageAttachment[]; key: string; role: "user" | "assistant" | "thought" | "tool" | "system" | "error" | "plan"; text: string; title?: string; status?: string;
+  /** Tool calls that edited files (present only when inline diffs are enabled). */ diffs?: ChatDiff[] }
 
 /** Published at <moduleId>.settings; only the owning module can write it. */
 export type SettingField =

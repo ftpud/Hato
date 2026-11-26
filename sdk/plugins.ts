@@ -91,13 +91,21 @@ export function watchContributions(ctx: ModuleContext, onChange: (c: Contributio
     const mine = ++version;
     try {
       const r = await ctx.host.plugins.list();
-      if (mine === version) onChange(collectContributions(r.plugins));
+      if (mine === version) onChange(configuredContributions(ctx, r.plugins));
     } catch (e) { ctx.log.warn("plugins.list failed", String(e)); }
   };
   void load();
-  return ctx.events.on("kernel.modules.changed", () => { void load(); });
+  const stopModules = ctx.events.on("kernel.modules.changed", () => { void load(); });
+  const stopSetting = ctx.state.watch("files.changesEnabled", () => { void load(); });
+  return () => { stopModules(); stopSetting?.(); };
 }
 
 export async function loadContributions(ctx: ModuleContext): Promise<Contributions> {
-  return collectContributions((await ctx.host.plugins.list()).plugins);
+  return configuredContributions(ctx, (await ctx.host.plugins.list()).plugins);
+}
+
+function configuredContributions(ctx: ModuleContext, plugins: PluginInfo[]): Contributions {
+  const contributions = collectContributions(plugins);
+  if (ctx.state.get("files.changesEnabled") === false) delete contributions.panels["prompt-history"];
+  return contributions;
 }

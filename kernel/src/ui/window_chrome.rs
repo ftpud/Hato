@@ -8,7 +8,26 @@ pub(super) struct WindowChrome {
     source: Option<Weak<Value>>,
     #[cfg(target_os = "macos")]
     traffic_lights: Point<Pixels>,
+    /// Requested window-button visibility (`trafficLights.hidden`).
+    #[cfg(target_os = "macos")]
+    buttons: ButtonMode,
+    /// Pointer is over the reveal zone around the buttons (`hidden: "hover"`).
+    #[cfg(target_os = "macos")]
+    pointer_near: bool,
+    /// Visibility last applied to AppKit.
+    #[cfg(target_os = "macos")]
+    buttons_hidden: bool,
 }
+
+#[cfg(target_os = "macos")]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ButtonMode { Shown, Hidden, Hover }
+
+/// Reveal zone for `hidden: "hover"`: the three buttons (about 52 px) plus a margin.
+#[cfg(target_os = "macos")]
+const REVEAL_WIDTH: f32 = 76.;
+#[cfg(target_os = "macos")]
+const REVEAL_HEIGHT: f32 = 30.;
 
 impl WindowChrome {
     pub(super) fn new(window: &Window) -> Self {
@@ -18,6 +37,12 @@ impl WindowChrome {
             source: None,
             #[cfg(target_os = "macos")]
             traffic_lights: default_traffic_lights(),
+            #[cfg(target_os = "macos")]
+            buttons: ButtonMode::Shown,
+            #[cfg(target_os = "macos")]
+            pointer_near: false,
+            #[cfg(target_os = "macos")]
+            buttons_hidden: false,
         }
     }
 
@@ -28,6 +53,8 @@ impl WindowChrome {
             _ => false,
         };
         if unchanged {
+            #[cfg(target_os = "macos")]
+            self.apply_buttons(window, _cx); // fullscreen changes re-render without a new tree
             return;
         }
         self.source = tree.map(Arc::downgrade);
@@ -46,9 +73,49 @@ impl WindowChrome {
                     window.set_traffic_light_position(position)
                 });
             }
+            self.buttons = match descriptor.filter(|_| self.hidden).map(|d| &d["trafficLights"]["hidden"]) {
+                Some(Value::Bool(true)) => ButtonMode::Hidden,
+                Some(Value::String(mode)) if mode == "hover" => ButtonMode::Hover,
+                _ => ButtonMode::Shown,
+            };
+            self.apply_buttons(window, _cx);
         }
         #[cfg(not(target_os = "macos"))]
         let _ = window;
+    }
+
+    pub(super) fn tracks_pointer(&self) -> bool {
+        #[cfg(target_os = "macos")]
+        return self.buttons == ButtonMode::Hover;
+        #[cfg(not(target_os = "macos"))]
+        false
+    }
+
+    /// Hover mode: show the window buttons while the pointer is near them.
+    pub(super) fn pointer_moved(&mut self, _position: Point<Pixels>, _window: &Window, _cx: &mut App) {
+        #[cfg(target_os = "macos")]
+        if self.buttons == ButtonMode::Hover {
+            let near = _position.x < self.traffic_lights.x + px(REVEAL_WIDTH) && _position.y < self.traffic_lights.y + px(REVEAL_HEIGHT);
+            if near != self.pointer_near {
+                self.pointer_near = near;
+                self.apply_buttons(_window, _cx);
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn apply_buttons(&mut self, window: &Window, cx: &mut App) {
+        // Fullscreen shows AppKit's own titlebar overlay; never hide its buttons there.
+        let hidden = !window.is_fullscreen() && match self.buttons {
+            ButtonMode::Shown => false,
+            ButtonMode::Hidden => true,
+            ButtonMode::Hover => !self.pointer_near,
+        };
+        if hidden == self.buttons_hidden {
+            return;
+        }
+        self.buttons_hidden = hidden;
+        window.defer(cx, move |window, _| set_window_buttons_hidden(window, hidden));
     }
 
     pub(super) fn hides_titlebar(&self, window: &Window) -> bool {
@@ -104,6 +171,24 @@ fn default_traffic_lights() -> Point<Pixels> {
     TitleBar::title_bar_options()
         .traffic_light_position
         .unwrap_or_default()
+}
+
+/// AppKit's close/minimise/zoom buttons; GPUI only positions them.
+#[cfg(target_os = "macos")]
+fn set_window_buttons_hidden(window: &Window, hidden: bool) {
+    use objc2_app_kit::{NSView, NSWindowButton};
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    let Ok(handle) = HasWindowHandle::window_handle(window) else { return };
+    let RawWindowHandle::AppKit(appkit) = handle.as_raw() else { return };
+    // SAFETY: GPUI's AppKit handle points at the window's live content NSView; we are on the main thread.
+    let view: &NSView = unsafe { appkit.ns_view.cast::<NSView>().as_ref() };
+    let Some(ns_window) = view.window() else { return };
+    for kind in [NSWindowButton::NSWindowCloseButton, NSWindowButton::NSWindowMiniaturizeButton, NSWindowButton::NSWindowZoomButton] {
+        if let Some(button) = ns_window.standardWindowButton(kind) {
+            button.setHidden(hidden);
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]

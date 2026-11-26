@@ -1550,7 +1550,7 @@ impl Shell {
                         .find_map(|key| positions.get(key).map(|y| (key.to_string(), *y)));
                     if let Some(base) = state.geometry.get() {
                         *state.anchor_key.borrow_mut() = anchor.as_ref().map(|(key, _)| key.clone());
-                        state.prepend.set(Some(transcript_scroll::PrependAnchor { base, last_max: base.max, stable_frames: 0, anchor_y: anchor.map(|(_, y)| y - state.viewport_y.get()) }));
+                        state.prepend.set(Some(transcript_scroll::PrependAnchor { base, last_max: base.max, stable_frames: 0, anchor_y: anchor.map(|(_, y)| y - state.viewport_y.get()), applied: None }));
                     }
                     state.following.set(false);
                     state.user_scrolled_up.set(true);
@@ -1579,6 +1579,8 @@ impl Shell {
                 let anchor_positions = state.positions.clone();
                 let anchor_key = state.anchor_key.clone();
                 let viewport_y = state.viewport_y.clone();
+                let viewport_h = state.viewport_h.clone();
+                let wheel_viewport_h = state.viewport_h.clone();
                 let bottom_action = s("bottomAction");
                 let has_older = b("hasOlder");
                 let loading_older = b("loadingOlder");
@@ -1613,8 +1615,11 @@ impl Shell {
                     measured_scrollbar.set(Some((bounds, window.content_mask())));
                 }, move |bounds, (), window, cx| {
                     viewport_y.set(f32::from(bounds.origin.y));
+                    viewport_h.set(f32::from(bounds.size.height));
+                    let prefetch = transcript_scroll::prefetch_offset(f32::from(bounds.size.height));
                     let current = transcript_scroll::Geometry { max: f32::from(paint_handle.max_offset().y), offset: f32::from(paint_handle.offset().y) };
-                    if let Some(mut anchor) = prepend.get() {
+                    if let Some(anchor) = prepend.get() {
+                        let mut anchor = transcript_scroll::carry_user_scroll(anchor, current.offset);
                         let measured_y = anchor_key.borrow().as_ref().and_then(|key| anchor_positions.borrow().get(key).map(|y| *y - viewport_y.get()));
                         let wanted = match (anchor.anchor_y, measured_y) {
                             (Some(old_y), Some(new_y)) => transcript_scroll::anchored_offset(current, old_y, new_y),
@@ -1624,6 +1629,7 @@ impl Shell {
                         anchor.stable_frames = if settled { anchor.stable_frames + 1 } else { 0 };
                         anchor.last_max = current.max;
                         if (current.offset - wanted).abs() > 1.0 { paint_handle.set_offset(point(paint_handle.offset().x, px(wanted))); }
+                        anchor.applied = Some(wanted);
                         geometry.set(Some(transcript_scroll::Geometry { max: current.max, offset: wanted }));
                         prepend.set(if anchor.stable_frames >= 2 { None } else { Some(anchor) });
                         { redraw_stats::cause("anim:transcript-anchor"); window.request_animation_frame(); }
@@ -1636,12 +1642,12 @@ impl Shell {
                     }
                     following.set(transcript_scroll::following_bottom(following.get(), geometry.get(), current));
                     geometry.set(Some(current));
-                    if current.offset < -80.0 { history_requested.set(false); }
+                    if current.offset < prefetch - 80.0 { history_requested.set(false); }
                     if current.max + current.offset > 80.0 { bottom_requested.set(false); }
                     if following.get() && !user_scrolled_up.get() && !loading_older && !bottom_action.is_empty() && !bottom_requested.replace(true) {
                         Self::fire(&load_kernel, &load_module, &[], &bottom_action, &load_key, None, Value::Null, cx);
                     }
-                    if !following.get() && current.offset >= -48.0 && has_older && !loading_older && !older_action.is_empty() && !history_requested.replace(true) {
+                    if !following.get() && current.offset >= prefetch && has_older && !loading_older && !older_action.is_empty() && !history_requested.replace(true) {
                         Self::fire(&load_kernel, &load_module, &[], &older_action, &load_key, None, Value::Null, cx);
                     }
                     // Rich text and image layout can finish after the first scroll request.
@@ -1669,7 +1675,7 @@ impl Shell {
                     wheel_up.set(up);
                     if up {
                         wheel_following.set(false);
-                        if f32::from(wheel_handle.offset().y) >= -48.0 && has_older && !loading_older && !wheel_action.is_empty() && !wheel_requested.replace(true) {
+                        if f32::from(wheel_handle.offset().y) >= transcript_scroll::prefetch_offset(wheel_viewport_h.get()) && has_older && !loading_older && !wheel_action.is_empty() && !wheel_requested.replace(true) {
                             Self::fire(&wheel_kernel, &wheel_module, &[], &wheel_action, &wheel_key, None, Value::Null, cx);
                         }
                     }
@@ -1921,6 +1927,16 @@ impl Render for Shell {
         let popovers = self.render_popovers(window, cx);
         self.prune_presence(window);
         let _ = &self.submit_queue;
+        // Hover-revealed window buttons: watch the pointer window-wide (no hitbox can occlude it).
+        let pointer_watch = self.window_chrome.tracks_pointer().then(|| {
+            let this = cx.entity().downgrade();
+            canvas(|_, _, _| {}, move |_, _, window, _| {
+                window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
+                    if phase != DispatchPhase::Capture { return; }
+                    let _ = this.update(cx, |this, cx| this.window_chrome.pointer_moved(event.position, window, cx));
+                });
+            }).absolute().size_0()
+        });
         div().size_full().relative().flex().flex_col().overflow_hidden().bg(cx.theme().background).text_color(cx.theme().foreground).font_family(cx.theme().font_family.clone()).font_weight(theme::font_weight(cx))
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 if event.keystroke.key == "escape" && this.dismiss_open_editor_hover(cx) {
@@ -1938,6 +1954,7 @@ impl Render for Shell {
             .children(approvals)
             .children(security_confirmation)
             .children(drag_layer)
+            .children(pointer_watch)
     }
 }
 

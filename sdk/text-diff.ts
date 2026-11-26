@@ -98,3 +98,12 @@ export function unifiedPatch(path: string, before: string | null, after: string 
   if (!hunks.length) return "";
   return [...header, ...hunks].join("\n") + "\n";
 }
+
+/** Compact hunks for inline display: hunk lines without the file header, capped at `maxLines`. */
+export function diffHunks(before: string | null, after: string | null, maxLines = 400, context = 2) {
+  const patch = unifiedPatch("f", before, after, context);
+  const all = patch ? patch.split("\n").filter(line => line && !/^(diff --git|new file mode|deleted file mode|--- |\+\+\+ )/.test(line)) : [];
+  let added = 0, removed = 0;
+  for (const line of all) { if (line[0] === "+") added++; else if (line[0] === "-") removed++; }
+  return { lines: all.slice(0, maxLines), added, removed, truncated: all.length > maxLines };
+}
