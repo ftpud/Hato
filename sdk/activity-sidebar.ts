@@ -185,6 +185,8 @@ export function activitySidebar(id: string, side: "left" | "right"): AppModule {
   const workExpires = new Map<string, number>();
   /** Finished rows already shown and cleared; they stay hidden until they run again. */
   const workGone = new Set<string>();
+  /** Subagent rows seen running in this rail; only those may show an "Unknown" ending. */
+  const workSeenActive = new Set<string>();
   const WORK_LINGER_MS = 1600;
   let workTimer: ReturnType<typeof setTimeout> | null = null;
   const visibleWork = (ctx: ModuleContext, tasks: HaloTask[]): HaloTask[] => {
@@ -195,13 +197,16 @@ export function activitySidebar(id: string, side: "left" | "right"): AppModule {
       const active = task.state === "running" || task.state === "waiting";
       // Top-level agents stay "Done" until opened; only subagent rows clear themselves.
       if (!task.id.includes(":child:")) return [{ ...task, children }];
-      if (active) { workExpires.delete(task.id); workGone.delete(task.id); }
+      if (active) { workExpires.delete(task.id); workGone.delete(task.id); workSeenActive.add(task.id); }
+      // Reconnects and history loads reset old subagents to "unknown": never flash ones we didn't see run.
+      else if (task.state === "unknown" && !workSeenActive.has(task.id) && !workExpires.has(task.id)) workGone.add(task.id);
       else if (!workGone.has(task.id) && !workExpires.has(task.id)) workExpires.set(task.id, now + WORK_LINGER_MS);
       if (!active && (workGone.has(task.id) || workExpires.get(task.id)! <= now) && !children.length) {
         // Remember the dismissal so a parent's next turn doesn't flash its old finished children.
         workExpires.delete(task.id);
         workGone.add(task.id);
         if (workGone.size > 500) workGone.delete(workGone.values().next().value!);
+        workSeenActive.delete(task.id);
         finishedRows.delete(task.id);
         delete workOpen[task.id];
         return [];

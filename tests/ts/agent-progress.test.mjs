@@ -340,3 +340,24 @@ test("a finished parent takes its subagents' final states from the publisher, no
   assert.ok(row("agent:a1"), "while the parent stays Done");
   sidebar.deactivate();
 });
+
+test("a reconnect does not flash old subagents reset to unknown, but a running one that stops still ends visibly", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: 10000 });
+  const sidebar = (await load("Hato-plugins/modules/ui/sidebar/src/index.ts")).default;
+  const { ctx } = stateCtx();
+  await sidebar.activate(ctx);
+  await sidebar.onEvent(ctx, { action: "expand", value: true });
+  const old = [1, 2, 3].map(i => ({ id: `old${i}`, parentId: "root", title: `Old ${i}`, state: "unknown" }));
+  const publish = children => ctx.state.set("persistent-agents.working", [{ id: "a1", name: "Agent", workspaceId: "ws", status: "starting", workflow: null, children }]);
+  const row = key => find(sidebar.render(ctx), n => n.key === `task:working:${key}`);
+  publish(old);
+  assert.ok(row("agent:a1"));
+  for (const c of old) assert.equal(row(`agent:a1:child:${c.id}`), null, "reconnect does not show stale subagents");
+  publish([...old, { id: "live", parentId: "root", title: "Live", state: "running" }]);
+  assert.ok(row("agent:a1:child:live"));
+  publish([...old, { id: "live", parentId: "root", title: "Live", state: "unknown" }]);
+  assert.ok(row("agent:a1:child:live"), "a subagent seen running shows how it ended");
+  t.mock.timers.tick(1600);
+  assert.equal(row("agent:a1:child:live"), null);
+  sidebar.deactivate();
+});

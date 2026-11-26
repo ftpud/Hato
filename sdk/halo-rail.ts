@@ -186,12 +186,15 @@ function itemRow(m: HaloModel, item: HaloItem, index: number): UiNode[] {
   return out;
 }
 
-function taskRow(owner: string, t: HaloTask): UiNode {
+/** `nested` rows (subagents) drop the card chrome so they read as part of their parent. */
+function taskRow(owner: string, t: HaloTask, nested = false): UiNode {
   const done = t.state === "done", failed = t.state === "error";
   const paused = t.state === "waiting" || t.state === "unknown" || t.state === "idle";
   const pct = t.progress == null ? null : Math.max(0, Math.min(1, t.progress));
   return row(`task:${owner}:${t.id}`, [
-    row("tile", [icon("i", done ? haloIcons.check : t.iconSvg || haloIcons.file, 14, done ? "success" : "muted")], { style: { width: 28, height: 28, radius: 7, background: "raised", justify: "center", noShrink: true } }),
+    row("tile", [icon("i", done ? haloIcons.check : t.iconSvg || haloIcons.file, nested ? 13 : 14, done ? "success" : "muted")], { style: nested
+      ? { width: 22, height: 22, justify: "center", noShrink: true }
+      : { width: 28, height: 28, radius: 7, background: "raised", justify: "center", noShrink: true } }),
     col("body", [
       row("top", [
         col("names", [text("name", t.label, { size: 12 }), ...(t.detail ? [text("detail", t.detail, { size: 10.5, color: "faint" })] : [])], { grow: true, gap: 1, minWidth: 0 }),
@@ -211,14 +214,14 @@ function taskRow(owner: string, t: HaloTask): UiNode {
       ] : []),
     ], { grow: true, gap: 6, minWidth: 0 }),
   ], { gap: 9, presence: haloMotion.rowPresence, layoutTransition: haloMotion.layout,
-    ...(t.action ? { action: t.action, value: t.value ?? null, hoverStyle: { borderColor: "activeBorder" }, tooltip: t.tooltip } : {}),
-    style: { radius: 10, padding: 6, paddingX: 8, background: "field", ...glassChip } });
+    ...(t.action ? { action: t.action, value: t.value ?? null, hoverStyle: nested ? { background: "hover" } : { borderColor: "activeBorder" }, tooltip: t.tooltip } : {}),
+    style: nested ? { radius: 8, padding: 4, paddingX: 6 } : { radius: 10, padding: 6, paddingX: 8, background: "field", ...glassChip } });
 }
 
-function taskTree(owner: string, t: HaloTask): UiNode[] {
-  return [taskRow(owner, t), ...(t.children?.length && t.open !== false ? [row(`branches:${owner}:${t.id}`, [
+function taskTree(owner: string, t: HaloTask, nested = false): UiNode[] {
+  return [taskRow(owner, t, nested), ...(t.children?.length && t.open !== false ? [row(`branches:${owner}:${t.id}`, [
     col("guide", [], { style: { width: 1, background: "border", noShrink: true } }),
-    col("children", t.children.flatMap(child => taskTree(owner, child)), { grow: true, minWidth: 0, gap: 3 }),
+    col("children", t.children.flatMap(child => taskTree(owner, child, true)), { grow: true, minWidth: 0, gap: 1 }),
   ], { gap: 6, align: "stretch", style: { paddingLeft: 12 }, presence: haloMotion.rowPresence })] : [])];
 }
 
