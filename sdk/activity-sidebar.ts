@@ -14,6 +14,7 @@
 //   ai-sessions.busy, persistent-agents.busy   workspaceId → working agents
 //   workspace-layout.appearance / moduleUpdates
 import type { AppModule, ModuleContext, UiColor, UiNode } from "./types";
+import type { AcpSubagent, FinishedSubagents } from "./acp-subagents";
 import { normalizeSidebarButtons, normalizeSidebarOrder, orderedSidebarItems, sidebarPanels, type SidebarButtons, type SidebarOrder } from "./sidebar-placement";
 import { sidebarIcons } from "./sidebar-icons";
 import { loadContributions, watchContributions, type Contributions } from "./plugins";
@@ -170,43 +171,111 @@ export function activitySidebar(id: string, side: "left" | "right"): AppModule {
   };
   /** Working agents across all projects; one place (the Assistant rail). Falls back to a count
    *  when the services publish only `*.busy` maps. */
-  /** Rows that stopped running: kept as "Done" until the user clicks them (newest first). */
+  /** Finished agents stay "Done" until opened; their finished subagents linger briefly, then clear. */
   const finishedRows = new Map<string, HaloTask>();
   let lastRunning = new Map<string, HaloTask>();
   const FINISHED_LIMIT = 6;
-  const workingSection = (): HaloSection | null => {
+  const workOpen: Record<string, boolean> = {};
+  /** Row id → final children of roots that just finished (`*.finished`). */
+  const finalChildren = new Map<string, AcpSubagent[]>();
+  const setFinal = (prefix: string, v: unknown) => {
+    for (const key of [...finalChildren.keys()]) if (key.startsWith(prefix)) finalChildren.delete(key);
+    if (Array.isArray(v)) for (const e of v as FinishedSubagents[]) if (e && typeof e.id === "string" && Array.isArray(e.children)) finalChildren.set(prefix + e.id, e.children);
+  };
+  const workExpires = new Map<string, number>();
+  /** Finished rows already shown and cleared; they stay hidden until they run again. */
+  const workGone = new Set<string>();
+  const WORK_LINGER_MS = 1600;
+  let workTimer: ReturnType<typeof setTimeout> | null = null;
+  const visibleWork = (ctx: ModuleContext, tasks: HaloTask[]): HaloTask[] => {
+    const now = Date.now(), seen = new Set<string>();
+    const visit = (task: HaloTask): HaloTask[] => {
+      seen.add(task.id);
+      const children = (task.children || []).flatMap(visit);
+      const active = task.state === "running" || task.state === "waiting";
+      // Top-level agents stay "Done" until opened; only subagent rows clear themselves.
+      if (!task.id.includes(":child:")) return [{ ...task, children }];
+      if (active) { workExpires.delete(task.id); workGone.delete(task.id); }
+      else if (!workGone.has(task.id) && !workExpires.has(task.id)) workExpires.set(task.id, now + WORK_LINGER_MS);
+      if (!active && (workGone.has(task.id) || workExpires.get(task.id)! <= now) && !children.length) {
+        // Remember the dismissal so a parent's next turn doesn't flash its old finished children.
+        workExpires.delete(task.id);
+        workGone.add(task.id);
+        if (workGone.size > 500) workGone.delete(workGone.values().next().value!);
+        finishedRows.delete(task.id);
+        delete workOpen[task.id];
+        return [];
+      }
+      return [{ ...task, children }];
+    };
+    const visible = tasks.flatMap(visit);
+    for (const key of workExpires.keys()) if (!seen.has(key)) workExpires.delete(key);
+    // One invalidation at the next expiry, including when no provider events arrive.
+    if (workTimer !== null) clearTimeout(workTimer);
+    const next = Math.min(...[...workExpires.values()].filter(at => at > now));
+    workTimer = Number.isFinite(next) ? setTimeout(() => { workTimer = null; ctx.ui.invalidate(); }, next - now) : null;
+    return visible;
+  };
+  const finishedChildren = (children?: HaloTask[]): HaloTask[] | undefined => children?.map(c => ({ ...c,
+    ...(c.state === "running" || c.state === "waiting" ? { state: "unknown" as const, progress: null } : {}), children: finishedChildren(c.children),
+  }));
+  const currentDisclosure = (task: HaloTask): HaloTask => ({ ...task, open: workOpen[task.id] !== false, children: task.children?.map(currentDisclosure) });
+  const withChildren = (task: HaloTask, children?: AcpSubagent[]): HaloTask => {
+    if (!children?.length) return task;
+    const entries = children.slice(0, 200), ids = new Set(entries.map(c => c.id));
+    const build = (child: AcpSubagent, seen: Set<string>): HaloTask => {
+      const next = new Set(seen).add(child.id), key = `${task.id}:child:${child.id}`;
+      return {
+        id: key, label: child.title || child.sessionTitle || "Subagent", detail: child.progress?.note || child.activity || child.description,
+        state: child.state === "idle" ? child.stopReason === "error" ? "error" : child.stopReason === "end_turn" ? "done" : "idle" : child.state === "requires_action" ? "waiting" : child.state,
+        statusLabel: child.stopReason === "cancelled" ? "Cancelled" : undefined,
+        progress: child.progress ? child.progress.percent / 100 : null, iconSvg: sidebarIcons.bot,
+        action: task.action, value: task.value, tooltip: child.description || "Open the parent agent",
+        children: entries.filter(c => c.parentId === child.id && !next.has(c.id)).map(c => build(c, next)),
+        open: workOpen[key] !== false, toggleAction: "toggleWork",
+      };
+    };
+    return { ...task, children: entries.filter(c => !ids.has(c.parentId)).map(c => build(c, new Set())), open: workOpen[task.id] !== false, toggleAction: "toggleWork" };
+  };
+  const workingSection = (ctx: ModuleContext): HaloSection | null => {
     const count = busyCount();
     const running: HaloTask[] = [];
     if (workingChats || workingAgents) {
       const fraction = (p: any) => p && Number.isFinite(p.percent) ? Math.max(0, Math.min(100, p.percent)) / 100 : null;
       const where = (p: any, place?: string) => [p?.note, place].filter(Boolean).join(" · ") || undefined;
-      for (const c of workingChats || []) running.push({ id: `chat:${c.id}`, label: c.title || "Chat", detail: where(chatProgress?.[c.id], placeName(c.workspaceId)), iconSvg: haloIcons.chat,
+      for (const c of workingChats || []) running.push(withChildren({ id: `chat:${c.id}`, label: c.title || "Chat", detail: where(chatProgress?.[c.id], placeName(c.workspaceId)), iconSvg: haloIcons.chat,
         progress: fraction(chatProgress?.[c.id]), state: "running",
-        action: "openAgent", value: { kind: "chat", id: c.id, workspaceId: c.workspaceId }, tooltip: "Open this chat and its project" });
+        action: "openAgent", value: { kind: "chat", id: c.id, workspaceId: c.workspaceId }, tooltip: "Open this chat and its project" }, c.children));
       for (const a of workingAgents || []) {
         // Desktop tools bind persistent sessions by the same ID as their workspace endpoint.
         const desktop = chatProgress?.[a.id];
         const progress = desktop && (!a.progress || Number(desktop.at) >= Number(a.progress.at || 0)) ? desktop : a.progress;
-        running.push({ id: `agent:${a.id}`, label: a.name || (a.workflow ? "Workflow agent" : "Background agent"),
+        running.push(withChildren({ id: `agent:${a.id}`, label: a.name || (a.workflow ? "Workflow agent" : "Background agent"),
           detail: where(progress, [a.workflow ? "Workflow" : null, placeName(a.workspaceId)].filter(Boolean).join(" · ")), progress: fraction(progress), state: "running",
           iconSvg: a.workflow ? sidebarIcons.workflow : sidebarIcons.bot,
-          action: "openAgent", value: { kind: a.workflow ? "workflow" : "agent", id: a.id, workspaceId: a.workspaceId, workflow: a.workflow || null }, tooltip: "Open this agent and its project" });
+          action: "openAgent", value: { kind: a.workflow ? "workflow" : "agent", id: a.id, workspaceId: a.workspaceId, workflow: a.workflow || null }, tooltip: "Open this agent and its project" }, a.children));
       }
-      // An agent that left the working lists finished its turn: keep it, done, until clicked.
+      // An agent that left the working lists finished its turn: briefly show its result.
       const now = new Map(running.map(t => [t.id, t]));
       for (const [id, t] of lastRunning) if (!now.has(id)) {
         finishedRows.delete(id);
-        finishedRows.set(id, { ...t, state: "done", progress: 1, detail: (t.value as any)?.workspaceId ? placeName((t.value as any).workspaceId) : undefined,
+        finishedRows.set(id, { ...t, children: finishedChildren(t.children), state: "done", progress: 1, detail: (t.value as any)?.workspaceId ? placeName((t.value as any).workspaceId) : undefined,
           value: { ...(t.value as any), dismiss: id }, tooltip: "Finished · open it to dismiss" });
       }
       for (const id of now.keys()) finishedRows.delete(id); // running again
+      // Prefer the publishers' final child states over the last (possibly stale) running snapshot.
+      for (const [id, row] of finishedRows) {
+        const final = finalChildren.get(id);
+        if (final) finishedRows.set(id, { ...row, children: finishedChildren(withChildren({ ...row, children: undefined }, final).children) });
+      }
       while (finishedRows.size > FINISHED_LIMIT) finishedRows.delete(finishedRows.keys().next().value!);
       lastRunning = now;
     } else if (count) running.push({ id: "agents-working", label: `${count} agent${count === 1 ? "" : "s"} working`, iconSvg: sidebarIcons.bot, progress: null, state: "running" });
-    const done = [...finishedRows.values()].reverse();
-    if (!running.length && !done.length) return null;
+    const done = [...finishedRows.values()].reverse().map(currentDisclosure);
+    const tasks = visibleWork(ctx, [...running, ...done]);
+    if (!tasks.length) return null;
     const title = running.length ? `Working · ${count || running.length}` : "Finished";
-    return { key: "working", title, items: [], tasks: [...running, ...done].slice(0, 10), collapsed: "none" };
+    return { key: "working", title, items: [], tasks: tasks.slice(0, 10), collapsed: "none" };
   };
 
   const model = (ctx: ModuleContext): HaloModel => {
@@ -240,13 +309,14 @@ export function activitySidebar(id: string, side: "left" | "right"): AppModule {
       };
     }
     const chatsSec = chatsSection();
+    const workingSec = workingSection(ctx);
     return {
       side, expanded, focused, busy: busyCount(), usage,
       header: { title: "Assistant", subtitle: chats?.conversations?.length ? `${chats.conversations.length} chat${chats.conversations.length === 1 ? "" : "s"} in ${ws?.name || "this project"}` : ws?.name },
       primary: ws ? { label: "New chat", iconSvg: haloIcons.plus, action: "newChat", tooltip: "Start a new chat in this project" } : undefined,
       search: expanded ? { placeholder: "Search…", query } : undefined,
       sections: [
-        ...(workingSection() ? [workingSection()!] : []),
+        ...(workingSec ? [workingSec] : []),
         ...(chatsSec ? [chatsSec] : []),
         { key: "agents", title: "Panels", items: panelItems(ctx, "right-top") },
         { key: "more", title: "Tools", items: panelItems(ctx, "right-bottom") },
@@ -290,6 +360,8 @@ export function activitySidebar(id: string, side: "left" | "right"): AppModule {
       watch(ctx, "ai.rail", v => { chats = v && Array.isArray(v.conversations) ? v : null; });
       watch(ctx, "ai-sessions.working", v => { workingChats = Array.isArray(v) ? v : null; });
       watch(ctx, "persistent-agents.working", v => { workingAgents = Array.isArray(v) ? v : null; });
+      watch(ctx, "ai-sessions.finished", v => setFinal("chat:", v));
+      watch(ctx, "persistent-agents.finished", v => setFinal("agent:", v));
       // Chats report through the report_progress tool (internal-mcp) or, without Hato's tools, reply
       // markers (ai-sessions); the newest report wins.
       let viaTool: Record<string, any> = {}, viaMarker: Record<string, any> = {};
@@ -312,7 +384,7 @@ export function activitySidebar(id: string, side: "left" | "right"): AppModule {
       /** Expand or collapse this rail. */
       setExpanded: (ctx: ModuleContext, a: any) => { setExpanded(ctx, a?.expanded === true); return { expanded }; },
     },
-    deactivate() { stop?.(); stops.splice(0).forEach(s => s()); for (const s of panelStops.values()) s(); panelStops.clear(); },
+    deactivate() { if (workTimer !== null) clearTimeout(workTimer); workTimer = null; stop?.(); stops.splice(0).forEach(s => s()); for (const s of panelStops.values()) s(); panelStops.clear(); },
     render(ctx: ModuleContext): UiNode {
       const m = model(ctx);
       if (!focused || (!visible[focused] && !open[focused])) focused = m.sections.flatMap(s => s.items).find(i => i.active && !i.id.includes(":"))?.id || null;
@@ -323,6 +395,7 @@ export function activitySidebar(id: string, side: "left" | "right"): AppModule {
     async onEvent(ctx, ev) {
       const v: any = ev.value;
       switch (ev.action) {
+        case "toggleWork": if (typeof v === "string") { workOpen[v] = workOpen[v] === false; ctx.ui.invalidate(); } break;
         case "toggle":
           if (!buttons().some((panel) => panel.id === v)) break;
           if (Array.isArray(children[v])) {

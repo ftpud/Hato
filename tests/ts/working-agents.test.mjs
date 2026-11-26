@@ -56,6 +56,14 @@ test('active conversations publish bounded working entries independently of thei
   assert.equal(values('working').at(-1).length, 50);
   assert.equal(values('working').at(-1)[0].id, 'c01');
   assert.equal(values('working').at(-1).at(-1).id, 'c50');
+  const childSessions = { worker: { id: 'worker', parentId: 'provider-root', title: 'Reviewer', state: 'running' } };
+  listeners.get('acp.status')({ conversationId: 'c01', status: 'ready', childSessions });
+  t.mock.timers.tick(61);
+  assert.deepEqual(values('working').at(-1)[0].children, Object.values(childSessions));
+  assert.deepEqual(values('busy').at(-1), { ws: 51 }, 'background children keep an idle parent in WORKING');
+  listeners.get('acp.status')({ conversationId: 'c01', status: 'ready', childSessions: { worker: { ...childSessions.worker, state: 'idle', stopReason: 'end_turn' } } });
+  t.mock.timers.tick(61);
+  assert.equal(values('working').at(-1)[0].id, 'c02');
 });
 
 test('daemon polls publish workflow ownership and status even when busy counts are unchanged', async t => {
@@ -111,6 +119,12 @@ test('daemon polls publish workflow ownership and status even when busy counts a
     await poll();
     assert.equal(values('working').at(-1)[0].status, 'waiting');
     assert.equal(values('busy').length, 1, 'metadata updates do not republish identical busy counts');
+    rows.find(s => s.id === 'a00').status = 'ready';
+    rows.find(s => s.id === 'a00').childSessions = { child: { id: 'child', parentId: 'provider-root', title: 'Reviewer', state: 'running' } };
+    await poll();
+    assert.equal(values('working').at(-1)[0].status, 'busy');
+    assert.equal(values('working').at(-1)[0].children[0].title, 'Reviewer');
+    assert.equal(values('busy').length, 1);
 
     rows = [];
     await poll();

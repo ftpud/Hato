@@ -59,7 +59,9 @@ export interface HaloChild {
   /** Colored status dot before the label. */ dot?: UiColor;
   action: string; value: Json;
 }
-export interface HaloTask { id: string; label: string; detail?: string; /** Tile icon while running (default: a file). */ iconSvg?: string; progress?: number | null; state?: "running" | "done" | "error"; action?: string; value?: Json; tooltip?: string }
+export interface HaloTask { id: string; label: string; detail?: string; /** Tile icon while running (default: a file). */ iconSvg?: string; progress?: number | null; state?: "running" | "done" | "error" | "waiting" | "unknown" | "idle"; statusLabel?: string; action?: string; value?: Json; tooltip?: string;
+  children?: HaloTask[]; open?: boolean; toggleAction?: string;
+}
 export interface HaloItem {
   id: string; title: string; action: string; value: Json;
   iconSvg?: string; /** Letter tile instead of an icon (projects). */ tile?: string;
@@ -186,24 +188,38 @@ function itemRow(m: HaloModel, item: HaloItem, index: number): UiNode[] {
 
 function taskRow(owner: string, t: HaloTask): UiNode {
   const done = t.state === "done", failed = t.state === "error";
+  const paused = t.state === "waiting" || t.state === "unknown" || t.state === "idle";
   const pct = t.progress == null ? null : Math.max(0, Math.min(1, t.progress));
   return row(`task:${owner}:${t.id}`, [
     row("tile", [icon("i", done ? haloIcons.check : t.iconSvg || haloIcons.file, 14, done ? "success" : "muted")], { style: { width: 28, height: 28, radius: 7, background: "raised", justify: "center", noShrink: true } }),
     col("body", [
       row("top", [
         col("names", [text("name", t.label, { size: 12 }), ...(t.detail ? [text("detail", t.detail, { size: 10.5, color: "faint" })] : [])], { grow: true, gap: 1, minWidth: 0 }),
-        done ? text("state", "Done", { size: 10.5, color: "success", mono: true, reveal: { effect: "scramble", charMs: 30, on: "change" } })
+        done ? text("state", t.statusLabel || "Done", { size: 10.5, color: "success", mono: true, reveal: { effect: "scramble", charMs: 30, on: "change" } })
           : failed ? text("state", "Failed", { size: 10.5, color: "danger", mono: true })
+          : paused ? text("state", t.statusLabel || (t.state === "waiting" ? "Waiting" : t.state === "idle" ? "Idle" : "Unknown"), { size: 10, color: t.state === "waiting" ? "warning" : "faint" })
           : spinner("spin", 10),
+        ...(t.children?.length && t.toggleAction ? [row("disclosure", [icon("chevron", haloIcons.chevron, 12, "muted", { rotate: t.open === false ? 0 : 90 })], {
+          action: t.toggleAction, value: t.id, tooltip: t.open === false ? "Show subagents" : "Hide subagents", hoverStyle: { background: "hover" },
+          style: { width: 18, height: 22, radius: 4, justify: "center", noShrink: true },
+        })] : []),
       ], { gap: 6 }),
       // Native progress takes a 0–1 fraction and animates value changes with `transition`.
-      { type: "progress", key: "bar", value: done ? 1 : pct == null ? undefined : pct, indeterminate: !done && !failed && pct == null,
+      ...(!paused || pct != null ? [{ type: "progress", key: "bar", value: done ? 1 : pct == null ? undefined : pct, indeterminate: !done && !failed && !paused && pct == null,
         color: done ? "success" : failed ? "danger" : "primary", trackColor: "meterOff", height: 2, transition: { durationMs: 420, easing: ease.out },
         ...(!done && !failed && pct !== 0 ? { style: { radius: 1, ...glow("glow", 5) } } : {}) } as UiNode,
+      ] : []),
     ], { grow: true, gap: 6, minWidth: 0 }),
   ], { gap: 9, presence: haloMotion.rowPresence, layoutTransition: haloMotion.layout,
     ...(t.action ? { action: t.action, value: t.value ?? null, hoverStyle: { borderColor: "activeBorder" }, tooltip: t.tooltip } : {}),
     style: { radius: 10, padding: 6, paddingX: 8, background: "field", ...glassChip } });
+}
+
+function taskTree(owner: string, t: HaloTask): UiNode[] {
+  return [taskRow(owner, t), ...(t.children?.length && t.open !== false ? [row(`branches:${owner}:${t.id}`, [
+    col("guide", [], { style: { width: 1, background: "border", noShrink: true } }),
+    col("children", t.children.flatMap(child => taskTree(owner, child)), { grow: true, minWidth: 0, gap: 3 }),
+  ], { gap: 6, align: "stretch", style: { paddingLeft: 12 }, presence: haloMotion.rowPresence })] : [])];
 }
 
 function sectionHead(m: HaloModel, s: HaloSection, index: number): UiNode {
@@ -326,7 +342,7 @@ function accountMenu(a: NonNullable<HaloModel["account"]>): UiNode {
       col("rule-2", [], { style: { height: 1, background: "border" } }),
       row("dark", [
         icon("i", haloIcons.moon, 15), text("l", "Dark mode", { size: 12.5, grow: true }),
-        { type: "switch", key: "s", label: "", checked: a.darkMode, action: "darkMode", accent: "meterOn" } as UiNode,
+        { type: "switch", key: "s", label: "", checked: a.darkMode, action: "darkMode", accent: "primary" } as UiNode,
       ], { gap: 10, presence: enter, presenceDelayMs: 30 * a.menu.length, style: { height: 32, radius: 7, paddingX: 8 } }),
     ], { gap: 2, style: { padding: 5, radius: 12, background: "panel", borderWidth: 1, borderColor: "glassEdge", ...glassCard } })],
   } as UiNode;
@@ -381,7 +397,7 @@ export function haloRail(m: HaloModel): UiNode {
     const head: UiNode[] = [sectionHead(m, s, index++)];
     if (m.expanded && s.tabs && s.tabs.items.length > 1) head.push(tabsNode(s));
     if (m.expanded && s.embed) head.push(row(`embed:${s.key}`, [s.embed], { style: { paddingX: 3 } }));
-    for (const t of tasks) head.push(taskRow(s.key, t));
+    for (const t of tasks) head.push(...taskTree(s.key, t));
     const rows = items.flatMap(item => itemRow(m, item, index++));
     if (m.expanded && s.maxHeight) list.push(lane(`lane:${s.key}`, head), col(`scroll:${s.key}`, [lane(`lane:${s.key}:items`, rows)], { scroll: true, maxHeight: s.maxHeight, style: { noShrink: true } }));
     else list.push(lane(`lane:${s.key}`, [...head, ...rows]));

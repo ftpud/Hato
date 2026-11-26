@@ -64,6 +64,36 @@ test("working agents fill their bar from reported progress", async () => {
   assert.ok(find(waiting, n => n.type === "spinner"));
 });
 
+test("WORKING nests subagents under the correct parent and preserves disclosure and child state", async () => {
+  const sidebar = (await load("Hato-plugins/modules/ui/sidebar/src/index.ts")).default;
+  const { ctx } = stateCtx();
+  await sidebar.activate(ctx);
+  await sidebar.onEvent(ctx, { action: "expand", value: true });
+  const children = [
+    { id: "worker", parentId: "provider-root", title: "Reviewer", state: "running", progress: { percent: 42 } },
+    { id: "nested", parentId: "worker", title: "Tests", state: "requires_action" },
+    { id: "idle", parentId: "provider-root", title: "Explorer", state: "idle", stopReason: "end_turn" },
+  ];
+  ctx.state.set("ai-sessions.working", [{ id: "chat", title: "Parent", workspaceId: "ws", status: "busy", children }]);
+  const key = "task:working:chat:chat:child:";
+  let tree = sidebar.render(ctx);
+  assert.equal(find(find(tree, n => n.key === key + "worker"), n => n.type === "progress").value, 0.42);
+  assert.equal(find(find(tree, n => n.key === key + "nested"), n => n.key === "state").text, "Waiting");
+  assert.equal(find(find(tree, n => n.key === key + "idle"), n => n.key === "state").text, "Done");
+  await sidebar.onEvent(ctx, { action: "toggleWork", value: "chat:chat:child:worker" });
+  tree = sidebar.render(ctx);
+  assert.ok(find(tree, n => n.key === key + "worker"));
+  assert.equal(find(tree, n => n.key === key + "nested"), null);
+  await sidebar.onEvent(ctx, { action: "toggleWork", value: "chat:chat:child:worker" });
+  assert.ok(find(sidebar.render(ctx), n => n.key === key + "nested"));
+  ctx.state.set("ai-sessions.working", []);
+  tree = sidebar.render(ctx);
+  assert.equal(find(find(tree, n => n.key === key + "worker"), n => n.key === "state").text, "Unknown");
+  assert.equal(find(find(tree, n => n.key === key + "idle"), n => n.key === "state").text, "Done");
+  await sidebar.onEvent(ctx, { action: "toggleWork", value: "chat:chat" });
+  assert.equal(find(sidebar.render(ctx), n => n.key === key + "worker"), null);
+});
+
 test("usage meters refresh after an agent finishes, debounced and throttled", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: 1_000_000 });
   const calls = [];
@@ -201,7 +231,7 @@ test("desktop reports update a persistent agent bar and newer workspace reports 
   assert.equal(bar().value, 0.8);
 });
 
-test("a finished agent stays in the rail as Done until it is clicked", async () => {
+test("a finished agent can be opened and dismissed during its result preview", async () => {
   const sidebar = (await load("Hato-plugins/modules/ui/sidebar/src/index.ts")).default;
   const { ctx } = stateCtx();
   const emitted = [];
@@ -225,4 +255,88 @@ test("a finished agent stays in the rail as Done until it is clicked", async () 
   await sidebar.onEvent(ctx, { action: row.action, value: row.value });
   assert.deepEqual(emitted.at(-1), ["sidebar.openAgent", { kind: "agent", id: "s1", workspaceId: "p:1", workflow: null }], "clicking opens it");
   assert.equal(find(sidebar.render(ctx), n => n.key === "task:working:agent:s1"), null, "and dismisses it");
+});
+
+test("finished subagents expire without events, finished roots stay, and reused children appear again", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: 10000 });
+  const sidebar = (await load("Hato-plugins/modules/ui/sidebar/src/index.ts")).default;
+  const { ctx } = stateCtx();
+  let invalidations = 0;
+  ctx.ui.invalidate = () => invalidations++;
+  await sidebar.activate(ctx);
+  await sidebar.onEvent(ctx, { action: "expand", value: true });
+  const children = [
+    { id: "idle-parent", parentId: "provider-root", title: "Coordinator", state: "idle" },
+    { id: "waiting", parentId: "idle-parent", title: "Waiting worker", state: "requires_action" },
+    { id: "completed", parentId: "provider-root", title: "Old worker", state: "idle", stopReason: "end_turn" },
+  ];
+  const update = () => ctx.state.set("ai-sessions.working", [{ id: "chat", title: "Parent", workspaceId: "ws", status: "busy", children }]);
+  update();
+  const row = id => find(sidebar.render(ctx), n => n.key === `task:working:chat:chat:child:${id}`);
+  assert.ok(row("completed"));
+  t.mock.timers.tick(1599);
+  assert.ok(row("completed"));
+  const before = invalidations;
+  t.mock.timers.tick(1);
+  assert.ok(invalidations > before, "expiry invalidates without another provider event");
+  assert.equal(row("completed"), null);
+  assert.ok(row("idle-parent"), "an idle ancestor remains while a descendant is active");
+  assert.ok(row("waiting"));
+  t.mock.timers.tick(10000);
+  assert.equal(row("completed"), null, "unchanged provider snapshots do not resurrect old children");
+  children[2] = { ...children[2], state: "running", stopReason: undefined };
+  update();
+  assert.ok(row("completed"), "reusing the same child session makes it visible immediately");
+  children[2] = { ...children[2], state: "idle", stopReason: "error" };
+  update();
+  assert.equal(find(row("completed"), n => n.key === "state").text, "Failed");
+  t.mock.timers.tick(1600);
+  assert.equal(row("completed"), null);
+  ctx.state.set("ai-sessions.working", []);
+  assert.ok(find(sidebar.render(ctx), n => n.key === "task:working:chat:chat"));
+  t.mock.timers.tick(30000);
+  assert.ok(find(sidebar.render(ctx), n => n.key === "task:working:chat:chat"), "a finished agent stays Done until opened");
+  sidebar.deactivate();
+});
+
+test("a parent's next turn does not flash subagents that already finished and cleared", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: 10000 });
+  const sidebar = (await load("Hato-plugins/modules/ui/sidebar/src/index.ts")).default;
+  const { ctx } = stateCtx();
+  await sidebar.activate(ctx);
+  await sidebar.onEvent(ctx, { action: "expand", value: true });
+  const children = [{ id: "worker", parentId: "provider-root", title: "Worker", state: "idle", stopReason: "end_turn" }];
+  const turn = () => ctx.state.set("ai-sessions.working", [{ id: "chat", title: "Parent", workspaceId: "ws", status: "busy", children }]);
+  const row = key => find(sidebar.render(ctx), n => n.key === `task:working:${key}`);
+  turn();
+  assert.ok(row("chat:chat:child:worker"), "a finished subagent shows its result briefly");
+  t.mock.timers.tick(1600);
+  assert.equal(row("chat:chat:child:worker"), null);
+  ctx.state.set("ai-sessions.working", []);
+  assert.ok(row("chat:chat"));
+  t.mock.timers.tick(1600);
+  turn();
+  assert.ok(row("chat:chat"), "the parent shows again for its new turn");
+  assert.equal(row("chat:chat:child:worker"), null, "its old finished subagent stays cleared");
+  sidebar.deactivate();
+});
+
+test("a finished parent takes its subagents' final states from the publisher, not the stale snapshot", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: 10000 });
+  const sidebar = (await load("Hato-plugins/modules/ui/sidebar/src/index.ts")).default;
+  const { ctx } = stateCtx();
+  await sidebar.activate(ctx);
+  await sidebar.onEvent(ctx, { action: "expand", value: true });
+  const worker = { id: "worker", parentId: "root", title: "Worker", state: "running" };
+  ctx.state.set("persistent-agents.working", [{ id: "a1", name: "Agent", workspaceId: "ws", status: "busy", workflow: null, children: [worker] }]);
+  const row = key => find(sidebar.render(ctx), n => n.key === `task:working:${key}`);
+  assert.ok(row("agent:a1:child:worker"));
+  // The poll that saw the parent stop also saw the worker finish; it never appeared as running → done.
+  ctx.state.set("persistent-agents.finished", [{ id: "a1", children: [{ ...worker, state: "idle", stopReason: "end_turn" }], at: 10000 }]);
+  ctx.state.set("persistent-agents.working", []);
+  assert.equal(find(row("agent:a1:child:worker"), n => n.key === "state").text, "Done");
+  t.mock.timers.tick(1600);
+  assert.equal(row("agent:a1:child:worker"), null, "then the finished subagent clears");
+  assert.ok(row("agent:a1"), "while the parent stays Done");
+  sidebar.deactivate();
 });

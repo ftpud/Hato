@@ -30,6 +30,7 @@ export interface AgentSpec {
   trackAutonomousClaudeTurns?: boolean;
 }
 export interface AgentSession extends AgentSpec {
+  childSessions?: import("./acp-subagents").AcpSubagents;
   status: "starting" | "ready" | "busy" | "waiting" | "stopped" | "interrupted" | "error";
   /** The agent's own estimate for the current turn (report_progress tool); cleared when a turn starts. */
   progress?: AgentProgress | null;
@@ -98,6 +99,7 @@ export function scanProgressChunk(tail: string, chunk: string): { progress: Agen
 /** Starting instruction for agents that have Hato's MCP tools. */
 export const PROGRESS_INSTRUCTION = "Progress: call this session's report_progress tool with JSON like {\"percent\":5,\"note\":\"Inspecting code\"}. Use 0–100: about 5 at the start, update at major milestones while working, and 100 only when finished. The optional note is at most 80 characters. Inspect the tool result: {\"percent\":5} acknowledges the update; isError or 'Transport closed' means it failed even if the call returned normally. If a connection is closed, try another available report_progress endpoint for this session instead of repeatedly using the stale connection. Do not assume failed updates reached the sidebar. Progress feeds Hato's sidebar only — do not mention it in chat replies.";
 export interface WorkingAgent {
+  children?: import("./acp-subagents").AcpSubagent[];
   id: string;
   progress?: { percent: number; note?: string; at?: number } | null;
   name: string;

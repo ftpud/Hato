@@ -46,6 +46,32 @@ function harness({ canLoad = true, resume = false, load = false, replay = false,
 const spec = extra => ({ id: 'chat', name: 'Chat', workspaceId: 'ws', root: '/workspace', profile: { name: 'Fixture', executable: 'test', args: [] }, model: '', agentFile: null, skills: [], mcps: [], workspaceMcp: false, ...extra });
 
 const workflow = { runId: 'run', blockId: 'block' };
+test('daemon agents negotiate subagents and keep nested child traffic out of parent messages', async () => {
+  const mod = (await load('Hato-plugins/modules/services/agent-runner/src/index.ts')).default;
+  const { ctx, requests, listeners, dbWrites } = harness();
+  await mod.activate(ctx);
+  await mod.methods.create(ctx, { spec: spec() });
+  await mod.methods.send(ctx, { id: 'chat', text: 'Review' });
+  assert.deepEqual(requests.find(r => r.method === 'initialize').params.clientCapabilities.subagents, {});
+  const send = (sessionId, update) => listeners.get('process')(JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params: { sessionId, update } }) + '\n');
+  send('provider-session', { sessionUpdate: 'subagent_update', sessionId: 'child', title: 'Reviewer', state: { state: 'running' } });
+  send('child', { sessionUpdate: 'subagent_update', sessionId: 'nested', state: { state: 'requires_action' } });
+  send('child', { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '<!-- hato-progress 35 | Checking -->' } });
+  send('child', { sessionUpdate: 'usage_update', used: 90, size: 100 });
+  send('foreign', { sessionUpdate: 'subagent_update', sessionId: 'bad' });
+  await new Promise(setImmediate);
+  const current = (await mod.methods.list())[0];
+  assert.equal(current.childSessions.child.progress.percent, 35);
+  assert.equal(current.childSessions.nested.parentId, 'child');
+  assert.equal(current.childSessions.bad, undefined);
+  assert.equal(current.usage, undefined);
+  assert.equal(dbWrites.filter(w => w.sql.startsWith('INSERT INTO messages') && w.args[1] === 'assistant').length, 0);
+  const prompt = requests.find(r => r.method === 'session/prompt');
+  listeners.get('process')(JSON.stringify({ jsonrpc: '2.0', id: prompt.id, result: { stopReason: 'end_turn' } }) + '\n');
+  await new Promise(setImmediate);
+  await mod.methods.stop(ctx, { id: 'chat' });
+  assert.equal((await mod.methods.list())[0].childSessions.child.state, 'unknown');
+});
 const adapter = provider => ({ id: provider, provider, name: provider, executable: 'test', args: [] });
 const meta = { caller: 'workflow-runner' };
 
@@ -116,17 +142,18 @@ test('a rejected MCP transport restores the previous workflow endpoint', async (
   assert.deepEqual(requests.find(r => r.method === 'session/resume').params.mcpServers, [{ name: old.name, command: old.command, args: old.args, env: [] }]);
 });
 
-test('only opted-in workflow Claude sessions negotiate autonomous turns and keep tool-card titles', async () => {
+test('Claude sessions negotiate autonomous turns unless opted out, and keep tool-card titles', async () => {
   for (const [provider, scope, enabled, expected] of [
     ['claude', workflow, undefined, true], ['claude', workflow, false, false],
-    ['claude', undefined, true, false], ['codex', workflow, true, false],
+    ['claude', undefined, undefined, true], ['claude', undefined, false, false], ['codex', workflow, true, false],
   ]) {
     const mod = (await load('Hato-plugins/modules/services/agent-runner/src/index.ts')).default;
     const { ctx, listeners, requests, events, dbWrites } = harness();
     await mod.activate(ctx);
     await mod.methods.create(ctx, { spec: spec({ profile: adapter(provider), workflow: scope, trackAutonomousClaudeTurns: enabled }) });
     const caps = requests.find(r => r.method === 'initialize').params.clientCapabilities;
-    assert.equal(caps._meta?.jetbrains.air.capabilities.includes('asyncTasks') ?? false, expected);
+    assert.equal(caps._meta['opencode/child-session-updates'], true);
+    assert.equal(caps._meta?.jetbrains?.air.capabilities.includes('asyncTasks') ?? false, expected);
     if (!expected) continue;
     const update = value => listeners.get('process')(JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'provider-session', update: value } }) + '\n');
     const spawn = id => update({ sessionUpdate: 'async_task_spawned', asyncTaskId: id, taskType: 'turn' });
@@ -150,7 +177,7 @@ test('only opted-in workflow Claude sessions negotiate autonomous turns and keep
     await new Promise(setImmediate);
     assert.equal((await mod.methods.list())[0].status, 'ready');
     assert.deepEqual(events.filter(([name]) => name === 'agent-runner.providerTurn').map(([, event]) => [event.phase, event.turnId, event.output]),
-      [['started', 'wakeup', undefined], ['finished', 'wakeup', 'Wakeup result']]);
+      scope ? [['started', 'wakeup', undefined], ['finished', 'wakeup', 'Wakeup result']] : [], 'workflow events only for workflow sessions');
     const titles = dbWrites.filter(w => w.sql.startsWith('INSERT INTO messages') && w.args[1] === 'tool').map(w => w.args[3]);
     assert.ok(titles.every(title => ['Read src/main.ts', 'grep parser src'].includes(title)));
     assert.deepEqual([...new Set(titles)], ['Read src/main.ts', 'grep parser src']);

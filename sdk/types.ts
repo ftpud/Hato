@@ -692,6 +692,7 @@ export interface WorkingConversation {
   title: string;
   workspaceId: string;
   status: "starting" | "busy";
+  children?: import("./acp-subagents").AcpSubagent[];
 }
 export interface ChatMessage { images?: ImageAttachment[]; key: string; role: "user" | "assistant" | "thought" | "tool" | "system" | "error" | "plan"; text: string; title?: string; status?: string }
 
