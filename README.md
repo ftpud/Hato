@@ -26,7 +26,7 @@ workflows develop.
 See [plugins and hot reload](docs/PLUGINS.md), including the internal MCP self-configuration
 workflow, for the extension model and its current boundaries.
 
-<img width="1582" height="948" alt="image" src="https://github.com/user-attachments/assets/8ac7c1a6-00c5-4b30-8d70-f4d7a1c9fdac" />
+<img width="1582" height="946" alt="image" src="https://github.com/user-attachments/assets/db2dbda2-24f5-4eaa-819f-89f53fedd251" />
 
 
 ## Run from source
