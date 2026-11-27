@@ -43,9 +43,15 @@ export interface SpawnRequest {
    *  it survives disconnects/app restarts, output is buffered while detached, and spawning the
    *  same key again reattaches instead of starting a new process. Keys are per module. */
   persist?: { key: string };
+  /** Windows, local `cmd.exe` by absolute path only: arguments are joined unquoted, as cmd's parser expects
+   *  (`/d /s /c "<command>"`). Use `userCommand` from `@hato/sdk/platform` rather than building these. */
+  verbatimArgs?: boolean;
 }
 export interface RunResult { code: number | null; signal: number | null; stdout: string; stderr: string; truncated: boolean }
 export interface PtyRequest { target?: ExecutionTarget; cwd: string; shell?: string; columns: number; rows: number; env?: Record<string, string>;
+  /** Local, non-persistent terminals: the first candidate whose program exists runs (absolute path or a name on PATH).
+   *  The module owns the order and arguments (see `terminalCandidates` in `@hato/sdk/platform`). */
+  shellCandidates?: { program: string; args?: string[] }[];
   /** Keep the shell in the target machine's daemon; opening the same key again reattaches. */ persist?: { key: string } }
 
 export type CloudDaemonTarget = { kind: "cloud"; connection: Handle };
@@ -267,9 +273,13 @@ export interface NativeHost {
 export interface EnvInfo {
   hostFeatures?: string[];
   abiVersion: 1; appName: string; platform: string; arch: string; home: string | null;
-  dataDir: string; sharedDir: string; initialRoot: string | null; repoRoot: string; uptimeMs: number; headless: boolean;
+  dataDir: string; sharedDir: string; initialRoot: string | null;
+  /** `initialRoot` came from `--root` rather than the working directory (absent on older hosts). */
+  initialRootExplicit?: boolean; repoRoot: string; uptimeMs: number; headless: boolean;
   /** UiNode types added after abiVersion 1 that this host renders (absent on older hosts). */
   uiNodes?: string[];
+  /** Windows hosts: well-known folders (null elsewhere and absent on older hosts). */
+  windows?: { systemRoot: string; programFiles: string; localAppData: string | null; appData: string | null } | null;
 }
 
 export interface ModuleStatus {

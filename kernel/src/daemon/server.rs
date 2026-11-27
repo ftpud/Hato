@@ -170,6 +170,7 @@ pub fn serve(home: &Path, idle_secs: u64) -> anyhow::Result<()> {
         repo_root: rt.canonicalize()?,
         data_dir: data.canonicalize()?,
         initial_root: dirs::home_dir(),
+        initial_root_explicit: false,
         safe_mode: false,
         dev_watch: false,
         headless: true,

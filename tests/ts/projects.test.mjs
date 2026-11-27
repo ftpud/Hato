@@ -55,7 +55,7 @@ test('Windows paths into WSL resolve to a distribution and a Linux path', async 
   assert.equal(sshFromProfile({ id: 'p', host: 'h', port: 22, user: 'u', authRef: '/k' }).transport, 'ssh');
 });
 
-test('on Windows the add form offers WSL projects instead of native local paths', async () => {
+test('on Windows the add form offers native folders and WSL projects', async () => {
   const built = await esbuild.build({ entryPoints: ['Hato-plugins/modules/ui/projects-panel/src/index.ts'], bundle: true, format: 'esm', write: false });
   const mod = (await import('data:text/javascript;base64,' + Buffer.from(built.outputFiles[0].text + '\n// windows').toString('base64'))).default;
   const calls = [];
@@ -63,13 +63,25 @@ test('on Windows the add form offers WSL projects instead of native local paths'
     calls.push([method, args]);
     if (method === 'wslDistributions') return ['Ubuntu', 'Debian'];
     if (method === 'addWsl') return { id: 'x' };
+    if (method === 'addLocal') return { id: 'y' };
+    if (method === 'pickFolder') return pick;
     return [];
   } } };
+  let pick = 'C:/Users/me/app';
   await mod.activate(ctx);
   await mod.onEvent(ctx, { action: 'showAdd', inputs: {} });
   let nodes = walk(mod.render()).map(n => n.key);
-  assert.ok(nodes.includes('source:wsl') && nodes.includes('source:ssh'));
-  assert.ok(!nodes.includes('source:local') && !nodes.includes('local-path'));
+  assert.ok(nodes.includes('source:local') && nodes.includes('source:wsl') && nodes.includes('source:ssh'));
+  assert.ok(nodes.includes('local-path'));
+  assert.equal(walk(mod.render()).find(n => n.key === 'local-path').placeholder, 'C:\\Users\\you\\project');
+  // A picked Windows folder fills the native form; one under \\wsl.localhost switches to WSL.
+  await mod.onEvent(ctx, { action: 'browse', inputs: {} });
+  await mod.onEvent(ctx, { action: 'addLocalPath', inputs: {} });
+  assert.deepEqual(calls.find(c => c[0] === 'addLocal')[1], { path: 'C:/Users/me/app', name: null });
+  await mod.onEvent(ctx, { action: 'showAdd', inputs: {} });
+  pick = '\\\\wsl.localhost\\Ubuntu\\home\\me\\app';
+  await mod.onEvent(ctx, { action: 'browse', inputs: {} });
+  assert.equal(walk(mod.render()).find(n => n.key === 'wsl-path')?.value, '/home/me/app');
   await mod.onEvent(ctx, { action: 'showWsl', inputs: {} });
   const distro = walk(mod.render()).find(n => n.key === 'wsl-distro');
   assert.deepEqual(distro.options.map(o => o.value), ['Ubuntu', 'Debian']);

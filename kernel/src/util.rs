@@ -171,6 +171,18 @@ pub fn command(program: impl AsRef<std::ffi::OsStr>) -> std::process::Command {
     c
 }
 
+/// A program that exists on this machine: an absolute path that is a file, or a bare name found on
+/// `PATH` (with `.exe`/`.com` on Windows). The working directory is never searched.
+pub fn find_program(program: &str) -> Option<String> {
+    let p = std::path::Path::new(program);
+    if p.is_absolute() { return p.is_file().then(|| program.to_string()); }
+    if program.contains('/') || program.contains('\\') { return None; }
+    let exts: &[&str] = if cfg!(windows) && p.extension().is_none() { &[".exe", ".com"] } else { &[""] };
+    std::env::split_paths(&std::env::var_os("PATH")?).filter(|d| d.is_absolute()).find_map(|dir| {
+        exts.iter().map(|e| dir.join(format!("{program}{e}"))).find(|c| c.is_file()).map(|c| c.to_string_lossy().into_owned())
+    })
+}
+
 /// Absolute path of a Windows system tool.
 #[cfg(windows)]
 pub fn system32(tool: &str) -> String {
@@ -198,6 +210,15 @@ fn plain_windows_path(p: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    #[test]
+    fn find_program_checks_files_and_path_never_cwd() {
+        assert_eq!(find_program("/bin/sh").as_deref(), Some("/bin/sh"));
+        assert_eq!(find_program("/definitely/missing/shell"), None);
+        assert!(find_program("sh").is_some_and(|p| p.ends_with("/sh")));
+        assert_eq!(find_program("./sh"), None, "relative paths are not searched");
+        assert_eq!(find_program("no-such-program-hato"), None);
+    }
     #[test]
     fn plain_windows_paths() {
         assert_eq!(plain_windows_path(r"\\?\C:\Users\me\My Project"), "C:/Users/me/My Project");

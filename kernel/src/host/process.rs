@@ -52,6 +52,9 @@ pub struct SpawnSpec {
     /// Variables removed from the inherited environment (e.g. to keep an API key away from an agent).
     pub env_remove: Vec<String>,
     pub login_shell: bool,
+    /// Windows, local `cmd.exe` only: append the arguments unquoted (`/d /s /c "<command>"`), as
+    /// cmd's own parser expects; MSVC-style quoting would hand it `\"` sequences it does not know.
+    pub verbatim_args: bool,
     /// Run under the daemon on the target machine: (daemon binary, scoped key). The process then
     /// survives this connection; spawning the same key again reattaches.
     pub persist: Option<Persist>,
@@ -77,7 +80,19 @@ pub fn spawn(spec: SpawnSpec) -> HResult<Arc<ProcessRes>> {
         }
         Target::Local => {
             let mut c = crate::util::command(&spec.executable);
-            c.args(&spec.args).current_dir(&spec.cwd);
+            if spec.verbatim_args {
+                #[cfg(windows)]
+                {
+                    use std::os::windows::process::CommandExt;
+                    c.raw_arg(spec.args.join(" "));
+                }
+                // Never start a program with its arguments silently dropped.
+                #[cfg(not(windows))]
+                return Err(HostError::invalid("verbatimArgs is Windows-only"));
+            } else {
+                c.args(&spec.args);
+            }
+            c.current_dir(&spec.cwd);
             for (k, v) in &spec.env {
                 c.env(k, v);
             }
@@ -306,7 +321,7 @@ mod tests {
     fn command(script: &str) -> Arc<ProcessRes> {
         spawn(SpawnSpec { target: Target::Local, ssh: None, cloud: None, executable: "/bin/sh".into(),
             args: vec!["-c".into(), script.into()], cwd: "/tmp".into(), env: vec![],
-            env_remove: vec![], login_shell: false, persist: None }).unwrap()
+            env_remove: vec![], login_shell: false, verbatim_args: false, persist: None }).unwrap()
     }
 
     #[test]

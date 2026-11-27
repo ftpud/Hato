@@ -74,8 +74,10 @@ export function workspacePath(root: string, uri: string): string | null {
   let path: string;
   try { path = decodeURIComponent(match[1]); } catch { return null; }
   const base = root.replace(/\\/g, "/").replace(/\/+$/, "");
+  // Windows: servers may send `file:///c%3A/x` (lowercase, encoded drive); paths compare case-insensitively.
+  const windows = /^[a-z]:\//i.test(base) || base.startsWith("//");
   if (/^[a-z]:\//i.test(base) && /^\/[a-z]:\//i.test(path)) path = path.slice(1);
-  if (!path.startsWith(base + "/")) return null;
+  if (windows ? !path.toLowerCase().startsWith(base.toLowerCase() + "/") : !path.startsWith(base + "/")) return null;
   try { return relativeFile(path.slice(base.length + 1)); } catch { return null; }
 }
 export function definitionLinks(value: any): any[] {

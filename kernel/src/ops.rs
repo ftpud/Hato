@@ -110,11 +110,19 @@ pub fn host_sync(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: Value) 
             "dataDir": k.cfg.data_dir.to_string_lossy(),
             "sharedDir": k.cfg.shared_dir().to_string_lossy(),
             "initialRoot": k.cfg.initial_root.as_ref().map(|p| p.to_string_lossy().into_owned()),
+            "initialRootExplicit": k.cfg.initial_root_explicit,
             "repoRoot": k.cfg.repo_root.to_string_lossy(),
             "uptimeMs": k.started.elapsed().as_millis() as u64,
             "headless": k.cfg.headless,
             // Node types added after abiVersion 1, so modules can fall back on older hosts.
             "uiNodes": ["slider", "colorPicker", "tabStrip", "securityPreferences", "surface", "icon", "meter", "spinner", "ring"],
+            // Well-known folders, so modules name system tools by absolute path.
+            "windows": if cfg!(windows) { json!({
+                "systemRoot": std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into()),
+                "programFiles": std::env::var("ProgramFiles").unwrap_or_else(|_| r"C:\Program Files".into()),
+                "localAppData": std::env::var("LOCALAPPDATA").ok(),
+                "appData": std::env::var("APPDATA").ok(),
+            }) } else { Value::Null },
         })),
         "state.get" => {
             let key = arg_str(&args, "key")?;
@@ -395,7 +403,7 @@ fn dispatch(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: &Value) -> H
             for pattern in watch_excludes(args)? { argv.push("--exclude".into()); argv.push(pattern); }
             let p = process::spawn(SpawnSpec {
                 target: g.target.clone(), ssh, cloud, executable: bin, args: argv, cwd: g.root.clone(),
-                env: vec![], env_remove: vec![], login_shell: false, persist: None,
+                env: vec![], env_remove: vec![], login_shell: false, verbatim_args: false, persist: None,
             })?;
             let handle = k.handles.insert("process", owner, format!("watch {real}"), p);
             Ok(json!({"handle": handle}))
@@ -648,8 +656,13 @@ fn dispatch(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: &Value) -> H
                     if !path_within(&g.root, &real) {
                         return Err(HostError::denied("terminal cwd outside granted root"));
                     }
+                    // `shellCandidates`: the module's preference order; the first installed program runs.
+                    let picked = if persist.is_none() { shell_candidate(req)? } else { None };
                     let sh = shell.map(|s| s.to_string()).or_else(|| std::env::var("SHELL").ok()).unwrap_or_else(|| if cfg!(windows) { "powershell.exe".into() } else { "/bin/sh".into() });
-                    let login = if cfg!(windows) { vec![] } else { vec!["-l".to_string()] };
+                    let (sh, login) = match picked {
+                        Some((program, args)) => (program, args),
+                        None => (sh, if cfg!(windows) { vec![] } else { vec!["-l".to_string()] }),
+                    };
                     match &persist {
                         Some(p) => PtySpec { remote: None, program: p.bin.clone(), args: vec!["daemon".into(), "pty-attach".into(), "--dir".into(), p.dir.clone(), "--key".into(), p.key.clone(), "--cwd".into(), real.clone(), "--shell".into(), sh],
                             cwd: Some(real.clone()), env: env_pairs(req)?, env_remove: vec![], cols, rows, machine_id: "local".into(), display_cwd: real, answer_queries: false },
@@ -1421,11 +1434,33 @@ fn check_target(g: &ScopeGrant, req: &Value) -> HResult<()> {
     Ok(())
 }
 
+/// First entry of `shellCandidates` (`[{program, args}]`) whose program exists on this machine.
+fn shell_candidate(req: &Value) -> HResult<Option<(String, Vec<String>)>> {
+    let Some(list) = req.get("shellCandidates").and_then(|c| c.as_array()) else { return Ok(None) };
+    if list.len() > 16 { return Err(HostError::invalid("too many shellCandidates")); }
+    for c in list {
+        let program = c.get("program").and_then(|p| p.as_str()).ok_or_else(|| HostError::invalid("shell candidate needs a program"))?;
+        let args: Vec<String> = c.get("args").and_then(|a| a.as_array()).map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default();
+        if program.is_empty() || program.len() > 4096 || program.contains('\0') || args.len() > 64 || args.iter().any(|a| a.contains('\0') || a.len() > 8192) {
+            return Err(HostError::invalid("invalid shell candidate"));
+        }
+        if let Some(found) = crate::util::find_program(program) { return Ok(Some((found, args))); }
+    }
+    Err(HostError::not_found("none of the configured shells is installed"))
+}
+
 fn spawn_spec(k: &Kernel, g: &ScopeGrant, req: &Value) -> HResult<SpawnSpec> {
     let exe = req.get("executable").and_then(|e| e.as_str()).ok_or_else(|| HostError::invalid("missing executable"))?.to_string();
     let args: Vec<String> = req.get("args").and_then(|a| a.as_array()).map(|a| a.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect()).unwrap_or_default();
     let cwd = req.get("cwd").and_then(|c| c.as_str()).unwrap_or(&g.root).to_string();
     let login_shell = req.get("loginShell").and_then(|b| b.as_bool()).unwrap_or(false);
+    let verbatim_args = req.get("verbatimArgs").and_then(|b| b.as_bool()).unwrap_or(false);
+    if verbatim_args {
+        let name = std::path::Path::new(&exe).file_name().map(|n| n.to_string_lossy().to_ascii_lowercase());
+        if !cfg!(windows) || !matches!(g.target, Target::Local) || !std::path::Path::new(&exe).is_absolute() || name.as_deref() != Some("cmd.exe") {
+            return Err(HostError::denied("verbatimArgs is only for a local cmd.exe given by absolute path on Windows"));
+        }
+    }
     let env = env_pairs(req)?;
     let env_remove: Vec<String> = req.get("envRemove").and_then(|a| a.as_array()).map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default();
     if env_remove.iter().any(|k| k.is_empty() || k.contains('=') || k.contains('\0') || k.len() > 128) {
@@ -1479,7 +1514,7 @@ fn spawn_spec(k: &Kernel, g: &ScopeGrant, req: &Value) -> HResult<SpawnSpec> {
         }
     };
     let ssh = ssh_for(k, &g.target);
-    Ok(SpawnSpec { target: g.target.clone(), ssh, cloud: cloud_for(k, g)?, executable: exe, args, cwd, env, env_remove, login_shell, persist: None })
+    Ok(SpawnSpec { target: g.target.clone(), ssh, cloud: cloud_for(k, g)?, executable: exe, args, cwd, env, env_remove, login_shell, verbatim_args, persist: None })
 }
 
 /// `persist: {key}` on a PTY/process request → (daemon binary, owner-scoped key).
@@ -1641,3 +1676,21 @@ fn request_grant(k: &Arc<Kernel>, gen: &Arc<Generation>, args: &Value) -> HResul
 
 #[allow(dead_code)]
 fn _assert_join(root: &str) -> HResult<String> { join_relative(root, ".") }
+
+#[cfg(test)]
+mod shell_candidate_tests {
+    use super::*;
+    #[test]
+    fn first_installed_candidate_wins_and_input_is_validated() {
+        assert_eq!(shell_candidate(&json!({})).unwrap(), None);
+        let missing = if cfg!(windows) { r"C:\nope\pwsh.exe" } else { "/nope/pwsh" };
+        let present = if cfg!(windows) { "cmd.exe" } else { "/bin/sh" };
+        let (program, args) = shell_candidate(&json!({"shellCandidates": [
+            {"program": missing, "args": ["-NoLogo"]}, {"program": present, "args": ["-i"]}]})).unwrap().unwrap();
+        assert!(program.ends_with(if cfg!(windows) { "cmd.exe" } else { "/bin/sh" }));
+        assert_eq!(args, vec!["-i".to_string()]);
+        assert_eq!(shell_candidate(&json!({"shellCandidates": [{"program": missing}]})).unwrap_err().code, "ENOENT");
+        assert!(shell_candidate(&json!({"shellCandidates": [{"program": "a\u{0}b"}]})).is_err());
+        assert!(shell_candidate(&json!({"shellCandidates": [{}]})).is_err());
+    }
+}

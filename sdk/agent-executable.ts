@@ -1,7 +1,14 @@
 import type { ModuleContext } from "./types";
+import { hostOs, resolveWindowsExecutable } from "./platform";
 
-/** Resolve daemon-local tools without sending interactive shell startup output to ACP stdio. */
-export async function agentExecutable(ctx: ModuleContext, grant: string, root: string, executable: string) {
+/** Resolve daemon-local tools without sending interactive shell startup output to ACP stdio.
+ *  On Windows `launch` starts npm shims as `node.exe <script>`; elsewhere it is the path itself. */
+export async function agentExecutable(ctx: ModuleContext, grant: string, root: string, executable: string): Promise<{ path: string; pathEnv: string; launch: { executable: string; args: string[] } }> {
+  if (hostOs(ctx) === "windows") {
+    const found = await resolveWindowsExecutable(ctx, grant, root, executable);
+    if (!found) throw new Error(`ACP adapter '${executable}' was not found on PATH. Install it for this user or configure an absolute executable path.`);
+    return found;
+  }
   for (const mode of ["-lc", "-ic"]) {
     // The user's shell initializes version managers, then a POSIX child performs the probe.
     // The executable stays in argv, including paths with spaces or shell metacharacters.
@@ -14,7 +21,7 @@ export async function agentExecutable(ctx: ModuleContext, grant: string, root: s
     }, { timeoutMs: 20000 });
     const path = /^__HATO_EXEC__=(.+)$/m.exec(result.stdout)?.[1];
     const pathEnv = /^__HATO_PATH__=(.+)$/m.exec(result.stdout)?.[1];
-    if (result.code === 0 && path && pathEnv) return { path, pathEnv };
+    if (result.code === 0 && path && pathEnv) return { path, pathEnv, launch: { executable: path, args: [] } };
   }
   throw new Error(`ACP adapter '${executable}' was not found in the daemon user's login or interactive shell PATH. Install it for that user on this machine or configure an absolute executable path.`);
 }

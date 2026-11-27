@@ -1,5 +1,6 @@
 {
   "schemaVersion": 1,
+  "branch": "experimental",
   "revision": "8f6f3f125a81539a4ae91889ed6e1f6719b3e8d5",
   "baseUrl": "https://raw.githubusercontent.com/ftpud/Hato-plugins/8f6f3f125a81539a4ae91889ed6e1f6719b3e8d5/",
   "modules": [

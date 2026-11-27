@@ -337,6 +337,20 @@ impl PtySession {
     }
 
     pub fn kill(&self) {
+        // ConPTY ends only the shell; programs it started (dev servers, watchers) would live on, so
+        // the tree is ended first. Only a live shell's PID is used (an exited one may be reused), and
+        // taskkill runs without holding the backend lock.
+        #[cfg(windows)]
+        {
+            let pid = match &mut *self.backend.lock() {
+                Backend::Local { child, .. } if matches!(child.try_wait(), Ok(None)) => child.process_id(),
+                _ => None,
+            };
+            if let Some(pid) = pid {
+                let _ = crate::util::command(crate::util::system32("taskkill.exe")).args(["/T", "/F", "/PID", &pid.to_string()])
+                    .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status();
+            }
+        }
         match &mut *self.backend.lock() {
             Backend::Local { child, .. } => { let _ = child.kill(); }
             Backend::Cloud { program, .. } => CloudConnection::wait(program.close()),

@@ -10,6 +10,9 @@ pub struct Config {
     pub data_dir: PathBuf,
     /// Initial project root passed with `--root` (forwarded to TS bootstrap as plain data).
     pub initial_root: Option<PathBuf>,
+    /// The root came from `--root` rather than the working directory (which on Windows is often
+    /// System32 or the install folder when launched from the shell).
+    pub initial_root_explicit: bool,
     /// Start every module at its last-known-good version and show safe-mode chrome on failure.
     pub safe_mode: bool,
     /// Developer flag: watch build/modules and auto-stage+activate changed seeds (trusted local dev only).
@@ -116,12 +119,13 @@ impl Config {
         };
         std::fs::create_dir_all(&data_dir)?;
         let data_dir = PathBuf::from(canonical_string(&data_dir)?);
+        let initial_root_explicit = root.is_some();
         let initial_root = Some(root.map(|r| if r.is_absolute() { r } else { cwd.join(r) }).unwrap_or_else(|| cwd.clone()));
         let initial_root = match initial_root {
             Some(r) => Some(PathBuf::from(canonical_string(&r)?)),
             None => None,
         };
-        let cfg = Config { repo_root, data_dir, initial_root, safe_mode, dev_watch, headless, headless_script, snapshot: want_snap.then_some(snap) };
+        let cfg = Config { repo_root, data_dir, initial_root, initial_root_explicit, safe_mode, dev_watch, headless, headless_script, snapshot: want_snap.then_some(snap) };
         for d in ["sqlite", "artifacts", "logs", "ssh", "shared", "plugins"] {
             std::fs::create_dir_all(cfg.data_dir.join(d))?;
         }

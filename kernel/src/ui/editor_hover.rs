@@ -322,6 +322,7 @@ mod tests {
             repo_root: temp.path().to_owned(),
             data_dir: temp.path().join("data"),
             initial_root: None,
+            initial_root_explicit: false,
             safe_mode: false,
             dev_watch: false,
             headless: false,

@@ -7,7 +7,20 @@ export interface AgentProvider {
   mcpLaunch?: McpLaunchOptions;
   usageCommand?: string;
   auth?: { key: string; field: string; label: string; description: string; default: boolean; envRemove: string[] };
+  /** Support on native Windows workspaces, from the provider's Windows smoke test. Absent means untested. */
+  platforms?: { windows?: WindowsSupport };
 }
+/** `untested` runs with a warning; `unsupported` disables the agent and shows `note`. `requires` names tools
+ *  the agent itself needs (e.g. Git Bash), with the environment variable that tells the agent where it is. */
+export interface WindowsSupport { status: "supported" | "untested" | "unsupported"; requires?: { tool: "git-bash"; env?: string }[]; note?: string }
+
+function windowsSupport(raw: any): WindowsSupport | undefined {
+  if (!raw || !["supported", "untested", "unsupported"].includes(raw.status)) return undefined;
+  const requires = Array.isArray(raw.requires) ? raw.requires.filter((r: any) => r?.tool === "git-bash" && (r.env === undefined || /^[A-Z][A-Z0-9_]{0,63}$/.test(r.env))) : undefined;
+  return { status: raw.status, ...(requires?.length ? { requires } : {}), ...(typeof raw.note === "string" ? { note: raw.note.slice(0, 500) } : {}) };
+}
+/** Windows support for a provider (untested when the manifest says nothing). */
+export const windowsSupportOf = (p: Pick<AgentProvider, "platforms"> | undefined): WindowsSupport => p?.platforms?.windows || { status: "untested" };
 /** Provider definitions belong to enabled plugin contributions, including saved profile ownership. */
 export function agentProviders(plugins: PluginInfo[], enabledOnly = true): AgentProvider[] {
   const out: AgentProvider[] = [], seen = new Set<string>(), profiles = new Set<string>();
@@ -23,7 +36,8 @@ export function agentProviders(plugins: PluginInfo[], enabledOnly = true): Agent
         || typeof raw.adapter?.bin !== 'string') continue;
       if (raw.auth && (typeof raw.auth.key !== 'string' || typeof raw.auth.field !== 'string' || typeof raw.auth.label !== 'string'
         || typeof raw.auth.default !== 'boolean' || !Array.isArray(raw.auth.envRemove) || !raw.auth.envRemove.every((key: unknown) => typeof key === 'string'))) continue;
-      profiles.add(raw.profile.id); seen.add(raw.id); out.push({ ...raw, module: plugin.id });
+      const windows = windowsSupport(raw.platforms?.windows);
+      profiles.add(raw.profile.id); seen.add(raw.id); out.push({ ...raw, platforms: windows ? { windows } : undefined, module: plugin.id });
     }
   }
   return out;
@@ -40,6 +54,7 @@ export async function providerProfiles(ctx: ModuleContext) {
   }
   return rows.map(p => {
     const definition = available.find(d => d.id === p.provider);
-    return { ...p, providerModule: definition?.module, mcpLaunch: definition?.mcpLaunch, authOption: definition?.auth };
+    return { ...p, providerModule: definition?.module, mcpLaunch: definition?.mcpLaunch, authOption: definition?.auth,
+      windows: definition ? windowsSupportOf(definition) : undefined };
   });
 }
