@@ -104,4 +104,46 @@ fn init_logging(cfg: &Config) {
     let level = if std::env::var("HATO_DEBUG").is_ok() { log::Level::Debug } else { log::Level::Info };
     let _ = log::set_boxed_logger(Box::new(L(parking_lot::Mutex::new(f), level)));
     log::set_max_level(level.to_level_filter());
+    // A panic inside a Windows window callback aborts the process (exit 0xc000041d) before
+    // anything else reports it: record it, with a backtrace, where the rest of the log is.
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let thread = std::thread::current();
+        log::error!("panic on thread '{}': {info}\n{}", thread.name().unwrap_or("?"), std::backtrace::Backtrace::force_capture());
+        previous(info);
+    }));
+    #[cfg(windows)]
+    log_fatal_exceptions();
+}
+
+/// Native faults (access violations and the like) inside a window callback end the process with
+/// 0xc000041d and no message. Log the first few with a backtrace as they are raised; Windows then
+/// handles them as before.
+#[cfg(windows)]
+fn log_fatal_exceptions() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use windows_sys::Win32::System::Diagnostics::Debug::{AddVectoredExceptionHandler, EXCEPTION_POINTERS};
+    static LOGGED: AtomicU32 = AtomicU32::new(0);
+    const STACK_OVERFLOW: u32 = 0xC000_00FD;
+    const FATAL: [u32; 6] = [0xC000_0005, 0xC000_001D, 0xC000_0096, 0xC000_0409, 0xC000_0374, STACK_OVERFLOW];
+    unsafe extern "system" fn handler(info: *mut EXCEPTION_POINTERS) -> i32 {
+        let record = unsafe { &*(*info).ExceptionRecord };
+        let code = record.ExceptionCode as u32;
+        if FATAL.contains(&code) && LOGGED.fetch_add(1, Ordering::SeqCst) < 3 {
+            let address = record.ExceptionAddress as usize;
+            let detail = if code == 0xC000_0005 && record.NumberParameters >= 2 {
+                format!(" ({} at {:#x})", if record.ExceptionInformation[0] == 1 { "write" } else { "read" }, record.ExceptionInformation[1])
+            } else {
+                String::new()
+            };
+            // Little stack is left after an overflow: no backtrace then.
+            let trace = if code == STACK_OVERFLOW { String::from("(stack overflow: no backtrace)") } else { std::backtrace::Backtrace::force_capture().to_string() };
+            // The offset into hato.exe stays meaningful across runs (the load address does not).
+            let base = unsafe { windows_sys::Win32::System::LibraryLoader::GetModuleHandleW(std::ptr::null()) } as usize;
+            log::error!("native exception {code:#010x} at {address:#x} (hato.exe+{:#x}){detail} on thread '{}'\n{trace}",
+                address.wrapping_sub(base), std::thread::current().name().unwrap_or("?"));
+        }
+        0 // EXCEPTION_CONTINUE_SEARCH
+    }
+    unsafe { AddVectoredExceptionHandler(1, Some(handler)) };
 }

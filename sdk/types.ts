@@ -282,6 +282,8 @@ export interface EnvInfo {
    *  `daemon.local` (a workspace daemon for local projects). Test these rather than `platform`. */
   hostFeatures?: string[];
   abiVersion: 1; appName: string; platform: string; arch: string; home: string | null;
+  /** The running Hato binary; inside a daemon, the daemon's own copy (absent on older hosts). */
+  executable?: string | null;
   dataDir: string; sharedDir: string; initialRoot: string | null;
   /** `initialRoot` came from `--root` rather than the working directory (absent on older hosts). */
   initialRootExplicit?: boolean; repoRoot: string; uptimeMs: number; headless: boolean;

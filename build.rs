@@ -9,6 +9,14 @@ fn main() {
     if cfg("CARGO_CFG_TARGET_OS") != "windows" || env::var_os("CARGO_FEATURE_GUI").is_none() {
         return;
     }
+    // Windows gives the main thread 1 MB of stack (macOS and Linux: 8 MB). Laying out a popup over
+    // a long chat transcript nested deeper than that and overflowed it inside a window callback,
+    // which ends the process with 0xc000041d and no message. Reserve 16 MB, as other GPUI apps do.
+    if cfg("CARGO_CFG_TARGET_ENV") == "gnu" {
+        println!("cargo:rustc-link-arg-bins=-Wl,--stack,16777216");
+    } else {
+        println!("cargo:rustc-link-arg-bins=/STACK:16777216");
+    }
     if cfg("CARGO_CFG_TARGET_ENV") != "gnu" {
         println!("cargo:warning=the application icon is only embedded for the windows-gnu target");
         return;

@@ -105,6 +105,8 @@ pub fn host_sync(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: Value) 
             // Capabilities modules test instead of the OS name (absent ones are unsupported here).
             "hostFeatures": host_features(),
             "appName": "hato",
+            // The running Hato binary (inside a daemon: the daemon's own copy, present while it runs).
+            "executable": std::env::current_exe().ok().map(|p| p.to_string_lossy().into_owned()),
             "platform": std::env::consts::OS,
             "arch": std::env::consts::ARCH,
             "home": dirs::home_dir().map(|h| h.to_string_lossy().into_owned()),
