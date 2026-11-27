@@ -1,8 +1,8 @@
 //! Client commands run on the remote machine (over SSH) to talk to the daemon.
+use super::ipc::Stream as UnixStream;
 use super::*;
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader};
-use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -49,6 +49,16 @@ pub fn request(home: &Path, req: &Value) -> anyhow::Result<Value> {
     send_line(&mut s, req)?;
     let mut r = BufReader::new(s);
     reply(&mut r)
+}
+
+/// Start a streaming operation (`pty.attach`, …): returns the write half, the frame reader that
+/// follows the reply line, and the reply's value.
+pub fn open(home: &Path, req: &Value) -> anyhow::Result<(UnixStream, BufReader<UnixStream>, Value)> {
+    let mut s = connect(home)?;
+    send_line(&mut s, req)?;
+    let mut r = BufReader::new(s.try_clone()?);
+    let value = reply(&mut r)?;
+    Ok((s, r, value))
 }
 
 /// `ctl`: one JSON request on stdin, the JSON reply (`{"ok":…}`) on stdout.
@@ -116,10 +126,10 @@ pub fn ensure(home: &Path, force: bool) -> anyhow::Result<()> {
         request(home, &json!({"op": "shutdown"}))?;
         let t = Instant::now();
         let socket = socket_path(home);
-        while socket.exists() && t.elapsed() < Duration::from_secs(5) {
+        while socket_present(&socket) && t.elapsed() < Duration::from_secs(5) {
             std::thread::sleep(Duration::from_millis(50));
         }
-        if socket.exists() {
+        if socket_present(&socket) {
             anyhow::bail!("the previous daemon did not stop at {}", socket.display());
         }
     }
@@ -129,19 +139,7 @@ pub fn ensure(home: &Path, force: bool) -> anyhow::Result<()> {
     let mut cmd = std::process::Command::new(exe);
     cmd.args(["daemon", "serve", "--dir"]).arg(home)
         .stdin(std::process::Stdio::null()).stdout(log.try_clone()?).stderr(log);
-    {
-        use std::os::unix::process::CommandExt;
-        // A new session: the daemon must not die with the SSH session that started it.
-        unsafe {
-            cmd.pre_exec(|| {
-                if libc::setsid() < 0 {
-                    return Err(io::Error::last_os_error());
-                }
-                Ok(())
-            });
-        }
-    }
-    cmd.spawn()?;
+    spawn_detached(cmd, home)?;
     let t = Instant::now();
     loop {
         match request(home, &json!({"op": "hello"})) {
@@ -157,13 +155,77 @@ pub fn ensure(home: &Path, force: bool) -> anyhow::Result<()> {
     }
 }
 
+/// A new session: the daemon must not die with the SSH session that started it.
+#[cfg(unix)]
+fn spawn_detached(mut cmd: std::process::Command, _home: &Path) -> io::Result<()> {
+    use std::os::unix::process::CommandExt;
+    unsafe {
+        cmd.pre_exec(|| {
+            if libc::setsid() < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    cmd.spawn().map(drop)
+}
+
+/// No console and its own process group, outside the desktop's job when the job allows it, so the
+/// daemon outlives the app (and the terminal or IDE the app was started from). Its working
+/// directory is the daemon home, never a workspace it would keep from being deleted.
+#[cfg(windows)]
+fn spawn_detached(mut cmd: std::process::Command, home: &Path) -> io::Result<()> {
+    use std::os::windows::process::CommandExt;
+    const DETACHED_PROCESS: u32 = 0x0000_0008;
+    const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+    const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
+    // A Windows child inherits every inheritable handle, including the pipes this process's own
+    // caller reads stdout/stderr from: the daemon would hold them open and the caller would never
+    // see the end of `ensure`'s output. The daemon's stdio is passed explicitly instead.
+    unsafe {
+        use windows_sys::Win32::Foundation::{SetHandleInformation, HANDLE_FLAG_INHERIT};
+        use windows_sys::Win32::System::Console::{GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE};
+        for which in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
+            let handle = GetStdHandle(which);
+            if !handle.is_null() && handle as isize != -1 {
+                SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0);
+            }
+        }
+    }
+    cmd.current_dir(home);
+    cmd.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB);
+    match cmd.spawn() {
+        Ok(_) => Ok(()),
+        // The job forbids breakaway: start inside it (the daemon then ends with that job).
+        Err(e) if e.raw_os_error() == Some(5) => {
+            cmd.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
+            cmd.spawn().map(drop)
+        }
+        Err(e) => Err(e),
+    }
+}
+
+#[cfg(windows)]
+fn winsize() -> Option<(u16, u16)> { None }
+
+/// Windows attach clients run on pipes (the desktop attaches terminals over the socket itself).
+#[cfg(windows)]
+struct RawMode;
+#[cfg(windows)]
+impl RawMode {
+    fn enable() -> RawMode { RawMode }
+}
+
+#[cfg(unix)]
 fn winsize() -> Option<(u16, u16)> {
     let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
     (unsafe { libc::ioctl(0, libc::TIOCGWINSZ, &mut ws) } == 0 && ws.ws_col > 0).then_some((ws.ws_col, ws.ws_row))
 }
 
 /// Raw mode for the duration of an interactive attach; restored on drop.
+#[cfg(unix)]
 struct RawMode(Option<libc::termios>);
+#[cfg(unix)]
 impl RawMode {
     fn enable() -> RawMode {
         unsafe {
@@ -181,6 +243,7 @@ impl RawMode {
         }
     }
 }
+#[cfg(unix)]
 impl Drop for RawMode {
     fn drop(&mut self) {
         if let Some(t) = self.0 {
@@ -260,8 +323,10 @@ pub fn pty_attach(home: &Path, a: &Args) -> anyhow::Result<()> {
 pub fn proc_attach(home: &Path, a: &Args) -> anyhow::Result<()> {
     let key = a.get("key").ok_or_else(|| anyhow::anyhow!("--key is required"))?;
     let sh = a.get("sh").map(str::to_owned).or_else(|| (!a.rest.is_empty()).then(|| a.rest.iter().map(|x| crate::quoting::sh_quote(x)).collect::<Vec<_>>().join(" ")));
+    // `--spec`: a structured command (program, args, env) for daemons without a POSIX shell.
+    let spec = a.get("spec").map(serde_json::from_str::<Value>).transpose()?;
     let mut s = connect(home)?;
-    send_line(&mut s, &json!({"op": "proc.attach", "args": {"key": key, "cwd": a.get("cwd"), "sh": sh}}))?;
+    send_line(&mut s, &json!({"op": "proc.attach", "args": {"key": key, "cwd": a.get("cwd"), "sh": sh, "spec": spec}}))?;
     let mut r = BufReader::new(s.try_clone()?);
     reply(&mut r)?;
     let w = Arc::new(parking_lot::Mutex::new(s));

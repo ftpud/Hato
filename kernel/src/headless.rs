@@ -33,7 +33,7 @@ pub fn run(k: &Arc<Kernel>, script: &std::path::Path) -> anyhow::Result<bool> {
     let (tx, rx) = crossbeam_channel::unbounded();
     let gen = Arc::new(Generation {
         gen_id: k.router.alloc_gen_id(), module_id: "__driver".into(), version: 1, kind: "service".into(), hash: String::new(),
-        stage_id: String::new(), manifest, caps: EffectiveCaps { caps: ["remote.daemon", "pty.scope", "process.scope", "fs.scope", "ssh.connect", "net.fetch"].into_iter().map(String::from).collect(), calls: ["*".to_string()].into_iter().collect() },
+        stage_id: String::new(), manifest, caps: EffectiveCaps { caps: ["remote.daemon", "pty.scope", "process.scope", "fs.scope", "ssh.connect", "net.fetch"].into_iter().map(String::from).collect(), calls: ["*".to_string()].into_iter().collect(), policy: None },
         tx, status: Mutex::new(GenStatus::Loading), inflight: Default::default(), exports: Mutex::new(Value::Null),
         errors: Default::default(), created: std::time::Instant::now(),
     });

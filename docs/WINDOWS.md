@@ -4,8 +4,8 @@ The window runs natively on Windows (x64 only; Windows on ARM is not supported).
 places:
 
 * **A native Windows folder** (`C:\…`, a network share): files, Git, terminals, run configurations, language servers
-  and chat agents run on Windows itself. Background agents and workflows need the workspace daemon, which runs on
-  Linux and macOS only, so they are unavailable in native projects for now (see *Limitations*).
+  and chat agents run on Windows itself. A local Windows daemon keeps terminals (Settings → Terminals → *Keep local
+  terminals running after quitting*) and persistent processes alive across app restarts (see *Windows daemon*).
 * **A WSL distribution**, or **a Linux host over SSH**: everything runs on that Linux machine, including the daemon.
 
 ## Requirements
@@ -56,6 +56,20 @@ Modules never start `sh` for their own work: they spawn programs with argv (`@ha
 Native primitives used: `pty.open` `shellCandidates` (first installed program), `process.spawn` `verbatimArgs`
 (local `cmd.exe` by absolute path only) and `env.info().windows` (system folders).
 
+### Windows daemon
+
+`hato daemon` runs natively for local projects (`env.info().hostFeatures` includes `daemon.local`):
+
+* It listens on an AF_UNIX socket in `%USERPROFILE%\.hato\run` (or `%TEMP%\hato` for long paths) and serves only
+  processes of the same Windows user (the peer's process id, then its token's user SID).
+* It runs from a content-named copy, `%USERPROFILE%\.hato\bin\hato-<version>-<hash>.exe`, because Windows locks a
+  running executable: rebuilding or updating Hato never fails because a daemon holds terminals. Unused copies are
+  removed on the next start.
+* Terminals are ConPTY sessions in the daemon; the desktop attaches to them over the socket. Persistent processes
+  are started from their program, arguments and environment (no shell) and are put in a Job Object, so stopping
+  one ends its whole process tree. Windows has no signals here: `INT`, `TERM` and `KILL` all end the job.
+* The daemon is started detached and outside the app's job when the job allows it, so it outlives Hato.
+
 ## How it works (WSL and SSH)
 
 A WSL project is a machine like an SSH host: `SshProfile.transport: "wsl"` keeps everything above the kernel the same.
@@ -77,8 +91,9 @@ same as on Unix.
 
 ## Limitations
 
-* Native projects have no workspace daemon yet: background agents, workflows and terminals that survive an app
-  restart need a WSL or SSH project. SSH to Windows hosts is not supported (hosts must be Linux or macOS).
+* The Windows daemon holds terminals and processes; background agents and workflows on it are untested in native
+  projects (use a WSL or SSH project for them). Its SSH command route and the Cloud connector are Unix-only. SSH to
+  Windows hosts is not supported (hosts must be Linux or macOS).
 * Native ACP adapters are marked *untested* until their Windows smoke test is recorded in the provider manifest.
 * Workflow File/Pipe Triggers watch files only: named pipes (`mkfifo`) do not exist on native Windows.
 * Started from Explorer or the Start menu, Hato does not add its working folder as a project; pass

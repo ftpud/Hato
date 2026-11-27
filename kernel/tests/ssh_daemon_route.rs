@@ -130,7 +130,7 @@ fn daemon_route_bypasses_the_session_limit() {
     // A spawned process ends on terminate() with its signal.
     let p = process::spawn(SpawnSpec {
         target: Target::Ssh { machine_id: m.profile.machine_id(), master_key: m.profile.machine_id() }, ssh: Some(m.clone()), cloud: None,
-        executable: "sleep".into(), args: vec!["30".into()], cwd: "/tmp".into(), env: vec![], env_remove: vec![], login_shell: false, verbatim_args: false, persist: None,
+        executable: "sleep".into(), args: vec!["30".into()], cwd: "/tmp".into(), env: vec![], env_remove: vec![], login_shell: false, verbatim_args: false, persist: None, memory_limit_mb: None,
     }).unwrap();
     std::thread::sleep(Duration::from_millis(300));
     p.terminate(Some("TERM")).unwrap();

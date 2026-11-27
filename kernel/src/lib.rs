@@ -10,6 +10,7 @@ pub mod grants;
 pub mod handles;
 pub mod headless;
 pub mod host;
+pub mod host_policy;
 pub mod js;
 pub mod kernel;
 pub mod ops;

@@ -382,18 +382,54 @@ pub fn forward_reverse(master: &Arc<SshMaster>, local_port: u16, data_dir: &std:
     master.forward_reverse(local_port)
 }
 
-/// Start the daemon on this machine (terminals/processes then survive app restarts).
+/// The binary the local daemon runs from: this executable on Unix.
+#[cfg(not(windows))]
+fn local_daemon_binary(_home: &std::path::Path) -> HResult<PathBuf> { std::env::current_exe().map_err(HostError::io) }
+
+/// Windows keeps a running executable locked: a daemon started from this binary would block
+/// rebuilding or updating it for as long as it holds terminals. It runs from a copy named by
+/// content (`<home>/bin/hato-<version>-<sha>.exe`) instead; copies no daemon uses are removed.
 #[cfg(windows)]
-pub fn ensure_local(_table: &DaemonTable) -> HResult<DaemonInfo> {
-    Err(HostError::new("ENOTSUP", "persistent resources need a Linux machine: open the workspace in WSL or over SSH"))
+fn local_daemon_binary(home: &std::path::Path) -> HResult<PathBuf> {
+    let exe = std::env::current_exe().map_err(HostError::io)?;
+    let (size, digest) = binary_digest(&exe)?;
+    let dir = home.join("bin");
+    std::fs::create_dir_all(&dir).map_err(HostError::io)?;
+    let name = format!("hato-{}-{}.exe", crate::daemon::VERSION, &digest[..12]);
+    let target = dir.join(&name);
+    if std::fs::metadata(&target).map(|m| m.len()).ok() != Some(size) {
+        let tmp = dir.join(format!("{name}.part-{}", crate::util::random_hex(4)));
+        std::fs::copy(&exe, &tmp).and_then(|_| std::fs::rename(&tmp, &target)).inspect_err(|_| { let _ = std::fs::remove_file(&tmp); }).map_err(HostError::io)?;
+    }
+    for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+        let other = entry.file_name().to_string_lossy().into_owned();
+        if other != name && other.starts_with("hato-") {
+            let _ = std::fs::remove_file(entry.path()); // fails while a daemon still runs it
+        }
+    }
+    Ok(target)
 }
 
 /// Start the daemon on this machine (terminals/processes then survive app restarts).
-#[cfg(not(windows))]
-pub fn ensure_local(table: &DaemonTable) -> HResult<DaemonInfo> {
-    let exe = std::env::current_exe().map_err(HostError::io)?;
-    let dir = crate::daemon::home_dir(None).to_string_lossy().into_owned();
-    let out = crate::util::command(&exe).args(["daemon", "ensure", "--dir", &dir]).stdin(Stdio::null()).output().map_err(HostError::io)?;
+pub fn ensure_local(table: &DaemonTable) -> HResult<DaemonInfo> { start_local(table, false) }
+
+/// Replace this machine's daemon with the current build, even while it holds terminals or
+/// processes (they stop). `ensure` alone keeps a busy daemon running its old build.
+pub fn force_upgrade_local(table: &DaemonTable) -> HResult<DaemonInfo> {
+    table.links.lock().remove("local");
+    start_local(table, true)
+}
+
+fn start_local(table: &DaemonTable, force: bool) -> HResult<DaemonInfo> {
+    let home = crate::daemon::home_dir(None);
+    let exe = local_daemon_binary(&home)?;
+    let dir = home.to_string_lossy().into_owned();
+    let mut cmd = crate::util::command(&exe);
+    cmd.args(["daemon", "ensure", "--dir", &dir]);
+    if force {
+        cmd.arg("--force");
+    }
+    let out = cmd.stdin(Stdio::null()).output().map_err(HostError::io)?;
     if !out.status.success() {
         return Err(HostError::new("EDAEMON", String::from_utf8_lossy(&out.stderr).trim().to_string()));
     }
@@ -491,7 +527,7 @@ pub fn scoped_key(owner: &str, key: &str) -> HResult<String> {
 
 /// Allowed `daemon.request` operations (module-facing; attach/bridge go through PTY/process).
 pub fn allowed_op(op: &str) -> bool {
-    matches!(op, "hello" | "status" | "resources.list" | "pty.read" | "pty.write" | "pty.kill" | "proc.kill" | "proc.closeStdin" | "plugins.list" | "plugins.push" | "plugins.enable" | "plugins.disable" | "modules.call")
+    matches!(op, "hello" | "status" | "resources.list" | "pty.read" | "pty.write" | "pty.kill" | "proc.kill" | "proc.closeStdin" | "plugins.list" | "plugins.push" | "plugins.enable" | "plugins.disable" | "modules.call" | "policy.get" | "policy.set")
 }
 
 pub fn status_json(i: &DaemonInfo) -> Value { json!({"machineId": i.machine_id, "bin": i.bin, "dir": i.dir, "status": i.status}) }

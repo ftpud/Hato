@@ -57,6 +57,11 @@ tokio-tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
 snow = "0.10"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 
+# The daemon on Windows: AF_UNIX sockets (Windows 10 1803+), peer checks and Job Objects.
+[target.'cfg(windows)'.dependencies]
+uds_windows = "1.2.1"
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Networking_WinSock", "Win32_Security", "Win32_System_Console", "Win32_System_IO", "Win32_System_Threading", "Win32_System_JobObjects"] }
+
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-app-kit = { version = "=0.2.2", features = ["NSApplication", "NSImage", "NSResponder", "NSView", "NSWindow", "NSControl", "NSButton"], optional = true }
 # Same version GPUI links; reaches the NSWindow behind a GPUI window (window-button visibility).
@@ -107,3 +112,11 @@ path = "kernel/tests/plugin_runtime.rs"
 [[test]]
 name = "cloud_relay"
 path = "kernel/tests/cloud_relay.rs"
+
+[[test]]
+name = "windows_daemon"
+path = "kernel/tests/windows_daemon.rs"
+
+[[test]]
+name = "daemon_policy"
+path = "kernel/tests/daemon_policy.rs"

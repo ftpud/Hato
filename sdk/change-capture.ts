@@ -37,6 +37,21 @@ export function capturedEntries(records: CapturedChange[], entries: PromptEntry[
   }
   return [...merged.values()];
 }
+const normalizePath = (path: string) => path.replace(/\\/g, "/").replace(/\/{2,}/g, "/").replace(/^(\.\/)+/, "").replace(/\/$/, "");
+const isWindowsPath = (path: string) => /^[a-zA-Z]:\//.test(path);
+/** Providers report absolute paths and capture reports workspace-relative ones: the same file when
+ *  one path equals the other or ends with it at a path boundary (case-insensitive for Windows). */
+function pathMatcher(paths: Iterable<string>): (path: string) => boolean {
+  const wanted = [...paths].map(normalizePath).filter(Boolean);
+  return path => {
+    const p = normalizePath(path);
+    return wanted.some(w => {
+      const fold = isWindowsPath(p) || isWindowsPath(w);
+      const a = fold ? p.toLowerCase() : p, b = fold ? w.toLowerCase() : w;
+      return a === b || a.endsWith("/" + b) || b.endsWith("/" + a);
+    });
+  };
+}
 /** Captured file changes have their own tool card, with provider duplicates removed per turn. */
 export function capturedTranscript(messages: ChatMessage[], records: CapturedChange[], source: "chat" | "agent", sessionId: string): ChatMessage[] {
   const result: ChatMessage[] = [];
@@ -48,9 +63,10 @@ export function capturedTranscript(messages: ChatMessage[], records: CapturedCha
     while (end < messages.length && messages[end].role !== "user") end++;
     const changes = records.filter(r => r.owner?.source === source && r.owner.sessionId === sessionId && r.owner.key === message.key);
     const paths = new Set(changes.flatMap(r => r.diffs.map(d => d.path)));
+    const captured = pathMatcher(paths);
     const anchored = new Map<number, CapturedChange[]>();
     for (const change of changes) {
-      const changedPaths = new Set(change.diffs.map(diff => diff.path));
+      const changed = pathMatcher(change.diffs.map(diff => diff.path));
       let anchor = i;
       let matching = -1;
       for (let j = i + 1; j < end; j++) {
@@ -60,7 +76,7 @@ export function capturedTranscript(messages: ChatMessage[], records: CapturedCha
         const timestamp = typeof at === "string" ? Date.parse(at) : at;
         if (timestamp !== undefined && timestamp > change.at) continue;
         anchor = j;
-        if (candidate.diffs?.some(diff => changedPaths.has(diff.path))) matching = j;
+        if (candidate.diffs?.some(diff => changed(diff.path))) matching = j;
       }
       if (matching >= 0) anchor = matching;
       const group = anchored.get(anchor) || [];
@@ -72,7 +88,7 @@ export function capturedTranscript(messages: ChatMessage[], records: CapturedCha
     result.push(...cards(i));
     for (let j = i + 1; j < end; j++) {
       const original = messages[j];
-      result.push(paths.size && original.diffs ? { ...original, diffs: original.diffs.filter(d => !paths.has(d.path)) } : original);
+      result.push(paths.size && original.diffs ? { ...original, diffs: original.diffs.filter(d => !captured(d.path)) } : original);
       result.push(...cards(j));
     }
     i = end - 1;

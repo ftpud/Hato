@@ -15,13 +15,13 @@
 //! SSH is the authentication boundary: the socket directory is 0700 and the daemon checks that
 //! the peer has its own uid. The daemon knows nothing about what plugins or processes mean.
 //!
-//! The daemon runs on Unix only: a Windows desktop runs its workspaces in WSL or on Linux hosts,
-//! with the Linux daemon there. `watch` and `forward` are not tied to the daemon socket.
-#[cfg(unix)]
+//! On Windows the daemon holds the local machine's terminals and processes (native workspaces):
+//! an AF_UNIX socket whose peers must be this user, ConPTY terminals and Job Objects for process
+//! trees (see `ipc`). The SSH command route (`exec`, `pty.exec`) and the Cloud connector remain
+//! Unix-only. `watch` and `forward` are not tied to the daemon socket.
 pub mod client;
-#[cfg(unix)]
 mod files;
-#[cfg(unix)]
+pub mod ipc;
 pub mod server;
 
 use std::io::{self, Read, Write};
@@ -111,13 +111,33 @@ const MAX_SOCKET_PATH: usize = 100;
 
 /// `/tmp/hato-<uid>`: short, and (unlike `$XDG_RUNTIME_DIR`) not removed when the last login
 /// session ends while the daemon keeps running.
+#[cfg(unix)]
 pub fn short_socket_dir() -> PathBuf {
-    #[cfg(unix)]
     let uid = unsafe { libc::getuid() };
-    #[cfg(not(unix))]
-    let uid = 0;
     PathBuf::from(format!("/tmp/hato-{uid}"))
 }
+
+/// `%TEMP%\hato`: the per-user temporary directory, private to the user by its ACL.
+#[cfg(windows)]
+pub fn short_socket_dir() -> PathBuf { std::env::temp_dir().join("hato") }
+
+/// Windows: a real directory (not a link another user could redirect); access is the ACL inherited
+/// from the user's profile or temporary directory, and the daemon also checks each peer's user.
+#[cfg(windows)]
+pub fn secure_socket_dir(dir: &std::path::Path, create: bool) -> io::Result<()> {
+    if create {
+        std::fs::create_dir_all(dir)?;
+    }
+    let m = std::fs::symlink_metadata(dir)?;
+    if !m.is_dir() || m.file_type().is_symlink() {
+        return Err(io::Error::new(io::ErrorKind::PermissionDenied, format!("{} is not a private directory of this user", dir.display())));
+    }
+    Ok(())
+}
+
+/// Whether a daemon socket file is still present (`exists` follows the AF_UNIX reparse point on
+/// Windows and reports false).
+pub fn socket_present(p: &std::path::Path) -> bool { std::fs::symlink_metadata(p).is_ok() }
 
 /// Refuse a socket directory another user could have prepared: it must be a real directory
 /// (not a symlink) owned by this user with no group/other access. `create` makes it (0700) first.
@@ -178,34 +198,22 @@ impl Args {
 pub fn main(args: &[String]) -> i32 {
     let cmd = args.first().map(|s| s.as_str()).unwrap_or("help");
     let a = Args::parse(args.get(1..).unwrap_or(&[]));
-    #[cfg_attr(not(unix), allow(unused_variables))]
     let home = home_dir(a.get("dir"));
     let r = match cmd {
         "features" => {
             println!("{}", serde_json::json!({"version":VERSION, "abi":ABI, "features":FEATURES}));
             Ok(())
         }
-        #[cfg(unix)]
         "serve" => server::serve(&home, a.get("idle-exit-secs").and_then(|s| s.parse().ok()).unwrap_or(6 * 3600)),
-        #[cfg(unix)]
         "ensure" => client::ensure(&home, a.has("force")),
-        #[cfg(unix)]
         "ctl" => client::ctl(&home),
-        #[cfg(unix)]
         "ctl-stream" => client::ctl_stream(&home),
-        #[cfg(unix)]
         "stop" => client::request(&home, &serde_json::json!({"op": "shutdown"})).map(|v| println!("{v}")),
-        #[cfg(unix)]
         "status" => client::request(&home, &serde_json::json!({"op": "hello"})).map(|v| println!("{v}")),
-        #[cfg(unix)]
         "pty-attach" => client::pty_attach(&home, &a),
-        #[cfg(unix)]
         "proc-attach" => client::proc_attach(&home, &a),
         "watch" => match a.get("path") { Some(path) => crate::host::watch::run(path, !a.has("non-recursive"), &a.all("exclude")), None => Err(anyhow::anyhow!("missing --path")) },
-        #[cfg(unix)]
         "bridge" => client::bridge(&home, &a),
-        #[cfg(not(unix))]
-        "serve" | "ensure" | "ctl" | "ctl-stream" | "stop" | "status" | "pty-attach" | "proc-attach" | "bridge" => Err(anyhow::anyhow!("not available on {}: run the daemon on the workspace's Linux machine or WSL distribution", std::env::consts::OS)),
         "forward" => crate::host::relay::serve_stdio(),
         _ => {
             eprintln!("usage: hato daemon <serve|ensure|features|ctl|ctl-stream|stop|status|pty-attach|proc-attach|bridge|watch|forward> [--dir DIR] …");
@@ -216,7 +224,6 @@ pub fn main(args: &[String]) -> i32 {
         Ok(()) => 0,
         // An attached process's own exit status is passed through silently.
         Err(e) => {
-            #[cfg(unix)]
             if let Some(c) = e.downcast_ref::<client::ExitCode>() {
                 return c.0;
             }

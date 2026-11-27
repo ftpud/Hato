@@ -63,7 +63,8 @@ and [authentication contract](https://github.com/agentclientprotocol/agent-clien
   [WINDOWS.md](WINDOWS.md) for what has and has not been verified.
 * **Untested:** Linux desktop builds (GPUI supports them, but nothing here was run there).
   Remote Linux SSH hosts are expected to work (POSIX-only remote commands, SFTP), but were not available.
-* **Deferred:** native projects on Windows, a Windows daemon, and remote Windows over SSH.
+* **Deferred:** native projects on Windows and remote Windows over SSH. A local Windows daemon (persistent
+  terminals and processes for native workspaces) exists on the `experimental` branch.
 
 ## SSH: built-in client
 

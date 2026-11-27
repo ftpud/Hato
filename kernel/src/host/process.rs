@@ -58,6 +58,40 @@ pub struct SpawnSpec {
     /// Run under the daemon on the target machine: (daemon binary, scoped key). The process then
     /// survives this connection; spawning the same key again reattaches.
     pub persist: Option<Persist>,
+    /// Local only: memory limit for the process (Unix: per process, inherited by children;
+    /// Windows: the whole process tree, through a job object).
+    pub memory_limit_mb: Option<u64>,
+}
+
+/// Put `pid` (and everything it starts afterwards) in a job whose processes together may use at
+/// most `mb` MiB. The job handle is closed again: the limit stays while the job has processes.
+#[cfg(windows)]
+fn limit_tree_memory(pid: u32, mb: u64) -> std::io::Result<()> {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::JobObjects::*;
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE};
+    unsafe {
+        let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+        if job.is_null() {
+            return Err(std::io::Error::last_os_error());
+        }
+        let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_JOB_MEMORY;
+        limits.JobMemoryLimit = (mb as usize).saturating_mul(1 << 20);
+        let set = SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limits as *const _ as *const _,
+            std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32);
+        let process = OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, 0, pid);
+        let result = if set == 0 || process.is_null() {
+            Err(std::io::Error::last_os_error())
+        } else if AssignProcessToJobObject(job, process) == 0 {
+            Err(std::io::Error::last_os_error())
+        } else {
+            Ok(())
+        };
+        if !process.is_null() { CloseHandle(process); }
+        CloseHandle(job);
+        result
+    }
 }
 
 pub fn spawn(spec: SpawnSpec) -> HResult<Arc<ProcessRes>> {
@@ -66,16 +100,45 @@ pub fn spawn(spec: SpawnSpec) -> HResult<Arc<ProcessRes>> {
         {
             use std::os::unix::process::CommandExt;
             c.process_group(0);
+            if let Some(mb) = spec.memory_limit_mb {
+                let bytes = (mb as libc::rlim_t).saturating_mul(1 << 20);
+                // SAFETY: only async-signal-safe setrlimit between fork and exec.
+                unsafe {
+                    c.pre_exec(move || {
+                        let l = libc::rlimit { rlim_cur: bytes, rlim_max: bytes };
+                        if libc::setrlimit(libc::RLIMIT_AS, &l) != 0 { return Err(std::io::Error::last_os_error()); }
+                        Ok(())
+                    });
+                }
+            }
         }
-        Spawned::spawn(c, &spec.executable)
+        #[allow(unused_mut)]
+        let mut spawned = Spawned::spawn(c, &spec.executable)?;
+        #[cfg(windows)]
+        if let Some(mb) = spec.memory_limit_mb {
+            // A process the limit cannot be applied to does not run.
+            if let Err(e) = limit_tree_memory(spawned.handle.id(), mb) {
+                spawned.handle.kill();
+                return Err(HostError::new("EPOLICY", format!("cannot apply the memory limit: {e}")));
+            }
+        }
+        Ok(spawned)
     };
     let mut p = match &spec.target {
         Target::Local if spec.persist.is_some() => {
             let p = spec.persist.clone().unwrap();
-            let sh = quoting::remote_command(&spec.cwd, &spec.executable, &spec.args, &spec.env, &spec.env_remove, spec.login_shell)
-                .map_err(HostError::invalid)?;
             let mut c = crate::util::command(&p.bin);
-            c.args(["daemon", "proc-attach", "--dir", &p.dir, "--key", &p.key, "--cwd", &spec.cwd, "--sh", &sh]);
+            c.args(["daemon", "proc-attach", "--dir", &p.dir, "--key", &p.key, "--cwd", &spec.cwd]);
+            if cfg!(windows) {
+                // No POSIX shell on Windows: the daemon starts the program from its parts.
+                let env: serde_json::Map<String, serde_json::Value> = spec.env.iter().map(|(k, v)| (k.clone(), v.clone().into())).collect();
+                let command = serde_json::json!({"program": spec.executable, "args": spec.args, "env": env, "envRemove": spec.env_remove, "verbatim": spec.verbatim_args});
+                c.args(["--spec", &command.to_string()]);
+            } else {
+                let sh = quoting::remote_command(&spec.cwd, &spec.executable, &spec.args, &spec.env, &spec.env_remove, spec.login_shell)
+                    .map_err(HostError::invalid)?;
+                c.args(["--sh", &sh]);
+            }
             local(c)?
         }
         Target::Local => {
@@ -321,7 +384,7 @@ mod tests {
     fn command(script: &str) -> Arc<ProcessRes> {
         spawn(SpawnSpec { target: Target::Local, ssh: None, cloud: None, executable: "/bin/sh".into(),
             args: vec!["-c".into(), script.into()], cwd: "/tmp".into(), env: vec![],
-            env_remove: vec![], login_shell: false, verbatim_args: false, persist: None }).unwrap()
+            env_remove: vec![], login_shell: false, verbatim_args: false, persist: None, memory_limit_mb: None }).unwrap()
     }
 
     #[test]
@@ -349,5 +412,52 @@ mod tests {
         let p = command("exec sleep 10");
         let e = run_collect(&p, None, Duration::from_millis(25), 1024).unwrap_err();
         assert!(e.to_string().contains("ETIMEDOUT"));
+    }
+}
+
+#[cfg(test)]
+mod memory_limit_tests {
+    use super::*;
+
+    fn limited(script: &str, mb: u64) -> Arc<ProcessRes> {
+        let (executable, args, cwd) = if cfg!(windows) {
+            ("cmd.exe".to_string(), vec!["/d".to_string(), "/c".to_string(), script.to_string()], std::env::temp_dir().to_string_lossy().into_owned())
+        } else {
+            ("/bin/sh".to_string(), vec!["-c".to_string(), script.to_string()], "/tmp".to_string())
+        };
+        spawn(SpawnSpec { target: Target::Local, ssh: None, cloud: None, executable, args, cwd, env: vec![],
+            env_remove: vec![], login_shell: false, verbatim_args: false, persist: None, memory_limit_mb: Some(mb) }).unwrap()
+    }
+
+    #[test]
+    fn a_memory_limited_process_still_runs() {
+        let r = run_collect(&limited("echo ok", 512), None, Duration::from_secs(20), 4096).unwrap();
+        assert_eq!(r["code"], 0);
+        assert_eq!(r["stdout"].as_str().unwrap().trim(), "ok");
+    }
+
+    /// The limit really binds: PowerShell cannot allocate 1 GiB under a 300 MiB job limit.
+    #[cfg(windows)]
+    #[test]
+    fn allocation_past_the_limit_fails() {
+        let run = |mb: u64| {
+            let p = spawn(SpawnSpec { target: Target::Local, ssh: None, cloud: None, executable: "powershell.exe".into(),
+                args: vec!["-NoProfile".into(), "-Command".into(), "$ErrorActionPreference = 'Stop'; $a = New-Object byte[] 1073741824; $a[0] = 1; exit 0".into()],
+                cwd: std::env::temp_dir().to_string_lossy().into_owned(), env: vec![], env_remove: vec![], login_shell: false,
+                verbatim_args: false, persist: None, memory_limit_mb: Some(mb) }).unwrap();
+            run_collect(&p, None, Duration::from_secs(60), 65536).unwrap()
+        };
+        let limited = run(300);
+        assert_ne!(limited["code"], 0, "{limited}");
+        let roomy = run(4096);
+        assert_eq!(roomy["code"], 0, "{roomy}");
+    }
+
+    /// The limit really binds: a 64 MiB process cannot allocate 512 MiB.
+    #[cfg(unix)]
+    #[test]
+    fn allocation_past_the_limit_fails() {
+        let r = run_collect(&limited("head -c 536870912 /dev/zero | { v=$(cat); echo ${#v}; }", 64), None, Duration::from_secs(30), 4096).unwrap();
+        assert_ne!(r["code"], 0);
     }
 }

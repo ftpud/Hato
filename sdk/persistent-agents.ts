@@ -143,6 +143,52 @@ export const agentPolicy = (s: { autopilot?: boolean; approvalPolicy?: string })
   s.autopilot ? "autopilot" : s.approvalPolicy === "auto-low" ? "auto-low" : "ask";
 /** Tool kinds approved automatically under the "auto-low" policy (matches local chats). */
 export const LOW_RISK_TOOL_KINDS = new Set(["read", "search", "think", "fetch"]);
+
+/** ACP tool kinds a machine can refuse outright. */
+export const LIMITABLE_TOOL_KINDS = ["execute", "edit", "delete", "move", "fetch"] as const;
+/** Per-machine limits for persistent agents. Set by the desktop (remote-runtime), applied by the
+ *  agent runtime on that machine. Empty lists and 0 mean "no limit". */
+export interface AgentLimits {
+  /** Most agents connected at once. */
+  maxConcurrent: number;
+  /** A turn running longer than this (minutes) is cancelled. */
+  maxTurnMinutes: number;
+  /** The most automatic approval an agent may use on this machine. */
+  approvalCap: AgentPolicy;
+  /** Tool kinds always refused, whatever the agent's approval policy. */
+  deniedToolKinds: string[];
+  /** Provider ids (profile.provider) allowed to run. */
+  allowedProviders: string[];
+  /** Model ids allowed to run. */
+  allowedModels: string[];
+}
+export const NO_AGENT_LIMITS: AgentLimits = { maxConcurrent: 0, maxTurnMinutes: 0, approvalCap: "autopilot", deniedToolKinds: [], allowedProviders: [], allowedModels: [] };
+const POLICY_RANK: Record<AgentPolicy, number> = { ask: 0, "auto-low": 1, autopilot: 2 };
+const idList = (v: unknown, max = 64) => Array.isArray(v)
+  ? [...new Set(v.filter((x): x is string => typeof x === "string").map(x => x.trim()).filter(x => x && x.length <= 200))].slice(0, max) : [];
+const whole = (v: unknown, max: number) => Number.isInteger(v) && (v as number) > 0 ? Math.min(v as number, max) : 0;
+export function normalizeAgentLimits(value: unknown): AgentLimits {
+  const v: any = value && typeof value === "object" ? value : {};
+  return {
+    maxConcurrent: whole(v.maxConcurrent, 64),
+    maxTurnMinutes: whole(v.maxTurnMinutes, 7 * 24 * 60),
+    approvalCap: v.approvalCap === "ask" || v.approvalCap === "auto-low" ? v.approvalCap : "autopilot",
+    deniedToolKinds: idList(v.deniedToolKinds).filter(k => (LIMITABLE_TOOL_KINDS as readonly string[]).includes(k)),
+    allowedProviders: idList(v.allowedProviders),
+    allowedModels: idList(v.allowedModels),
+  };
+}
+/** The agent's approval policy, lowered to the machine's cap. */
+export const cappedPolicy = (policy: AgentPolicy, limits: AgentLimits): AgentPolicy =>
+  POLICY_RANK[policy] <= POLICY_RANK[limits.approvalCap] ? policy : limits.approvalCap;
+/** Why this provider/model may not run on the machine, or null. An empty model means "provider default". */
+export function agentRefusal(limits: AgentLimits, provider: string | undefined, model: string | undefined): string | null {
+  if (limits.allowedProviders.length && !limits.allowedProviders.includes(provider || ""))
+    return `Provider ${provider || "(unknown)"} is not allowed on this machine (allowed: ${limits.allowedProviders.join(", ")}).`;
+  if (model && limits.allowedModels.length && !limits.allowedModels.includes(model))
+    return `Model ${model} is not allowed on this machine (allowed: ${limits.allowedModels.join(", ")}).`;
+  return null;
+}
 /** Sanitized provider option map: bounded string ids with string or boolean values. */
 export function agentSettings(value: unknown): Record<string, string | boolean> {
   const out: Record<string, string | boolean> = {};

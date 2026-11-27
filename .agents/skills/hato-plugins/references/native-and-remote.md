@@ -97,6 +97,23 @@ Persistent `process.run` is not supported. Attachment loss detaches a viewer whi
 resources survive; acknowledged process output prevents replay/loss across attachment changes.
 The bridge CLI forwards stdin lines to a plugin method for tool integration.
 
+## Machine limits
+
+Two layers, both edited from the Remote runtime panel's machine settings:
+
+- `remote-runtime` keeps a per-machine policy (`remote-runtime.policy`, `machine:<id>` scope; see
+  `remote-runtime/src/policy.ts`). It decides what the desktop sends (allow list, read-only,
+  auto-start/push overrides), stops detached terminals while connected, and hands agent limits
+  (`AgentLimits` in `sdk/persistent-agents.ts`) to `agent-runner.setLimits`, which applies them to
+  new connections, turns and permission requests. These are module decisions, not enforcement.
+- The daemon enforces `DaemonPolicy` (`sdk/types.ts`, `kernel/src/host_policy.rs`) on every module
+  it runs: capability deny list (checked on each use, so running modules are affected), allowed
+  folders for local scopes, live process/terminal caps and per-program memory (Job Object on
+  Windows, `RLIMIT_AS` on Unix). Set through `daemon.request` `policy.set` (requires
+  `remote.daemon.admin`); stored in `<daemon dir>/policy.json`; an unreadable file blocks every
+  capability. It does not sandbox programs that modules start, and same-user processes can reach
+  the daemon socket.
+
 Known boundaries to recheck before promising behavior: a daemon with live resources can remain
 stale across upgrades; daemon-side approvals are currently denied; agent persistence and offline
 MCP wiring need application work beyond having a persistent process primitive.

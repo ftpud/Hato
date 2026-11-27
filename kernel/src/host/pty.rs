@@ -72,12 +72,18 @@ pub struct PtySession {
 
 /// Where the terminal's program runs.
 enum Backend {
-    /// A local pseudo-terminal (openpty / ConPTY) and its child.
-    Local { master: Box<dyn MasterPty + Send>, child: Box<dyn Child + Send + Sync> },
+    /// A local pseudo-terminal (openpty / ConPTY) and its child. `master` is `None` once a ConPTY
+    /// was closed after its program exited.
+    Local { master: Option<Box<dyn MasterPty + Send>>, child: Box<dyn Child + Send + Sync> },
     /// A PTY channel on a built-in SSH connection.
     Remote(ProcHandle),
     Cloud { program: Arc<CloudProgram>, status: Arc<Mutex<Option<String>>> },
+    /// A terminal held by this machine's daemon, viewed over its socket. Ending the session only
+    /// detaches; the daemon keeps the terminal.
+    Daemon { socket: Arc<Mutex<DaemonSocket>>, status: Arc<Mutex<Option<String>>> },
 }
+
+type DaemonSocket = crate::daemon::ipc::Stream;
 
 /// A terminal on an SSH machine: `command` runs on a remote PTY of `master`'s connection.
 pub struct RemotePty {
@@ -131,7 +137,7 @@ pub fn open(spec: PtySpec) -> HResult<Arc<PtySession>> {
             drop(pair.slave);
             let reader = pair.master.try_clone_reader().map_err(|e| HostError::new("EPTY", e.to_string()))?;
             let writer = pair.master.take_writer().map_err(|e| HostError::new("EPTY", e.to_string()))?;
-            (Backend::Local { master: pair.master, child }, reader, writer, format!("{} {}", spec.program, spec.args.join(" ")), true)
+            (Backend::Local { master: Some(pair.master), child }, reader, writer, format!("{} {}", spec.program, spec.args.join(" ")), true)
         }
     };
     attach(spec, backend, reader, writer, description, local)
@@ -166,6 +172,62 @@ pub fn open_cloud(spec: PtySpec, program: CloudProgram) -> HResult<Arc<PtySessio
     let reader = CloudReader { program: program.clone(), status: status.clone(), bytes: std::io::Cursor::new(Vec::new()) };
     let writer = CloudWriter(program.clone());
     attach(spec, Backend::Cloud { program, status }, Box::new(reader), Box::new(writer), "Cloud terminal".into(), false)
+}
+
+/// Attach to (or create) the daemon terminal `args.key` over the daemon socket at `home`, without
+/// a relay process. Needed on Windows, where the GUI executable gets no console inside ConPTY and so
+/// cannot run `hato daemon pty-attach` there. `args`: the daemon's `pty.attach` arguments.
+pub fn open_daemon(spec: PtySpec, home: &str, args: Value) -> HResult<Arc<PtySession>> {
+    let (socket, frames, _) = crate::daemon::client::open(std::path::Path::new(home), &json!({"op": "pty.attach", "args": args}))
+        .map_err(|e| HostError::new("EDAEMON", format!("{e:#}")))?;
+    let socket = Arc::new(Mutex::new(socket));
+    let status = Arc::new(Mutex::new(None));
+    let reader = DaemonReader { frames, status: status.clone(), bytes: std::io::Cursor::new(Vec::new()) };
+    let writer = DaemonWriter(socket.clone());
+    attach(spec, Backend::Daemon { socket, status }, Box::new(reader), Box::new(writer), "daemon terminal".into(), false)
+}
+
+struct DaemonWriter(Arc<Mutex<DaemonSocket>>);
+
+impl Write for DaemonWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        let n = bytes.len().min(64 * 1024);
+        crate::daemon::write_frame(&mut *self.0.lock(), F_IN, &bytes[..n]).map(|_| n)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+}
+
+struct DaemonReader {
+    frames: std::io::BufReader<DaemonSocket>,
+    status: Arc<Mutex<Option<String>>>,
+    bytes: std::io::Cursor<Vec<u8>>,
+}
+
+impl Read for DaemonReader {
+    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+        if out.is_empty() { return Ok(0); }
+        loop {
+            let n = self.bytes.read(out)?;
+            if n > 0 { return Ok(n); }
+            match crate::daemon::read_frame(&mut self.frames)? {
+                None => {
+                    self.status.lock().get_or_insert_with(|| "detached (daemon connection closed)".into());
+                    return Ok(0);
+                }
+                Some((F_OUT | F_ERR, bytes)) => self.bytes = std::io::Cursor::new(bytes),
+                Some((F_EXIT, bytes)) => {
+                    *self.status.lock() = serde_json::from_slice::<Value>(&bytes).ok().and_then(|v| v["status"].as_str().map(str::to_owned));
+                    return Ok(0);
+                }
+                Some((F_DETACHED, _)) => {
+                    *self.status.lock() = Some("detached (terminal attached elsewhere)".into());
+                    return Ok(0);
+                }
+                Some(_) => {}
+            }
+        }
+    }
 }
 
 fn attach(
@@ -221,6 +283,7 @@ fn attach(
             let status = match &mut *s2.backend.lock() {
                 Backend::Local { child, .. } => child.wait().map(|s| format!("exited with code {}", s.exit_code())).unwrap_or_else(|e| format!("exited ({e})")),
                 Backend::Cloud { status, .. } => status.lock().clone().unwrap_or_else(|| "exited (Cloud connection closed)".into()),
+                Backend::Daemon { status, .. } => status.lock().clone().unwrap_or_else(|| "detached (daemon connection closed)".into()),
                 Backend::Remote(h) => match h.wait(Some(std::time::Duration::from_secs(5))) {
                     Some(e) if e.code.is_some() => format!("exited with code {}", e.code.unwrap_or(0)),
                     Some(e) if e.signal.is_some() => format!("exited (signal {})", e.signal.unwrap_or(0)),
@@ -231,7 +294,37 @@ fn attach(
             s2.feed(format!("\r\n\x1b[1;31m[process {status}]\x1b[0m\r\n").as_bytes());
         })
         .map_err(HostError::io)?;
+    #[cfg(windows)]
+    if local {
+        close_conpty_on_exit(&sess)?;
+    }
     Ok(sess)
+}
+
+/// ConPTY keeps its output pipe open after the program exits, until the pseudoconsole is closed:
+/// the reader would never see the end and the terminal would never report its exit (a daemon
+/// would keep dead terminals forever). Closing it (dropping the only master) ends `conhost`, which
+/// flushes what is left and closes the pipe.
+#[cfg(windows)]
+fn close_conpty_on_exit(sess: &Arc<PtySession>) -> HResult<()> {
+    let weak = Arc::downgrade(sess);
+    std::thread::Builder::new()
+        .name("pty-exit".into())
+        .spawn(move || loop {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            let Some(sess) = weak.upgrade() else { break };
+            let master = match &mut *sess.backend.lock() {
+                Backend::Local { child, master } => match child.try_wait() {
+                    Ok(None) => continue,
+                    _ => master.take(),
+                },
+                _ => None,
+            };
+            drop(master); // outside the backend lock: closing waits for the reader to drain
+            break;
+        })
+        .map(drop)
+        .map_err(HostError::io)
 }
 
 struct CloudWriter(Arc<CloudProgram>);
@@ -320,14 +413,21 @@ impl PtySession {
         }
         self.term.lock().resize(TermDims { cols: cols as usize, rows: rows as usize });
         match &*self.backend.lock() {
-            Backend::Local { master, .. } => master
+            Backend::Local { master: Some(master), .. } => master
                 .resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
                 .map_err(|e| HostError::new("EPTY", e.to_string()))?,
+            Backend::Local { master: None, .. } => {}
             Backend::Cloud { program, .. } => {
                 let mut dimensions = [0; 4];
                 dimensions[..2].copy_from_slice(&cols.to_be_bytes());
                 dimensions[2..].copy_from_slice(&rows.to_be_bytes());
                 CloudConnection::wait(program.send_frame(F_RESIZE, &dimensions))?;
+            }
+            Backend::Daemon { socket, .. } => {
+                let mut dimensions = [0; 4];
+                dimensions[..2].copy_from_slice(&cols.to_be_bytes());
+                dimensions[2..].copy_from_slice(&rows.to_be_bytes());
+                crate::daemon::write_frame(&mut *socket.lock(), F_RESIZE, &dimensions).map_err(|e| HostError::new("EPIPE", e.to_string()))?;
             }
             Backend::Remote(ProcHandle::Channel(c)) => c.resize(cols, rows),
             Backend::Remote(_) => {}
@@ -343,7 +443,10 @@ impl PtySession {
         #[cfg(windows)]
         {
             let pid = match &mut *self.backend.lock() {
-                Backend::Local { child, .. } if matches!(child.try_wait(), Ok(None)) => child.process_id(),
+                Backend::Local { child, .. } => match child.try_wait() {
+                    Ok(None) => child.process_id(),
+                    _ => None,
+                },
                 _ => None,
             };
             if let Some(pid) = pid {
@@ -354,6 +457,7 @@ impl PtySession {
         match &mut *self.backend.lock() {
             Backend::Local { child, .. } => { let _ = child.kill(); }
             Backend::Cloud { program, .. } => CloudConnection::wait(program.close()),
+            Backend::Daemon { socket, .. } => { let _ = socket.lock().shutdown(std::net::Shutdown::Both); }
             Backend::Remote(h) => h.kill(),
         }
     }

@@ -40,7 +40,7 @@ note?: string }`; status comes from the smoke test, never from assumptions.
 ## Phase 0 — Inventory & contracts
 - [x] Audit Unix assumptions in kernel: `daemon/server.rs` (`/bin/sh`, `passwd_shell`, `$SHELL`), `host/daemon_link.rs`
       (`uname -sm`, `platform()`, `sh_quote`, socket paths), `host/pty.rs`, `ops.rs` process/terminal ops.
-      _Done:_ local Windows already had canonical paths, ConPTY and tree kill; daemon remains Unix-only (Phase 5).
+      _Done:_ local Windows already had canonical paths, ConPTY and tree kill; daemon ported in Phase 5.
 - [x] Audit modules using `sh`/`loginShell`/`command -v`: acp, agent-runner, browser, debug, files (search, gitignore,
       change-capture), git, git-tasks, language-service, opencode-provider, projects, run, run-configurations,
       workflow-runner, ui/explorer, ui/terminal-panel, ui/viewer. Classify each call: tool lookup / fs test /
@@ -140,9 +140,15 @@ note?: string }`; status comes from the smoke test, never from assumptions.
       _Done:_ uses `python` on Windows and Windows path mapping; relay still needs Python.
 
 ## Phase 5 — Windows daemon & SSH to Windows hosts
-- [ ] **[N]** Port `daemon/server.rs`: named pipes instead of Unix sockets, ConPTY terminals, Windows default shell
+- [x] **[N]** Port `daemon/server.rs`: named pipes instead of Unix sockets, ConPTY terminals, Windows default shell
       (`%COMSPEC%`/pwsh) instead of `passwd_shell`/`/bin/sh`, durable terminals across app restart.
-- [ ] **[N]** Daemon on local Windows projects too (terminals survive app restart, like Linux).
+      _Done:_ AF_UNIX sockets (`uds_windows`) with a same-user peer check (peer pid → token SID), Job Objects
+      instead of process groups, ConPTY closed when its program exits. `exec`/`pty.exec` (SSH route) and the
+      Cloud connector stay Unix-only.
+- [x] **[N]** Daemon on local Windows projects too (terminals survive app restart, like Linux).
+      _Done:_ `daemon.local` on Windows; the daemon runs from a content-named copy in `~/.hato/bin` (a running
+      exe is locked); the desktop views daemon terminals over the socket (`pty::open_daemon`), since the GUI exe
+      has no console inside ConPTY; persistent processes pass `--spec` (no POSIX shell).
 - [ ] **[N]** `daemon_link.rs`: upload path `%LOCALAPPDATA%` for a Windows daemon.
       _Done:_ platform detection (`SshMaster::platform`: `uname -sm`, MSYS names, else Windows OpenSSH home +
       `%PROCESSOR_ARCHITECTURE%`), reported by `ssh.connect`, recorded by projects, carried as `WorkspaceDescriptor.os`.

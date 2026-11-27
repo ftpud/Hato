@@ -3492,7 +3492,9 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "tree-sitter",
+ "uds_windows",
  "ureq",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

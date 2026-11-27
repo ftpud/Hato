@@ -89,7 +89,8 @@ use that descriptor to obtain scoped access on the correct machine.
 
 Local projects use local host adapters. SSH projects use remote file/process facilities and a
 daemon on the workspace machine. Windows uses the native desktop window with projects in native
-Windows folders, in WSL or on SSH hosts (native folders have no workspace daemon yet). Platform constraints are documented in `docs/COMPATIBILITY.md` and
+Windows folders, in WSL or on SSH hosts (native folders use a local Windows daemon for persistent
+terminals and processes). Platform constraints are documented in `docs/COMPATIBILITY.md` and
 `docs/WINDOWS.md`.
 
 The headless daemon is another mode of the native executable, commonly called hatod. It runs

@@ -156,12 +156,24 @@ pub fn valid_module_id(id: &str) -> bool {
 pub struct EffectiveCaps {
     pub caps: BTreeSet<String>,
     pub calls: BTreeSet<String>,
+    /// The kernel's operator limits and this module's id. Checked on every use, so a policy
+    /// change applies to running modules too.
+    pub policy: Option<(std::sync::Arc<crate::host_policy::PolicyState>, String)>,
 }
 
 impl EffectiveCaps {
-    pub fn has(&self, cap: &str) -> bool { self.caps.contains(cap) }
+    fn blocked(&self, cap: &str) -> bool { self.policy.as_ref().is_some_and(|(p, _)| p.denies_capability(cap)) }
+    pub fn has(&self, cap: &str) -> bool { self.caps.contains(cap) && !self.blocked(cap) }
     pub fn require(&self, cap: &str) -> HResult<()> {
-        if self.has(cap) { Ok(()) } else { Err(HostError::denied(format!("capability '{cap}' not granted to this module"))) }
+        if !self.caps.contains(cap) {
+            return Err(HostError::denied(format!("capability '{cap}' not granted to this module")));
+        }
+        if let Some((policy, module)) = self.policy.as_ref().filter(|_| self.blocked(cap)) {
+            let reason = format!("capability '{cap}' is blocked by this machine's policy");
+            policy.record_denial(module, cap, &reason);
+            return Err(HostError::denied(reason));
+        }
+        Ok(())
     }
     pub fn may_call(&self, target: &str) -> bool { self.calls.contains("*") || self.calls.contains(target) }
 }
@@ -239,7 +251,7 @@ impl GrantRegistry {
         if let Some(extra) = approved.get(&m.id) {
             calls.extend(m.calls.iter().filter(|c| extra.contains(&format!("call:{c}"))).cloned());
         }
-        EffectiveCaps { caps, calls }
+        EffectiveCaps { caps, calls, policy: None }
     }
 
     pub fn known_modules(&self) -> Vec<String> {

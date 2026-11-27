@@ -218,12 +218,15 @@ export interface NativeHost {
     cloudWriteProgram(handle: Handle, frame: CloudProgramInput): Promise<void>;
     /** Start a local/SSH daemon if needed. For Cloud, checks the already installed daemon. */
     ensure(target?: DaemonTarget): Promise<DaemonStatus>;
-    /** Replace the daemon over SSH after trusted approval. A Cloud target pins the host identity. */
-    forceUpgrade(target: Extract<DaemonTarget, { kind: "ssh" }>, cloud?: CloudDaemonTarget): Promise<DaemonStatus>;
+    /** Replace the daemon with the current build after trusted approval, stopping what it holds:
+     *  over SSH, or on this computer for `{kind: "local"}`. A Cloud target pins the host identity. */
+    forceUpgrade(target: Extract<DaemonTarget, { kind: "ssh" | "local" }>, cloud?: CloudDaemonTarget): Promise<DaemonStatus>;
     status(target?: DaemonTarget): Promise<DaemonStatus | null>;
     /** hello/status, resources.list (own resources only), pty.kill/proc.kill/proc.closeStdin {key},
      *  plugins.list, plugins.push {id} (locally installed + approved plugins only),
-     *  plugins.enable/disable {id}, pty.read/write {key, cursor?/text}, modules.call {target, method, args}. */
+     *  plugins.enable/disable {id}, pty.read/write {key, cursor?/text}, modules.call {target, method, args}.
+     *  `remote.daemon.admin` only: policy.get → DaemonPolicyStatus, policy.set {policy: DaemonPolicy}
+     *  → DaemonPolicyStatus (the daemon validates and keeps it across restarts). */
     request<T = any>(target: DaemonTarget | undefined, op: string, args?: object): Promise<T>;
   };
   /** Every module is a plugin. Listing is open to all modules; mutations need `plugins.manage`
@@ -331,6 +334,26 @@ export interface ModuleContext {
   state: { get<T = Json>(key: string): T | undefined; set(key: string, value: Json | object): void; watch(key: string, listener: (value: any) => void): () => void };
   ui: { invalidate(): void };
   log: Console;
+}
+
+/** Limits a daemon enforces on every plugin it runs (`policy.set`). Empty lists and 0 mean no
+ *  limit. They bind module requests, not programs those modules start, except that process count
+ *  and memory limits apply to the started programs too. */
+export interface DaemonPolicy {
+  /** Capabilities no plugin there receives, whatever was approved. */
+  capabilityDeny: string[];
+  /** Absolute folders that local fs/process/terminal scopes must fall inside. */
+  fsRoots: string[];
+  /** Most live programs / terminals started by plugins. */
+  maxProcesses: number;
+  maxTerminals: number;
+  /** Per started program, in MiB (Unix: each process; Windows: the program and its children). */
+  processMemoryMb: number;
+}
+export interface DaemonPolicyStatus {
+  policy: DaemonPolicy;
+  /** Newest first, at most 50. */
+  denials: { time: string; module: string; op: string; reason: string }[];
 }
 
 export interface CallMeta { caller: string }

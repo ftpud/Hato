@@ -399,7 +399,7 @@ fn dispatch(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: &Value) -> H
             for pattern in watch_excludes(args)? { argv.push("--exclude".into()); argv.push(pattern); }
             let p = process::spawn(SpawnSpec {
                 target: g.target.clone(), ssh, cloud, executable: bin, args: argv, cwd: g.root.clone(),
-                env: vec![], env_remove: vec![], login_shell: false, verbatim_args: false, persist: None,
+                env: vec![], env_remove: vec![], login_shell: false, verbatim_args: false, persist: None, memory_limit_mb: None,
             })?;
             let handle = k.handles.insert("process", owner, format!("watch {real}"), p);
             Ok(json!({"handle": handle}))
@@ -553,6 +553,10 @@ fn dispatch(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: &Value) -> H
             if op == "process.spawn" {
                 spec.persist = persist_target(k, gen, req, &g.target)?;
             }
+            if g.target == Target::Local && spec.persist.is_none() {
+                policy_count(k, gen, op, "process")?;
+                spec.memory_limit_mb = k.host_policy.memory_limit_mb();
+            }
             let p = process::spawn(spec)?;
             if op == "process.run" {
                 let timeout = args.get("timeoutMs").and_then(|t| t.as_u64()).unwrap_or(60_000).min(30 * 60_000);
@@ -645,12 +649,18 @@ fn dispatch(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: &Value) -> H
                 return Ok(json!({ "handle":handle, "machineId":sess.machine_id, "cwd":sess.cwd }));
             }
             let persist = persist_target(k, gen, req, &g.target)?;
+            // Windows: a local persistent terminal is viewed over the daemon socket directly
+            // (daemon home, `pty.attach` arguments); see `pty::open_daemon`.
+            let mut daemon_view: Option<(String, Value)> = None;
             let spec = match &g.target {
                 Target::Cloud { .. } => return Err(HostError::new("ECLOUD", "Cloud terminal route unavailable")),
                 Target::Local => {
                     let real = canonical_string(std::path::Path::new(cwd)).map_err(HostError::from)?;
                     if !path_within(&g.root, &real) {
                         return Err(HostError::denied("terminal cwd outside granted root"));
+                    }
+                    if persist.is_none() {
+                        policy_count(k, gen, "pty.open", "terminal")?;
                     }
                     // `shellCandidates`: the module's preference order; the first installed program runs.
                     let picked = if persist.is_none() { shell_candidate(req)? } else { None };
@@ -660,6 +670,10 @@ fn dispatch(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: &Value) -> H
                         None => (sh, if cfg!(windows) { vec![] } else { vec!["-l".to_string()] }),
                     };
                     match &persist {
+                        Some(p) if cfg!(windows) => {
+                            daemon_view = Some((p.dir.clone(), json!({"key": p.key, "cwd": real, "shell": sh, "columns": cols, "rows": rows})));
+                            PtySpec { remote: None, program: String::new(), args: vec![], cwd: None, env: vec![], env_remove: vec![], cols, rows, machine_id: "local".into(), display_cwd: real, answer_queries: false }
+                        }
                         Some(p) => PtySpec { remote: None, program: p.bin.clone(), args: vec!["daemon".into(), "pty-attach".into(), "--dir".into(), p.dir.clone(), "--key".into(), p.key.clone(), "--cwd".into(), real.clone(), "--shell".into(), sh],
                             cwd: Some(real.clone()), env: env_pairs(req)?, env_remove: vec![], cols, rows, machine_id: "local".into(), display_cwd: real, answer_queries: false },
                         None => PtySpec { remote: None, program: sh, args: login, cwd: Some(real.clone()), env: env_pairs(req)?, env_remove: vec![], cols, rows, machine_id: "local".into(), display_cwd: real, answer_queries: true },
@@ -688,7 +702,10 @@ fn dispatch(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: &Value) -> H
                     }
                 }
             };
-            let sess = pty::open(spec)?;
+            let sess = match daemon_view {
+                Some((home, attach)) => pty::open_daemon(spec, &home, attach)?,
+                None => pty::open(spec)?,
+            };
             let h = k.handles.insert("pty", owner, format!("pty {}", sess.cwd), sess.clone());
             let ui = k.ui.clone();
             let h2 = h.clone();
@@ -1206,8 +1223,19 @@ fn dispatch(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: &Value) -> H
         "daemon.forceUpgrade" => {
             gen.caps.require("remote.daemon.admin")?;
             check_alive(gen, true)?;
-            let master = daemon_target(k, owner, args)?
-                .ok_or_else(|| HostError::invalid("A remote SSH connection is required"))?;
+            let Some(master) = daemon_target(k, owner, args)? else {
+                if !args["cloud"].is_null() {
+                    return Err(HostError::invalid("A Cloud upgrade needs the host's SSH connection"));
+                }
+                // This machine: restart the local daemon from the running app's build.
+                k.require_approval(gen, op, "Force upgrade the local Hato daemon?",
+                    "Replace and restart the daemon on this computer with this app's build.
+Running terminals, processes, agents and workflows on it will stop.")?;
+                check_alive(gen, true)?;
+                let info = daemon_link::force_upgrade_local(&k.daemons)?;
+                k.audit.record(owner, gen.gen_id, op, "local", "ok", None);
+                return Ok(daemon_link::status_json(&info));
+            };
             let expected = &args["cloud"];
             let cloud = if expected.is_null() {
                 None
@@ -1273,6 +1301,8 @@ fn dispatch(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: &Value) -> H
                 // Only plugins installed and approved on this desktop may be pushed, with exactly
                 // the permissions approved here.
                 "plugins.push" => dargs = push_payload(k, dargs["id"].as_str().unwrap_or(""))?,
+                // The machine's limits bind every plugin there: only a manager sets or reads them.
+                "policy.get" | "policy.set" => gen.caps.require("remote.daemon.admin")?,
                 _ => {}
             }
             let request = json!({"op": op, "args": dargs});
@@ -1284,6 +1314,9 @@ fn dispatch(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: &Value) -> H
             };
             if (op == "resources.list" || op == "hello" || op == "status") && !admin {
                 return Ok(own_resources(r, owner));
+            }
+            if op == "policy.set" {
+                k.audit.record(owner, gen.gen_id, "daemon.policySet", &machine, "ok", None);
             }
             if op == "plugins.push" {
                 k.audit.record(owner, gen.gen_id, "daemon.pushPlugin", &format!("{} to {machine}", r["id"].as_str().unwrap_or("?")), "ok", None);
@@ -1433,7 +1466,8 @@ fn check_target(g: &ScopeGrant, req: &Value) -> HResult<()> {
 fn host_features() -> Vec<&'static str> {
     let mut f = vec!["pty.spawn", "pty.shellCandidates"];
     if cfg!(windows) { f.push("process.verbatimArgs"); }
-    if cfg!(unix) { f.push("daemon.local"); }
+    // A local daemon holds persistent terminals and processes (Unix, and Windows since its port).
+    f.push("daemon.local");
     f
 }
 
@@ -1539,7 +1573,7 @@ fn spawn_spec(k: &Kernel, g: &ScopeGrant, req: &Value) -> HResult<SpawnSpec> {
         }
     };
     let ssh = ssh_for(k, &g.target);
-    Ok(SpawnSpec { target: g.target.clone(), ssh, cloud: cloud_for(k, g)?, executable: exe, args, cwd, env, env_remove, login_shell, verbatim_args, persist: None })
+    Ok(SpawnSpec { target: g.target.clone(), ssh, cloud: cloud_for(k, g)?, executable: exe, args, cwd, env, env_remove, login_shell, verbatim_args, persist: None, memory_limit_mb: None })
 }
 
 /// `persist: {key}` on a PTY/process request → (daemon binary, owner-scoped key).
@@ -1628,6 +1662,27 @@ fn own_resources(mut v: Value, owner: &str) -> Value {
     v
 }
 
+/// Record a request the kernel's operator policy refused and return the error for the module.
+fn policy_denied(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, reason: &str) -> HostError {
+    k.host_policy.record_denial(&gen.module_id, op, reason);
+    k.audit.record(&gen.module_id, gen.gen_id, op, reason, "denied by machine policy", None);
+    HostError::denied(reason.to_string())
+}
+
+/// Refuse a new local process/terminal past the policy's limit on live ones started by modules.
+fn policy_count(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, kind: &str) -> HResult<()> {
+    let p = k.host_policy.get();
+    if (if kind == "terminal" { p.max_terminals } else { p.max_processes }) == 0 {
+        return Ok(());
+    }
+    let live = if kind == "terminal" {
+        k.handles.handles_of_kind("pty").iter().filter(|h| k.handles.get_kernel::<PtySession>(h, "pty").is_some_and(|t| t.exit.lock().is_none())).count()
+    } else {
+        k.handles.handles_of_kind("process").iter().filter(|h| k.handles.get_kernel::<ProcessRes>(h, "process").is_some_and(|p| p.exit.lock().is_none())).count()
+    };
+    k.host_policy.check_count(kind, live).map_err(|reason| policy_denied(k, gen, op, &reason))
+}
+
 fn request_grant(k: &Arc<Kernel>, gen: &Arc<Generation>, args: &Value) -> HResult<Value> {
     let kind = ScopeKind::parse(arg_str(args, "kind")?)?;
     let write = args.get("write").and_then(|w| w.as_bool()).unwrap_or(false);
@@ -1658,6 +1713,9 @@ fn request_grant(k: &Arc<Kernel>, gen: &Arc<Generation>, args: &Value) -> HResul
                     }
                     if protected(k, &rs) {
                         return Err(HostError::denied("kernel-protected application state cannot be granted"));
+                    }
+                    if let Err(reason) = k.host_policy.check_root(&rs) {
+                        return Err(policy_denied(k, gen, "capabilities.request", &reason));
                     }
                     (Target::Local, rs)
                 }

@@ -54,6 +54,8 @@ pub struct Kernel {
     pub ssh: SshTable,
     /// Remote runtimes started on machines (by machine id).
     pub daemons: crate::host::daemon_link::DaemonTable,
+    /// Operator limits for every module this kernel runs (set on daemons; none on the desktop).
+    pub host_policy: Arc<crate::host_policy::PolicyState>,
     /// Whether the user agreed to install the daemon on each machine (asked once).
     pub daemon_consent: crate::host::daemon_consent::DaemonConsent,
     pub subs: Mutex<HashMap<String, StreamSub>>,
@@ -110,6 +112,7 @@ impl Kernel {
             ui,
             ssh: SshTable::default(),
             daemons: Default::default(),
+            host_policy: Default::default(),
             daemon_consent,
             subs: Mutex::new(HashMap::new()),
             render: Mutex::new(HashMap::new()),
@@ -252,7 +255,8 @@ impl Kernel {
             return Err(HostError::new("ENOTSUP", reason));
         }
         let (tx, rx) = crossbeam_channel::unbounded::<WorkerMsg>();
-        let caps = self.grants.effective(manifest);
+        let mut caps = self.grants.effective(manifest);
+        caps.policy = Some((self.host_policy.clone(), manifest.id.clone()));
         let gen = Arc::new(Generation {
             gen_id: self.router.alloc_gen_id(),
             module_id: manifest.id.clone(),

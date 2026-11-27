@@ -8,8 +8,8 @@ use crate::util::{now_ms, HostError};
 use parking_lot::{Condvar, Mutex};
 use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
+use super::ipc::{Group, Listener as UnixListener, Stream as UnixStream};
 use std::io::{BufRead, BufReader};
-use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -29,6 +29,8 @@ struct PtyHolder {
 
 struct ProcHolder {
     pid: u32,
+    /// The process and everything it starts (`None` if Windows could not create its job).
+    group: Option<Group>,
     child: Mutex<Option<Child>>,
     stdin: Mutex<Option<ChildStdin>>,
     pending: Mutex<VecDeque<(u8, Vec<u8>)>>,
@@ -78,8 +80,8 @@ pub struct Daemon {
     connections: AtomicUsize,
     last_activity: Mutex<Instant>,
     started: Instant,
-    /// Process groups of running `exec`/`pty.exec` programs (killed when the daemon exits).
-    ephemeral: Mutex<std::collections::HashSet<i32>>,
+    /// Process groups of running `exec`/`pty.exec` programs by pid (killed when the daemon exits).
+    ephemeral: Mutex<HashMap<u32, Group>>,
 }
 
 fn valid_key(k: &str) -> bool {
@@ -95,29 +97,21 @@ fn write_line(w: &mut UnixStream, v: &Value) -> io::Result<()> {
 
 fn err_json(e: &HostError) -> Value { json!({"ok": false, "error": {"code": e.code, "message": e.message}}) }
 
-#[cfg(any(target_os = "macos", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd"))]
-fn peer_uid(s: &UnixStream) -> Option<u32> {
-    use std::os::fd::AsRawFd;
-    let (mut uid, mut gid) = (0 as libc::uid_t, 0 as libc::gid_t);
-    (unsafe { libc::getpeereid(s.as_raw_fd(), &mut uid, &mut gid) } == 0).then_some(uid)
+/// Unix permissions; on Windows the home and its `run` directory keep the ACL of the user profile.
+fn set_mode(_p: &Path, _mode: u32) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(_p, std::fs::Permissions::from_mode(_mode));
+    }
 }
 
-#[cfg(target_os = "linux")]
-fn peer_uid(s: &UnixStream) -> Option<u32> {
-    use std::os::fd::AsRawFd;
-    let mut cred: libc::ucred = unsafe { std::mem::zeroed() };
-    let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
-    let r = unsafe { libc::getsockopt(s.as_raw_fd(), libc::SOL_SOCKET, libc::SO_PEERCRED, &mut cred as *mut _ as *mut libc::c_void, &mut len) };
-    (r == 0).then_some(cred.uid)
-}
-
-fn set_mode(p: &Path, mode: u32) {
-    use std::os::unix::fs::PermissionsExt;
-    let _ = std::fs::set_permissions(p, std::fs::Permissions::from_mode(mode));
-}
+#[cfg(windows)]
+fn raise_fd_limit() {}
 
 /// Each routed command holds a few descriptors (socket, pipes or a PTY) for its lifetime; the
 /// usual soft limit of 1024 would cap concurrency near 200, so use the hard limit.
+#[cfg(unix)]
 fn raise_fd_limit() {
     let mut l = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
     if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut l) } != 0 || l.rlim_cur >= l.rlim_max {
@@ -134,19 +128,18 @@ fn raise_fd_limit() {
 
 pub fn serve(home: &Path, idle_secs: u64) -> anyhow::Result<()> {
     // Resolve the login shell before any request threads exist.
+    #[cfg(unix)]
     let _ = login_shell();
     raise_fd_limit();
     let run = run_dir(home);
     std::fs::create_dir_all(&run)?;
     set_mode(home, 0o700);
     set_mode(&run, 0o700);
-    // Single instance: an exclusive lock held for the daemon's lifetime.
+    // Single instance: an exclusive lock held for the daemon's lifetime (`flock` on Unix,
+    // `LockFileEx` on Windows).
     let lock = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(run.join("hatod.lock"))?;
-    {
-        use std::os::fd::AsRawFd;
-        if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-            anyhow::bail!("another daemon is running for {}", home.display());
-        }
+    if lock.try_lock().is_err() {
+        anyhow::bail!("another daemon is running for {}", home.display());
     }
     let sock = socket_path(home);
     if let Some(dir) = sock.parent().filter(|d| *d != run.as_path()) {
@@ -167,8 +160,10 @@ pub fn serve(home: &Path, idle_secs: u64) -> anyhow::Result<()> {
         std::fs::create_dir_all(data.join(d))?;
     }
     let cfg = Config {
-        repo_root: rt.canonicalize()?,
-        data_dir: data.canonicalize()?,
+        // Plain paths: Windows' `canonicalize` adds `\\?\`, which rejects the `/` in plugin entries
+        // (`dist/<id>.mjs`) with "filename, directory name, or volume label syntax is incorrect".
+        repo_root: PathBuf::from(crate::util::canonical_string(&rt)?),
+        data_dir: PathBuf::from(crate::util::canonical_string(&data)?),
         initial_root: dirs::home_dir(),
         initial_root_explicit: false,
         safe_mode: false,
@@ -183,6 +178,9 @@ pub fn serve(home: &Path, idle_secs: u64) -> anyhow::Result<()> {
         log::warn!("daemon denied approval '{}' from {} (no desktop attached)", req.title, req.module);
         req.options.iter().find(|o| o.kind == "deny").map(|o| o.id.clone())
     }));
+    // Operator limits for pushed plugins, set by a desktop through `policy.set`. Loaded before boot
+    // so plugins never run without them.
+    kernel.host_policy.load(home.join("policy.json"));
     kernel.boot();
     std::fs::write(run.join("hatod.json"), json!({"pid": std::process::id(), "version": VERSION, "abi": ABI, "socket": sock}).to_string())?;
 
@@ -196,13 +194,18 @@ pub fn serve(home: &Path, idle_secs: u64) -> anyhow::Result<()> {
         started: Instant::now(),
         ephemeral: Mutex::new(Default::default()),
     });
-    let connector_home = home.to_path_buf();
-    std::thread::spawn(move || crate::host::cloud::supervise_daemon(connector_home));
+    #[cfg(unix)]
+    {
+        let connector_home = home.to_path_buf();
+        std::thread::spawn(move || crate::host::cloud::supervise_daemon(connector_home));
+    }
     let d2 = d.clone();
+    #[cfg_attr(windows, allow(unused_variables))]
     let touched = sock.clone();
     std::thread::Builder::new().name("idle".into()).spawn(move || loop {
         std::thread::sleep(Duration::from_secs(15));
         // Fresh times keep age-based temp cleaners (systemd-tmpfiles) off a socket in /tmp.
+        #[cfg(unix)]
         if let Ok(c) = std::ffi::CString::new(touched.as_os_str().as_encoded_bytes()) {
             unsafe { libc::utimensat(libc::AT_FDCWD, c.as_ptr(), std::ptr::null(), libc::AT_SYMLINK_NOFOLLOW) };
         }
@@ -211,7 +214,6 @@ pub fn serve(home: &Path, idle_secs: u64) -> anyhow::Result<()> {
             d2.exit();
         }
     })?;
-    let me = unsafe { libc::getuid() };
     for stream in listener.incoming() {
         let stream = match stream {
             Ok(s) => s,
@@ -223,7 +225,7 @@ pub fn serve(home: &Path, idle_secs: u64) -> anyhow::Result<()> {
                 continue;
             }
         };
-        if peer_uid(&stream) != Some(me) {
+        if !super::ipc::peer_is_self(&stream) {
             continue; // never serve another user, even if the socket were reachable
         }
         let d = d.clone();
@@ -245,7 +247,11 @@ impl Daemon {
 
     /// Idle = no connections, no live resources, no enabled plugins.
     fn idle_for(&self) -> Duration {
-        if crate::host::cloud::daemon_managed(&self.home) || self.connections.load(Ordering::SeqCst) > 0 || !self.ptys.lock().is_empty() || !self.procs.lock().is_empty() {
+        #[cfg(unix)]
+        let managed = crate::host::cloud::daemon_managed(&self.home);
+        #[cfg(windows)]
+        let managed = false;
+        if managed || self.connections.load(Ordering::SeqCst) > 0 || !self.ptys.lock().is_empty() || !self.procs.lock().is_empty() {
             return Duration::ZERO;
         }
         let plugins = self.kernel.plugins_json();
@@ -263,9 +269,12 @@ impl Daemon {
             if let Some(c) = p.child.lock().as_mut() {
                 let _ = c.kill();
             }
+            if let Some(g) = &p.group {
+                g.signal("KILL");
+            }
         }
-        for pgid in self.ephemeral.lock().iter() {
-            unsafe { libc::kill(-pgid, libc::SIGKILL) };
+        for group in self.ephemeral.lock().values() {
+            group.signal("KILL");
         }
         self.kernel.shutdown();
         let _ = std::fs::remove_file(socket_path(&self.home));
@@ -290,8 +299,13 @@ impl Daemon {
             "pty.attach" => self.pty_attach(&args, reader, w),
             "proc.attach" => self.proc_attach(&args, reader, w),
             "bridge" => self.bridge(&args, reader, w),
+            #[cfg(unix)]
             "exec" => self.exec(&args, reader, w),
+            #[cfg(unix)]
             "pty.exec" => self.pty_exec(&args, reader, w),
+            // The SSH command route: Windows SSH hosts have no daemon (`daemon_link::install`).
+            #[cfg(windows)]
+            "exec" | "pty.exec" => write_line(&mut w, &err_json(&HostError::new("ENOTSUP", "exec routes are unavailable on Windows daemons"))),
             "shutdown" => {
                 write_line(&mut w, &json!({"ok": true, "value": {"stopping": true}}))?;
                 let me = self.clone();
@@ -356,8 +370,11 @@ impl Daemon {
             "proc.kill" => {
                 let key = s("key")?;
                 let p = self.procs.lock().get(key).cloned().ok_or_else(|| HostError::not_found(format!("no process {key}")))?;
-                let sig = match args.get("signal").and_then(|v| v.as_str()) { Some("KILL") => libc::SIGKILL, Some("INT") => libc::SIGINT, _ => libc::SIGTERM };
-                unsafe { libc::kill(-(p.pid as i32), sig) };
+                let sig = match args.get("signal").and_then(|v| v.as_str()) { Some("KILL") => "KILL", Some("INT") => "INT", _ => "TERM" };
+                match &p.group {
+                    Some(g) => g.signal(sig),
+                    None => { if let Some(c) = p.child.lock().as_mut() { let _ = c.kill(); } }
+                }
                 Ok(Value::Null)
             }
             "proc.closeStdin" => {
@@ -367,6 +384,12 @@ impl Daemon {
                 Ok(Value::Null)
             }
             "plugins.list" => Ok(self.kernel.plugins_json()),
+            "policy.get" => Ok(self.kernel.host_policy.status_json()),
+            "policy.set" => {
+                let policy = self.kernel.host_policy.set(args.get("policy").unwrap_or(&Value::Null))?;
+                self.kernel.audit.record("daemon-client", 0, "policy.set", &serde_json::to_string(&policy).unwrap_or_default(), "ok", None);
+                Ok(self.kernel.host_policy.status_json())
+            }
             "plugins.push" => self.push_plugin(args),
             "plugins.disable" => self.kernel.disable_plugin(None, s("id")?, true),
             "plugins.enable" => self.kernel.enable_plugin(None, s("id")?),
@@ -419,8 +442,11 @@ impl Daemon {
             Some(h) => (h, false),
             None => {
                 let cwd = args["cwd"].as_str().map(str::to_owned).or_else(|| dirs::home_dir().map(|h| h.to_string_lossy().into_owned())).unwrap_or_else(|| "/".into());
-                let shell = args["shell"].as_str().map(str::to_owned).or_else(|| std::env::var("SHELL").ok()).unwrap_or_else(|| "/bin/sh".into());
-                let spec = PtySpec { remote: None, program: shell, args: vec!["-l".into()], cwd: Some(cwd.clone()), env: vec![], env_remove: vec![], cols, rows, machine_id: "daemon".into(), display_cwd: cwd.clone(), answer_queries: true };
+                #[cfg(unix)]
+                let (shell, login) = (args["shell"].as_str().map(str::to_owned).or_else(|| std::env::var("SHELL").ok()).unwrap_or_else(|| "/bin/sh".into()), vec!["-l".to_string()]);
+                #[cfg(windows)]
+                let (shell, login) = (args["shell"].as_str().map(str::to_owned).unwrap_or_else(|| "powershell.exe".into()), vec![]);
+                let spec = PtySpec { remote: None, program: shell, args: login, cwd: Some(cwd.clone()), env: vec![], env_remove: vec![], cols, rows, machine_id: "daemon".into(), display_cwd: cwd.clone(), answer_queries: true };
                 match pty::open(spec) {
                     Ok(sess) => {
                         let h = Arc::new(PtyHolder { sess, attach: AtomicU64::new(0), attached: AtomicBool::new(false), cwd, created_ms: now_ms() });
@@ -502,10 +528,11 @@ impl Daemon {
         let (holder, created) = match existing {
             Some(h) => (h, false),
             None => {
-                let Some(sh) = args["sh"].as_str() else {
-                    return write_line(&mut w, &err_json(&HostError::not_found(format!("no process {key} (and no command to start)"))));
+                let command = match held_command(args) {
+                    Ok(c) => c,
+                    Err(e) => return write_line(&mut w, &err_json(&e)),
                 };
-                match spawn_held(sh, args["cwd"].as_str()) {
+                match spawn_held(command, args["cwd"].as_str()) {
                     Ok(h) => {
                         self.procs.lock().insert(key.clone(), h.clone());
                         (h, true)
@@ -653,6 +680,7 @@ fn absolute(p: &Path) -> String {
 /// Resolved once with the reentrant `getpwuid_r` and cached. `getpwuid` returns a pointer into a
 /// shared static buffer: called from concurrent request threads it returned other accounts' shells
 /// (e.g. `/usr/sbin/nologin`) and corrupted memory, crashing the daemon under request bursts.
+#[cfg(unix)]
 fn login_shell() -> String {
     static SHELL: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     SHELL.get_or_init(|| passwd_shell().unwrap_or_else(|| {
@@ -660,6 +688,7 @@ fn login_shell() -> String {
     })).clone()
 }
 
+#[cfg(unix)]
 fn passwd_shell() -> Option<String> {
     let mut buffer = vec![0 as libc::c_char; 16 * 1024];
     let mut entry: libc::passwd = unsafe { std::mem::zeroed() };
@@ -674,31 +703,29 @@ fn passwd_shell() -> Option<String> {
     (!shell.is_empty()).then_some(shell)
 }
 
-fn signal_number(name: &[u8]) -> i32 {
-    match name {
-        b"KILL" => libc::SIGKILL, b"INT" => libc::SIGINT, b"HUP" => libc::SIGHUP, b"QUIT" => libc::SIGQUIT, _ => libc::SIGTERM,
-    }
-}
-
+#[cfg(unix)]
 type SharedSocket = Arc<Mutex<UnixStream>>;
+#[cfg(unix)]
 fn send_frame(w: &SharedSocket, t: u8, data: &[u8]) -> io::Result<()> { write_frame(&mut *w.lock(), t, data) }
 
 /// Ends a connection's program when the desktop goes away: HUP (as sshd does when a channel
 /// closes), then KILL if the group is still there two seconds later.
-fn hang_up(pgid: i32, finished: &Arc<AtomicBool>) {
+#[cfg(unix)]
+fn hang_up(group: &Group, finished: &Arc<AtomicBool>) {
     if finished.load(Ordering::SeqCst) {
         return;
     }
-    unsafe { libc::kill(-pgid, libc::SIGHUP) };
-    let finished = finished.clone();
+    group.signal("HUP");
+    let (group, finished) = (group.clone(), finished.clone());
     std::thread::spawn(move || {
         std::thread::sleep(Duration::from_secs(2));
         if !finished.load(Ordering::SeqCst) {
-            unsafe { libc::kill(-pgid, libc::SIGKILL) };
+            group.signal("KILL");
         }
     });
 }
 
+#[cfg(unix)]
 impl Daemon {
     /// `exec`: run `sh` with the login shell in the home directory, like an SSH exec channel, for as
     /// long as this connection lasts. Frames: out/err/exit to the desktop; in/eof/signal from it.
@@ -715,11 +742,12 @@ impl Daemon {
             Ok(c) => c,
             Err(e) => return write_line(&mut w, &err_json(&HostError::new("ENOEXEC", format!("cannot start process: {e}")))),
         };
-        let pgid = child.id() as i32;
-        self.ephemeral.lock().insert(pgid);
+        let pid = child.id();
+        let group = Group::of_leader(pid)?;
+        self.ephemeral.lock().insert(pid, group.clone());
         let finished = Arc::new(AtomicBool::new(false));
         let result = (|| {
-            write_line(&mut w, &json!({"ok": true, "value": {"pid": pgid}}))?;
+            write_line(&mut w, &json!({"ok": true, "value": {"pid": pid}}))?;
             let w: SharedSocket = Arc::new(Mutex::new(w));
             let (out, err) = (child.stdout.take().unwrap(), child.stderr.take().unwrap());
             let pump = |mut r: Box<dyn Read + Send>, t: u8, w: SharedSocket| std::thread::spawn(move || {
@@ -735,35 +763,28 @@ impl Daemon {
             });
             let (t_out, t_err) = (pump(Box::new(out), F_OUT, w.clone()), pump(Box::new(err), F_ERR, w.clone()));
             let mut stdin = child.stdin.take();
-            let fin = finished.clone();
+            let (fin, group) = (finished.clone(), group.clone());
             std::thread::spawn(move || {
                 loop {
                     match read_frame(&mut reader) {
                         Ok(Some((F_IN, data))) => { if let Some(i) = stdin.as_mut() { if i.write_all(&data).and_then(|_| i.flush()).is_err() { stdin = None; } } }
                         Ok(Some((F_EOF, _))) => stdin = None,
-                        Ok(Some((F_SIGNAL, name))) => { unsafe { libc::kill(-pgid, signal_number(&name)) }; }
+                        Ok(Some((F_SIGNAL, name))) => group.signal(&String::from_utf8_lossy(&name)),
                         Ok(Some(_)) => {}
                         Ok(None) | Err(_) => break,
                     }
                 }
-                hang_up(pgid, &fin);
+                hang_up(&group, &fin);
             });
             let status = child.wait();
             finished.store(true, Ordering::SeqCst);
             let _ = (t_out.join(), t_err.join());
-            let exit = match status {
-                Ok(s) => {
-                    use std::os::unix::process::ExitStatusExt;
-                    json!({"code": s.code(), "signal": s.signal()})
-                }
-                Err(_) => json!({"code": null, "signal": null}),
-            };
-            let r = send_frame(&w, F_EXIT, exit.to_string().as_bytes());
+            let r = send_frame(&w, F_EXIT, exit_json(status.ok()).to_string().as_bytes());
             let _ = w.lock().shutdown(std::net::Shutdown::Both);
             r
         })();
         finished.store(true, Ordering::SeqCst);
-        self.ephemeral.lock().remove(&pgid);
+        self.ephemeral.lock().remove(&pid);
         result
     }
 
@@ -788,15 +809,16 @@ impl Daemon {
         };
         drop(pair.slave);
         // The PTY child leads its own session, so its pid is the process group to signal.
-        let pgid = child.process_id().map(|p| p as i32).unwrap_or(0);
-        if pgid > 0 { self.ephemeral.lock().insert(pgid); }
+        let pid = child.process_id().unwrap_or(0);
+        let group = (pid > 0).then(|| Group::of_leader(pid).ok()).flatten();
+        if let Some(g) = &group { self.ephemeral.lock().insert(pid, g.clone()); }
         let finished = Arc::new(AtomicBool::new(false));
         let result = (|| {
             let (mut out, input) = match (pair.master.try_clone_reader(), pair.master.take_writer()) {
                 (Ok(r), Ok(wr)) => (r, wr),
                 _ => { let _ = child.kill(); return write_line(&mut w, &err_json(&HostError::new("EPTY", "cannot open terminal streams"))); }
             };
-            write_line(&mut w, &json!({"ok": true, "value": {"pid": pgid}}))?;
+            write_line(&mut w, &json!({"ok": true, "value": {"pid": pid}}))?;
             let w: SharedSocket = Arc::new(Mutex::new(w));
             let (done_tx, done_rx) = crossbeam_channel::bounded::<()>(1);
             {
@@ -815,7 +837,7 @@ impl Daemon {
                 });
             }
             let master = Arc::new(Mutex::new(pair.master));
-            let fin = finished.clone();
+            let (fin, group) = (finished.clone(), group.clone());
             std::thread::spawn(move || {
                 let mut input = input;
                 loop {
@@ -824,12 +846,12 @@ impl Daemon {
                         Ok(Some((F_RESIZE, d))) if d.len() == 4 => {
                             let _ = master.lock().resize(PtySize { cols: u16::from_be_bytes([d[0], d[1]]).clamp(10, 1000), rows: u16::from_be_bytes([d[2], d[3]]).clamp(3, 500), pixel_width: 0, pixel_height: 0 });
                         }
-                        Ok(Some((F_SIGNAL, name))) if pgid > 0 => { unsafe { libc::kill(-pgid, signal_number(&name)) }; }
+                        Ok(Some((F_SIGNAL, name))) => { if let Some(g) = &group { g.signal(&String::from_utf8_lossy(&name)); } }
                         Ok(Some(_)) => {}
                         Ok(None) | Err(_) => break,
                     }
                 }
-                if pgid > 0 { hang_up(pgid, &fin); }
+                if let Some(g) = &group { hang_up(g, &fin); }
             });
             let status = child.wait();
             finished.store(true, Ordering::SeqCst);
@@ -842,28 +864,86 @@ impl Daemon {
             r
         })();
         finished.store(true, Ordering::SeqCst);
-        if pgid > 0 { self.ephemeral.lock().remove(&pgid); }
+        if group.is_some() { self.ephemeral.lock().remove(&pid); }
         result
     }
 }
 
-fn spawn_held(sh: &str, cwd: Option<&str>) -> Result<Arc<ProcHolder>, HostError> {
-    let mut cmd = Command::new("/bin/sh");
-    cmd.arg("-c").arg(sh).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+fn exit_json(status: Option<std::process::ExitStatus>) -> Value {
+    match status {
+        Some(s) => {
+            let e = crate::host::stdio::exit_info(&s);
+            json!({"code": e.code, "signal": e.signal})
+        }
+        None => json!({"code": null, "signal": null}),
+    }
+}
+
+/// What `proc.attach` starts: `spec` ({program, args, env, envRemove, verbatim}, run directly) or
+/// `sh` (a shell command line: `/bin/sh -c` on Unix, `cmd.exe /d /s /c` on Windows).
+/// Returns the command and how it is described in `resources.list`.
+fn held_command(args: &Value) -> Result<(Command, String), HostError> {
+    if let Some(spec) = args.get("spec").filter(|s| s.is_object()) {
+        let program = spec["program"].as_str().filter(|p| !p.is_empty()).ok_or_else(|| HostError::invalid("spec.program is required"))?;
+        let list: Vec<&str> = spec["args"].as_array().map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+        let mut cmd = crate::util::command(program);
+        if spec["verbatim"] == true {
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                cmd.raw_arg(list.join(" "));
+            }
+            #[cfg(not(windows))]
+            return Err(HostError::invalid("verbatim arguments are Windows-only"));
+        } else {
+            cmd.args(&list);
+        }
+        for k in spec["envRemove"].as_array().into_iter().flatten().filter_map(Value::as_str) {
+            cmd.env_remove(k);
+        }
+        for (k, v) in spec["env"].as_object().into_iter().flatten() {
+            if let Some(v) = v.as_str() { cmd.env(k, v); }
+        }
+        let description = std::iter::once(program).chain(list.iter().copied()).collect::<Vec<_>>().join(" ");
+        return Ok((cmd, description));
+    }
+    let sh = args["sh"].as_str().ok_or_else(|| HostError::not_found(format!("no process {} (and no command to start)", args["key"].as_str().unwrap_or(""))))?;
+    #[cfg(unix)]
+    let cmd = {
+        let mut c = Command::new("/bin/sh");
+        c.arg("-c").arg(sh);
+        c
+    };
+    #[cfg(windows)]
+    let cmd = {
+        use std::os::windows::process::CommandExt;
+        let mut c = crate::util::command(crate::util::system32("cmd.exe"));
+        c.raw_arg(format!("/d /s /c \"{sh}\""));
+        c
+    };
+    Ok((cmd, sh.to_string()))
+}
+
+fn spawn_held((mut cmd, description): (Command, String), cwd: Option<&str>) -> Result<Arc<ProcHolder>, HostError> {
+    cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
     if let Some(c) = cwd {
         cmd.current_dir(c);
     }
+    #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
         cmd.process_group(0);
     }
     let mut child = cmd.spawn().map_err(|e| HostError::new("ENOEXEC", format!("cannot start process: {e}")))?;
     let pid = child.id();
+    // Windows: a job created right after the start; anything the program launched in between
+    // escapes it (process groups have no such gap).
+    let group = Group::of_leader(pid).inspect_err(|e| log::warn!("process {pid} has no process group: {e}")).ok();
     let (mut out, mut err, stdin) = (child.stdout.take().unwrap(), child.stderr.take().unwrap(), child.stdin.take());
     let h = Arc::new(ProcHolder {
-        pid, child: Mutex::new(Some(child)), stdin: Mutex::new(stdin), pending: Mutex::new(VecDeque::new()), pending_bytes: AtomicUsize::new(0), inflight: Mutex::new(VecDeque::new()),
+        pid, group, child: Mutex::new(Some(child)), stdin: Mutex::new(stdin), pending: Mutex::new(VecDeque::new()), pending_bytes: AtomicUsize::new(0), inflight: Mutex::new(VecDeque::new()),
         dropped: AtomicU64::new(0), cv: Condvar::new(), exit: Mutex::new(None), attach: AtomicU64::new(0), attached: AtomicBool::new(false),
-        command: sh.chars().take(300).collect(), cwd: cwd.unwrap_or("").to_string(), created_ms: now_ms(),
+        command: description.chars().take(300).collect(), cwd: cwd.unwrap_or("").to_string(), created_ms: now_ms(),
     });
     let pump = |h: Arc<ProcHolder>, t: u8, r: &mut dyn Read| {
         let mut buf = vec![0u8; 32 * 1024];
@@ -882,15 +962,8 @@ fn spawn_held(sh: &str, cwd: Option<&str>) -> Result<Arc<ProcHolder>, HostError>
     std::thread::spawn(move || {
         let _ = t_out.join();
         let _ = t_err.join();
-        let status = h3.child.lock().as_mut().map(|c| c.wait());
-        let v = match status {
-            Some(Ok(s)) => {
-                use std::os::unix::process::ExitStatusExt;
-                json!({"code": s.code(), "signal": s.signal()})
-            }
-            _ => json!({"code": null, "signal": null}),
-        };
-        *h3.exit.lock() = Some(v);
+        let status = h3.child.lock().as_mut().and_then(|c| c.wait().ok());
+        *h3.exit.lock() = Some(exit_json(status));
         h3.cv.notify_all();
     });
     Ok(h)
