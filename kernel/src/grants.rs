@@ -79,6 +79,16 @@ pub struct Manifest {
 impl Manifest {
     pub fn display_name(&self) -> String { if self.name.is_empty() { self.id.clone() } else { self.name.clone() } }
 
+    /// `platforms.<os>` (`std::env::consts::OS` naming): `{status: supported|untested|unsupported, note?}`.
+    /// Returns why the plugin cannot run on `os`, when it declares that OS unsupported. Other
+    /// statuses and undeclared OSes run; presentation of them belongs to modules.
+    pub fn unsupported_on(&self, os: &str) -> Option<String> {
+        let entry = self.metadata.get("platforms")?.get(os)?;
+        if entry.get("status")?.as_str()? != "unsupported" { return None; }
+        let note = entry.get("note").and_then(|n| n.as_str()).filter(|n| !n.is_empty());
+        Some(format!("{} does not support {os}{}", self.display_name(), note.map(|n| format!(": {n}")).unwrap_or_default()))
+    }
+
     /// Effective placement: explicit `runsOn`, else UI modules are local-only and services may run anywhere.
     pub fn placement(&self) -> &str {
         match self.runs_on.as_str() {
@@ -100,6 +110,15 @@ impl Manifest {
         }
         if self.kind == "ui" && self.runs_on == "workspace" {
             return Err(HostError::invalid("UI modules cannot run on the workspace machine"));
+        }
+        if let Some(platforms) = self.metadata.get("platforms") {
+            let map = platforms.as_object().ok_or_else(|| HostError::invalid("platforms must be an object"))?;
+            for (os, entry) in map {
+                let status = entry.get("status").and_then(|s| s.as_str());
+                if !matches!(os.as_str(), "windows" | "macos" | "linux") || !matches!(status, Some("supported" | "untested" | "unsupported")) {
+                    return Err(HostError::invalid(format!("invalid platforms entry {os:?}")));
+                }
+            }
         }
         for c in self.provides.iter().chain(&self.requires) {
             if c.is_empty() || c.len() > 80 || !c.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-:".contains(&b)) {
@@ -433,6 +452,14 @@ mod tests {
         m.schema_version = 2;
         m.provides = vec!["shell.root".into()];
         assert!(m.validate().is_ok());
+        m.metadata.insert("platforms".into(), serde_json::json!({"windows": {"status": "unsupported", "note": "needs a POSIX shell"}, "linux": {"status": "supported"}}));
+        assert!(m.validate().is_ok());
+        assert_eq!(m.unsupported_on("linux"), None);
+        assert_eq!(m.unsupported_on("macos"), None);
+        assert!(m.unsupported_on("windows").unwrap().ends_with("does not support windows: needs a POSIX shell"));
+        m.metadata.insert("platforms".into(), serde_json::json!({"beos": {"status": "supported"}}));
+        assert!(m.validate().is_err());
+        m.metadata.remove("platforms");
         m.runs_on = "mars".into();
         assert!(m.validate().is_err());
         m.runs_on = "workspace".into();

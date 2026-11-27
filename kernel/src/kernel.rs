@@ -244,6 +244,9 @@ impl Kernel {
     // ---- generations ---------------------------------------------------------------------------
 
     fn spawn_generation(&self, manifest: &Manifest, version: u32, code: &str) -> HResult<Arc<Generation>> {
+        if let Some(reason) = manifest.unsupported_on(std::env::consts::OS) {
+            return Err(HostError::new("ENOTSUP", reason));
+        }
         let (tx, rx) = crossbeam_channel::unbounded::<WorkerMsg>();
         let caps = self.grants.effective(manifest);
         let gen = Arc::new(Generation {
@@ -348,6 +351,13 @@ impl Kernel {
     /// runs asynchronously; the returned channel fires when it finished.
     fn load_plugin(&self, d: &Discovered) -> Option<crossbeam_channel::Receiver<()>> {
         let m = &d.manifest;
+        // A plugin that declares this OS unsupported stays inactive, with the reason as its error
+        // (on the desktop and on a workspace daemon alike).
+        if let Some(reason) = m.unsupported_on(std::env::consts::OS) {
+            log::warn!("{reason}");
+            self.router.set_last_error(&m.id, Some(reason));
+            return None;
+        }
         {
             let id = m.id.clone();
             // Import a changed seed build (developer `npm run modules:build`, or a user plugin's dist).

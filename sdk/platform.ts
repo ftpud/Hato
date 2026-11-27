@@ -28,6 +28,55 @@ export function workspaceOs(ctx: ModuleContext, desc: { location: string; os?: M
   return desc.os || (desc.location === "local" ? hostOs(ctx) : "posix");
 }
 
+// ---------------------------------------------------------------------------------------------
+// Declared platform support (plugin manifests `platforms`, agent providers `platforms`)
+
+export type PlatformId = "windows" | "macos" | "linux";
+export const PLATFORM_LABELS: Record<PlatformId, string> = { windows: "Windows", macos: "macOS", linux: "Linux" };
+/** `untested` runs with a warning; `unsupported` does not run (the kernel refuses to start such a plugin
+ *  on that OS). `requires` names tools needed on that OS (providers; see `REQUIRED_TOOLS`). */
+export interface PlatformSupport { status: "supported" | "untested" | "unsupported"; requires?: { tool: string; env?: string }[]; note?: string }
+export type PlatformSupportMap = Partial<Record<PlatformId, PlatformSupport>>;
+
+/** A validated `platforms` map (unknown OSes, statuses and malformed entries are dropped). */
+export function parsePlatforms(raw: unknown): PlatformSupportMap | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const out: PlatformSupportMap = {};
+  for (const id of Object.keys(PLATFORM_LABELS) as PlatformId[]) {
+    const e: any = (raw as any)[id];
+    if (!e || !["supported", "untested", "unsupported"].includes(e.status)) continue;
+    const requires = Array.isArray(e.requires) ? e.requires.filter((r: any) => typeof r?.tool === "string" && /^[a-z0-9][a-z0-9-]{0,39}$/.test(r.tool)
+      && (r.env === undefined || /^[A-Z][A-Z0-9_]{0,63}$/.test(r.env))).map((r: any) => ({ tool: r.tool, ...(r.env ? { env: r.env } : {}) })) : [];
+    out[id] = { status: e.status, ...(requires.length ? { requires } : {}), ...(typeof e.note === "string" ? { note: e.note.slice(0, 500) } : {}) };
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
+/** Declared support on a machine OS. Undeclared: Linux/macOS (and unidentified POSIX machines) are
+ *  `supported`; Windows is `untested`. */
+export function supportOn(platforms: PlatformSupportMap | undefined | null, os: MachineOs): PlatformSupport {
+  const declared = os === "posix" ? undefined : platforms?.[os];
+  return declared || { status: os === "windows" ? "untested" : "supported" };
+}
+
+/** Combined support of several parts (a package's modules): the most restrictive status, notes joined. */
+export function combinePlatforms(maps: (PlatformSupportMap | undefined)[]): PlatformSupportMap | undefined {
+  const rank = { supported: 0, untested: 1, unsupported: 2 } as const;
+  const out: PlatformSupportMap = {};
+  for (const id of Object.keys(PLATFORM_LABELS) as PlatformId[]) {
+    const entries = maps.map(m => m?.[id]).filter((e): e is PlatformSupport => !!e);
+    if (!entries.length) continue;
+    const worst = entries.reduce((a, b) => rank[b.status] > rank[a.status] ? b : a);
+    const notes = [...new Set(entries.filter(e => e.status === worst.status && e.note).map(e => e.note!))];
+    out[id] = { status: worst.status, ...(notes.length ? { note: notes.join(" ") } : {}) };
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
+/** A plugin's declared support on a machine OS (manifest `platforms`, exposed in `PluginInfo.metadata`). */
+export const pluginSupport = (plugin: { metadata?: Record<string, unknown> } | null | undefined, os: MachineOs) =>
+  supportOn(parsePlatforms(plugin?.metadata?.platforms), os);
+
 /** Whether the host offers a capability (`env.info().hostFeatures`); prefer this to OS checks. */
 export function hostFeature(ctx: ModuleContext, feature: string): boolean {
   return !!ctx.host?.env?.info?.().hostFeatures?.includes(feature);
