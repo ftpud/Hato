@@ -2,6 +2,7 @@
 // here is imported at runtime from another module's generation.
 import type { DaemonTarget, ExecutionTarget, Handle, ModuleContext, ScopeGrant, SshProfileSpec } from "./types";
 import { sha256Hex } from "./sha256";
+import type { MachineOs } from "./platform";
 
 /** Workspace descriptor produced by the `workspace` service (the kernel never parses it). */
 export interface WorkspaceDescriptor {
@@ -13,6 +14,9 @@ export interface WorkspaceDescriptor {
   cloudHostId?: string;
   machineId: string; // local | ssh:<profileId> | cloud:<origin and host hash>
   rootAbsolutePath: string; // path ON that machine
+  /** OS of the machine when known (local: the host; WSL: linux; SSH: detected at first connection).
+   *  Absent: not yet known; read it through `workspaceOs` from `@hato/sdk/platform`. */
+  os?: MachineOs;
   connectionRef?: string | null; // ssh profile id (no credentials)
   ssh?: { profileId: string; host: string; port: number; user: string; identityFile?: string | null; transport?: "ssh" | "wsl"; auth?: "password" } | null;
   isGit?: boolean;
@@ -20,7 +24,7 @@ export interface WorkspaceDescriptor {
 }
 
 const grantCache = new Map<string, Promise<ScopeGrant>>();
-const sshCache = new Map<string, Promise<{ connection: Handle; machineId: string; home: string | null }>>();
+const sshCache = new Map<string, ReturnType<ModuleContext["host"]["ssh"]["connect"]>>();
 
 export function cloudMachineId(server: string, hostId: string): string {
   return "cloud:" + sha256Hex(hostId + " on " + server.replace(/^http/, "ws"));
@@ -236,3 +240,6 @@ export function langFromPath(p: string): string {
   };
   return map[ext] || "text";
 }
+
+/** Settings key holding a machine's detected platform (`{ os, arch }`), written by the projects service. */
+export const machinePlatformKey = (machineId: string) => `machine.platform.${machineId}`;

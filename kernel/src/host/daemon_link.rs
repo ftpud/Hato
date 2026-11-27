@@ -139,12 +139,28 @@ impl Drop for CtlLink {
     }
 }
 
-/// `uname -sm` → (std::env::consts::OS, ARCH) naming.
+/// `uname -sm` → (std::env::consts::OS, ARCH) naming. MSYS/Git Bash on Windows reports
+/// `MINGW64_NT-10.0-19045 x86_64` (or `MSYS_NT-…`, `CYGWIN_NT-…`).
 pub fn platform(uname: &str) -> Option<(&'static str, &'static str)> {
     let mut it = uname.split_whitespace();
-    let os = match it.next()? { "Darwin" => "macos", "Linux" => "linux", "FreeBSD" => "freebsd", _ => return None };
+    let os = match it.next()? {
+        "Darwin" => "macos", "Linux" => "linux", "FreeBSD" => "freebsd",
+        s if ["MINGW", "MSYS_NT", "CYGWIN_NT"].iter().any(|p| s.starts_with(p)) => "windows",
+        _ => return None,
+    };
     let arch = match it.next()? { "arm64" | "aarch64" => "aarch64", "x86_64" | "amd64" => "x86_64", _ => return None };
     Some((os, arch))
+}
+
+/// Windows OpenSSH reports homes as `/C:/Users/me` (SFTP) or `C:/Users/me`.
+pub fn is_windows_home(home: &str) -> bool {
+    let h = home.strip_prefix('/').unwrap_or(home).as_bytes();
+    h.len() >= 3 && h[0].is_ascii_alphabetic() && h[1] == b':' && (h[2] == b'/' || h[2] == b'\\')
+}
+
+/// `%PROCESSOR_ARCHITECTURE%` → ARCH naming (unknown values are reported as-is by callers' errors).
+pub fn windows_arch(value: &str) -> &'static str {
+    match value.to_ascii_uppercase().as_str() { "ARM64" => "aarch64", "X86" => "x86", _ => "x86_64" }
 }
 
 /// Local daemon binary for a target platform: this executable when the platforms match, else a
@@ -171,11 +187,10 @@ fn run_ssh(master: &SshMaster, remote: &str, stdin: Option<&[u8]>, timeout: Dura
 
 /// Upload the matching daemon binary if the machine lacks it. Returns (binary, daemon home).
 fn install(master: &Arc<SshMaster>, data_dir: &std::path::Path, repo_root: &std::path::Path, daemon_home: Option<&str>) -> HResult<(String, String)> {
-    let (code, uname, err) = run_ssh(master, "uname -sm", None, Duration::from_secs(30))?;
-    if code != 0 {
-        return Err(HostError::new("EREMOTE", format!("uname failed: {err}")));
+    let (os, arch) = master.platform()?;
+    if os == "windows" {
+        return Err(HostError::new("ENOTSUP", "Windows SSH hosts have no Hato daemon yet; open the project from a Linux or macOS host, or in WSL"));
     }
-    let (os, arch) = platform(uname.trim()).ok_or_else(|| HostError::new("ENOTSUP", format!("unsupported remote platform: {}", uname.trim())))?;
     let local = binary_for(data_dir, repo_root, os, arch)?;
     let (size, digest) = binary_digest(&local)?;
     let tag = format!("{}-{}", crate::daemon::VERSION, &digest[..12]);
@@ -475,6 +490,10 @@ mod tests {
         assert_eq!(platform("Linux x86_64"), Some(("linux", "x86_64")));
         assert_eq!(platform("Darwin arm64\n"), Some(("macos", "aarch64")));
         assert_eq!(platform("Plan9 mips"), None);
+        assert_eq!(platform("MINGW64_NT-10.0-19045 x86_64"), Some(("windows", "x86_64")));
+        assert!(is_windows_home("/C:/Users/me") && is_windows_home("d:\\x") && !is_windows_home("/home/me") && !is_windows_home("/c"));
+        assert_eq!(windows_arch("AMD64"), "x86_64");
+        assert_eq!(windows_arch("arm64"), "aarch64");
         assert_eq!(scoped_key("terminals", "ws:1/main").unwrap(), "terminals/ws:1/main");
         assert!(scoped_key("terminals", "a b").is_err());
         assert!(allowed_op("plugins.push") && !allowed_op("shutdown") && !allowed_op("pty.attach"));

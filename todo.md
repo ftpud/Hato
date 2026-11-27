@@ -143,8 +143,9 @@ note?: string }`; status comes from the smoke test, never from assumptions.
 - [ ] **[N]** Port `daemon/server.rs`: named pipes instead of Unix sockets, ConPTY terminals, Windows default shell
       (`%COMSPEC%`/pwsh) instead of `passwd_shell`/`/bin/sh`, durable terminals across app restart.
 - [ ] **[N]** Daemon on local Windows projects too (terminals survive app restart, like Linux).
-- [ ] **[N]** `daemon_link.rs`: platform detection without `uname` (try `uname -sm`, then
-      `powershell -NoProfile -Command [Environment]::OSVersion…`/`%PROCESSOR_ARCHITECTURE%`); upload path `%LOCALAPPDATA%`.
+- [ ] **[N]** `daemon_link.rs`: upload path `%LOCALAPPDATA%` for a Windows daemon.
+      _Done:_ platform detection (`SshMaster::platform`: `uname -sm`, MSYS names, else Windows OpenSSH home +
+      `%PROCESSOR_ARCHITECTURE%`), reported by `ssh.connect`, recorded by projects, carried as `WorkspaceDescriptor.os`.
 - [ ] **[N]** Per-platform remote quoting (`sh_quote` vs PowerShell/cmd) behind one function.
 - [ ] **[N]** SFTP on Windows OpenSSH: path form `/C:/…` ↔ `C:/…`.
 - [ ] Build: `x86_64-pc-windows-gnu` daemon bundled (x64 only).

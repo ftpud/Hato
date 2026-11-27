@@ -747,7 +747,9 @@ fn dispatch(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: &Value) -> H
                 }
             };
             k.audit.record(owner, gen.gen_id, "ssh.connect", &profile.label(), "ok", None);
-            Ok(json!({"connection": h, "machineId": profile.machine_id(), "home": home}))
+            // Detected once per machine; a failure (unknown OS) leaves it null rather than failing the connection.
+            let platform = master.platform().ok().map(|(os, arch)| json!({"os": os, "arch": arch}));
+            Ok(json!({"connection": h, "machineId": profile.machine_id(), "home": home, "platform": platform}))
         }
         "ssh.wslDistributions" => {
             gen.caps.require("ssh.connect")?;

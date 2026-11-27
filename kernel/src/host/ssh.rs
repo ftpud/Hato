@@ -98,6 +98,8 @@ pub struct SshMaster {
     daemon_socket: Mutex<Option<String>>,
     /// Why the daemon route was last given up (forwarding refused, socket gone, older daemon).
     daemon_route_error: Mutex<Option<String>>,
+    /// (OS, arch) in `std::env::consts` naming, detected once per machine (see `platform`).
+    platform: Mutex<Option<(&'static str, &'static str)>>,
 }
 
 /// Runs `sftp-server` from the home directory (`realpath(".")` is how callers find the home).
@@ -125,6 +127,7 @@ impl SshMaster {
             relays: Default::default(),
             daemon_socket: Mutex::new(None),
             daemon_route_error: Mutex::new(None),
+            platform: Mutex::new(None),
         })
     }
 
@@ -154,6 +157,31 @@ impl SshMaster {
         }
         self.exec_direct(remote)
     }
+
+    /// The machine's (OS, arch), detected once: `uname -sm` on Unix (and MSYS/Git Bash), else a
+    /// Windows OpenSSH server (home `/C:/…`, default shell cmd) through `%PROCESSOR_ARCHITECTURE%`.
+    pub fn platform(&self) -> HResult<(&'static str, &'static str)> {
+        if let Some(p) = *self.platform.lock() { return Ok(p); }
+        let timeout = Duration::from_secs(20);
+        let (code, out, _) = self.exec_direct("uname -sm")?.collect(None, timeout)?;
+        let detected = if code == 0 { crate::host::daemon_link::platform(out.trim()) } else { None };
+        let detected = match detected {
+            Some(p) => p,
+            None => {
+                let home = self.sftp()?.realpath(".")?;
+                if !crate::host::daemon_link::is_windows_home(&home) {
+                    return Err(HostError::new("ENOTSUP", format!("unsupported remote platform: {}", out.trim())));
+                }
+                let (_, arch, _) = self.exec_direct("echo %PROCESSOR_ARCHITECTURE%")?.collect(None, timeout)?;
+                ("windows", crate::host::daemon_link::windows_arch(arch.trim()))
+            }
+        };
+        *self.platform.lock() = Some(detected);
+        Ok(detected)
+    }
+
+    /// The platform if already detected (never connects).
+    pub fn known_platform(&self) -> Option<(&'static str, &'static str)> { *self.platform.lock() }
 
     /// `exec` on an SSH session channel, never through the daemon (installing/starting it).
     pub fn exec_direct(&self, remote: &str) -> HResult<Spawned> {
@@ -478,6 +506,7 @@ impl SshMaster {
             "alive": self.is_alive(), "lastError": self.last_error.lock().clone(),
             "daemonRoute": self.daemon_socket.lock().clone(), "daemonRouteError": self.daemon_route_error.lock().clone(),
             "connections": usize::from(self.conn().is_ok()) + self.extra.lock().iter().filter(|c| !c.is_closed()).count(),
+            "platform": self.known_platform().map(|(os, arch)| json!({"os": os, "arch": arch})),
         })
     }
 }

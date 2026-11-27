@@ -138,10 +138,12 @@ export interface NativeHost {
   };
   ssh: {
     /** `interactive`: a user gesture, so a password profile may prompt. Otherwise it fails with ENEEDAUTH until connected. */
-    connect(profile: SshProfileSpec, options?: { interactive?: boolean }): Promise<{ connection: Handle; machineId: string; home: string | null }>;
+    /** `platform`: the machine's OS and CPU in `env.info()` naming (`linux`/`macos`/`windows`, `x86_64`/`aarch64`),
+     *  detected once per machine; null when unrecognized. */
+    connect(profile: SshProfileSpec, options?: { interactive?: boolean }): Promise<{ connection: Handle; machineId: string; home: string | null; platform?: MachinePlatform | null }>;
     /** Installed WSL distributions, the default first. Empty off Windows. */
     wslDistributions(): Promise<string[]>;
-    status(connection: Handle): Promise<{ alive: boolean; machineId: string; lastError: string | null }>;
+    status(connection: Handle): Promise<{ alive: boolean; machineId: string; lastError: string | null; platform?: MachinePlatform | null }>;
     disconnect(connection: Handle): Promise<void>;
     forwardLoopback(connection: Handle, request: { listener: Handle }): Promise<{ handle: Handle; remotePort: number; localPort: number }>;
     localForward(connection: Handle, request: { localPort: number; remoteHost: string; remotePort: number }): Promise<{ handle: Handle; localPort: number }>;
@@ -270,6 +272,7 @@ export interface NativeHost {
   };
 }
 
+export interface MachinePlatform { os: string; arch: string }
 export interface KnownDirs { home: string | null; system: string | null; programs: string | null; localData: string | null; roamingData: string | null }
 export interface EnvInfo {
   /** Host capabilities, e.g. `pty.spawn`, `pty.shellCandidates`, `process.verbatimArgs` (Windows),
