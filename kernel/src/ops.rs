@@ -343,6 +343,12 @@ fn protected(k: &Kernel, path: &str) -> bool {
     })
 }
 
+/// Source grants are rooted by the kernel at the module source tree. In packaged launches that tree
+/// is the downloaded runtime under the protected `runtime/` dir, so exempt paths that stay inside it.
+fn protected_for(k: &Kernel, g: &ScopeGrant, path: &str) -> bool {
+    !(g.kind == ScopeKind::Source && path_within(&g.root, path)) && protected(k, path)
+}
+
 fn decode_text_arg(args: &Value) -> HResult<Vec<u8>> {
     if let Some(t) = args.get("text").and_then(|t| t.as_str()) {
         return Ok(t.as_bytes().to_vec());
@@ -380,7 +386,7 @@ fn dispatch(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: &Value) -> H
             let cloud = cloud_for(k, &g)?;
             let be = hfs::backend(&g, ssh.clone(), cloud.clone())?;
             let real = hfs::resolve(&g, &be, arg_opt_str(args, "path").unwrap_or("."), true)?;
-            if g.target == Target::Local && protected(k, &real) {
+            if g.target == Target::Local && protected_for(k, &g, &real) {
                 return Err(HostError::denied("path is inside kernel-protected application state"));
             }
             let bin = if let Some(master) = &ssh {
@@ -408,7 +414,7 @@ fn dispatch(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: &Value) -> H
             let be = file_backend(k, &g)?;
             let rel = arg_opt_str(args, "path").unwrap_or(".");
             let real = hfs::resolve(&g, &be, rel, true)?;
-            if g.target == Target::Local && protected(k, &real) {
+            if g.target == Target::Local && protected_for(k, &g, &real) {
                 return Err(HostError::denied("path is inside kernel-protected application state"));
             }
             match op {
@@ -506,7 +512,7 @@ fn dispatch(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: &Value) -> H
             let be = file_backend(k, &g)?;
             let rel = arg_str(args, "path")?;
             let real = hfs::resolve(&g, &be, rel, false)?;
-            if g.target == Target::Local && protected(k, &real) {
+            if g.target == Target::Local && protected_for(k, &g, &real) {
                 return Err(HostError::denied("path is inside kernel-protected application state"));
             }
             if op == "fs.mkdir" {
