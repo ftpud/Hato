@@ -5,7 +5,7 @@ import * as esbuild from 'esbuild';
 const built = await esbuild.build({ entryPoints: ['sdk/platform.ts'], bundle: true, format: 'esm', write: false });
 const P = await import('data:text/javascript;base64,' + Buffer.from(built.outputFiles[0].text).toString('base64'));
 
-const win = (extra = {}) => ({ host: { env: { info: () => ({ platform: 'windows', windows: { systemRoot: 'C:\\Windows', programFiles: 'C:\\Program Files', localAppData: 'C:\\Users\\me\\AppData\\Local', appData: 'C:\\Users\\me\\AppData\\Roaming' } }) }, ...extra } });
+const win = (extra = {}) => ({ host: { env: { info: () => ({ platform: 'windows', knownDirs: { home: 'C:\\Users\\me', system: 'C:\\Windows', programs: 'C:\\Program Files', localData: 'C:\\Users\\me\\AppData\\Local', roamingData: 'C:\\Users\\me\\AppData\\Roaming' } }) }, ...extra } });
 const mac = { host: { env: { info: () => ({ platform: 'macos' }) } } };
 
 test('paths: absolute forms, base names and Windows-insensitive comparison', () => {
@@ -45,8 +45,8 @@ test('user commands use the chosen shell with reproducible flags', () => {
   assert.deepEqual(P.userCommand(ctx, 'windows', { kind: 'cmd' }, 'echo "a b" & dir'),
     { executable: 'C:\\Windows\\System32\\cmd.exe', args: ['/d', '/s', '/c', '"echo "a b" & dir"'], verbatimArgs: true });
   assert.deepEqual(P.userCommand(ctx, 'windows', { kind: 'wsl', distro: 'Ubuntu' }, 'ls').args, ['-d', 'Ubuntu', '--exec', '/bin/sh', '-lc', 'ls']);
-  assert.deepEqual(P.userCommand(mac, 'posix', { kind: 'login' }, 'ls'), { executable: '/bin/zsh', args: ['-lc', 'ls'] });
-  assert.equal(P.userCommand(mac, 'posix', { kind: 'login' }, 'ls', '/bin/sh').executable, '/bin/sh');
+  assert.deepEqual(P.userCommand(mac, 'macos', { kind: 'login' }, 'ls'), { executable: '/bin/zsh', args: ['-lc', 'ls'] });
+  assert.equal(P.userCommand(mac, 'macos', { kind: 'login' }, 'ls', '/bin/sh').executable, '/bin/sh');
 });
 
 test('terminal candidates follow the automatic order and fall back from a missing choice', () => {
@@ -71,7 +71,7 @@ test('shell choices parse, round-trip and resolve per workspace scope', async ()
   assert.deepEqual(await P.shellChoiceFor(ctx, { id: 'w', machineId: 'local', location: 'local' }), { kind: 'cmd' });
   assert.deepEqual(scopes, ['workspace:w', 'machine:local', 'user']);
   assert.deepEqual(await P.shellChoiceFor(ctx, { id: 'w', machineId: 'ssh:x', location: 'ssh' }), { kind: 'login' });
-  assert.ok(P.shellOptions(['Ubuntu']).some(o => o.value === 'wsl:Ubuntu'));
+  assert.ok(P.shellOptions('windows', ['Ubuntu']).some(o => o.value === 'wsl:Ubuntu'));
 });
 
 test('execution-policy failures get a hint that does not change the policy', () => {
@@ -119,4 +119,25 @@ test('firstExistingFile probes all paths in one PowerShell start and maps the ex
   const launched = await P.windowsLaunch(ctx, 'g', { executable: './gradlew', args: ['build'], cwd: 'C:/p' }).catch(e => e);
   assert.equal(calls.length, 4, 'one probe for the ./gradlew variants, then the PATH lookup');
   assert.ok(launched instanceof Error || launched.executable);
+});
+
+test('the platform layer is data-driven: OS ids, features, shells and code blocks', () => {
+  const linux = { host: { env: { info: () => ({ platform: 'linux', hostFeatures: ['pty.spawn', 'daemon.local'] }) } } };
+  assert.equal(P.hostOs(mac), 'macos'); assert.equal(P.hostOs(linux), 'linux'); assert.equal(P.hostOs(win()), 'windows');
+  assert.equal(P.workspaceOs(win(), { location: 'ssh', os: 'windows' }), 'windows', 'a descriptor that knows its OS wins');
+  assert.ok(P.hostFeature(linux, 'daemon.local') && !P.hostFeature(win(), 'daemon.local'));
+  assert.equal(P.pathListSeparator('windows'), ';'); assert.equal(P.pathListSeparator('linux'), ':');
+  // POSIX machines have one shell: terminals use the machine default and the setting is not offered.
+  assert.deepEqual(P.shellsFor('linux'), ['login']);
+  assert.deepEqual(P.terminalCandidates(linux, { kind: 'auto' }), []);
+  assert.deepEqual(P.userCommand(linux, 'linux', { kind: 'pwsh' }, 'ls'), { executable: '/bin/sh', args: ['-lc', 'ls'] }, 'a Windows shell falls back on Linux');
+  // Code blocks: each profile declares the languages it runs.
+  assert.match(P.shellCode('linux', { kind: 'login' }, 'bash', 'echo hi'), /^bash <<'HATO_SCRIPT'\necho hi\nHATO_SCRIPT$/);
+  assert.equal(P.shellCode('windows', { kind: 'auto' }, 'powershell', 'Get-Date\n'), 'Get-Date');
+  assert.throws(() => P.shellCode('windows', { kind: 'cmd' }, 'bash', 'ls'), /Git Bash or WSL/);
+  assert.throws(() => P.shellCode('linux', { kind: 'login' }, 'powershell', 'x'), /cannot run on this machine/);
+  for (const l of ['sh', 'bash', 'zsh', 'powershell', 'cmd']) assert.ok(P.RUNNABLE_CODE_LANGUAGES.includes(l));
+  assert.match(P.failureHint('npm.ps1 cannot be loaded because running scripts is disabled on this system'), /Set-ExecutionPolicy/);
+  assert.equal(P.knownDirs(win()).programs, 'C:\\Program Files');
+  assert.equal(P.knownDirs(linux).system, null);
 });

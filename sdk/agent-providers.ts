@@ -1,5 +1,6 @@
 import type { McpLaunchOptions } from "./provider-mcp";
 import type { ModuleContext, PluginInfo } from './types';
+import { SHELL_PROFILES, type MachineOs } from './platform';
 export interface AgentProvider {
   id: string; name: string; module: string;
   profile: { id: string; name: string; executable: string; args: string[] };
@@ -7,20 +8,39 @@ export interface AgentProvider {
   mcpLaunch?: McpLaunchOptions;
   usageCommand?: string;
   auth?: { key: string; field: string; label: string; description: string; default: boolean; envRemove: string[] };
-  /** Support on native Windows workspaces, from the provider's Windows smoke test. Absent means untested. */
-  platforms?: { windows?: WindowsSupport };
+  /** Support per workspace OS, from the provider's smoke tests (see `platformSupportOf` for defaults). */
+  platforms?: Partial<Record<PlatformId, PlatformSupport>>;
 }
+export type PlatformId = "windows" | "macos" | "linux";
+export const PLATFORM_LABELS: Record<PlatformId, string> = { windows: "Windows", macos: "macOS", linux: "Linux" };
 /** `untested` runs with a warning; `unsupported` disables the agent and shows `note`. `requires` names tools
- *  the agent itself needs (e.g. Git Bash), with the environment variable that tells the agent where it is. */
-export interface WindowsSupport { status: "supported" | "untested" | "unsupported"; requires?: { tool: "git-bash"; env?: string }[]; note?: string }
+ *  the agent itself needs on that OS (see `REQUIRED_TOOLS`), with the environment variable that tells the
+ *  agent where the tool is. */
+export interface PlatformSupport { status: "supported" | "untested" | "unsupported"; requires?: { tool: string; env?: string }[]; note?: string }
 
-function windowsSupport(raw: any): WindowsSupport | undefined {
+/** Tools a provider may require, and where to look for them on the workspace machine (first found wins). */
+export const REQUIRED_TOOLS: Record<string, { label: string; programs(ctx: ModuleContext): string[]; install: string }> = {
+  "git-bash": { label: "Git for Windows (Git Bash)", programs: ctx => SHELL_PROFILES["git-bash"].programs(ctx, { kind: "git-bash" }), install: "https://git-scm.com/download/win" },
+};
+
+function platformSupport(raw: any): PlatformSupport | undefined {
   if (!raw || !["supported", "untested", "unsupported"].includes(raw.status)) return undefined;
-  const requires = Array.isArray(raw.requires) ? raw.requires.filter((r: any) => r?.tool === "git-bash" && (r.env === undefined || /^[A-Z][A-Z0-9_]{0,63}$/.test(r.env))) : undefined;
+  const requires = Array.isArray(raw.requires) ? raw.requires.filter((r: any) => typeof r?.tool === "string" && /^[a-z0-9][a-z0-9-]{0,39}$/.test(r.tool)
+    && (r.env === undefined || /^[A-Z][A-Z0-9_]{0,63}$/.test(r.env))).map((r: any) => ({ tool: r.tool, ...(r.env ? { env: r.env } : {}) })) : undefined;
   return { status: raw.status, ...(requires?.length ? { requires } : {}), ...(typeof raw.note === "string" ? { note: raw.note.slice(0, 500) } : {}) };
 }
-/** Windows support for a provider (untested when the manifest says nothing). */
-export const windowsSupportOf = (p: Pick<AgentProvider, "platforms"> | undefined): WindowsSupport => p?.platforms?.windows || { status: "untested" };
+function platformSupports(raw: any): AgentProvider["platforms"] | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const out: AgentProvider["platforms"] = {};
+  for (const id of Object.keys(PLATFORM_LABELS) as PlatformId[]) { const s = platformSupport(raw[id]); if (s) out[id] = s; }
+  return Object.keys(out).length ? out : undefined;
+}
+/** Declared support on a workspace OS. Undeclared: Linux/macOS (long supported) are `supported`,
+ *  Windows and unidentified machines are `untested`. */
+export function platformSupportOf(p: Pick<AgentProvider, "platforms"> | undefined, os: MachineOs): PlatformSupport {
+  const declared = os === "posix" ? undefined : p?.platforms?.[os];
+  return declared || { status: os === "macos" || os === "linux" || os === "posix" ? "supported" : "untested" };
+}
 /** Provider definitions belong to enabled plugin contributions, including saved profile ownership. */
 export function agentProviders(plugins: PluginInfo[], enabledOnly = true): AgentProvider[] {
   const out: AgentProvider[] = [], seen = new Set<string>(), profiles = new Set<string>();
@@ -36,8 +56,7 @@ export function agentProviders(plugins: PluginInfo[], enabledOnly = true): Agent
         || typeof raw.adapter?.bin !== 'string') continue;
       if (raw.auth && (typeof raw.auth.key !== 'string' || typeof raw.auth.field !== 'string' || typeof raw.auth.label !== 'string'
         || typeof raw.auth.default !== 'boolean' || !Array.isArray(raw.auth.envRemove) || !raw.auth.envRemove.every((key: unknown) => typeof key === 'string'))) continue;
-      const windows = windowsSupport(raw.platforms?.windows);
-      profiles.add(raw.profile.id); seen.add(raw.id); out.push({ ...raw, platforms: windows ? { windows } : undefined, module: plugin.id });
+      profiles.add(raw.profile.id); seen.add(raw.id); out.push({ ...raw, platforms: platformSupports(raw.platforms), module: plugin.id });
     }
   }
   return out;
@@ -55,6 +74,6 @@ export async function providerProfiles(ctx: ModuleContext) {
   return rows.map(p => {
     const definition = available.find(d => d.id === p.provider);
     return { ...p, providerModule: definition?.module, mcpLaunch: definition?.mcpLaunch, authOption: definition?.auth,
-      windows: definition ? windowsSupportOf(definition) : undefined };
+      platforms: definition?.platforms };
   });
 }

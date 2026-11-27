@@ -102,7 +102,8 @@ pub fn host_sync(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: Value) 
         "random.hex" => Ok(json!(random_hex(args.get("bytes").and_then(|b| b.as_u64()).unwrap_or(16).min(64) as usize))),
         "env.info" => Ok(json!({
             "abiVersion": 1,
-            "hostFeatures": ["pty.spawn"],
+            // Capabilities modules test instead of the OS name (absent ones are unsupported here).
+            "hostFeatures": host_features(),
             "appName": "hato",
             "platform": std::env::consts::OS,
             "arch": std::env::consts::ARCH,
@@ -116,13 +117,8 @@ pub fn host_sync(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: Value) 
             "headless": k.cfg.headless,
             // Node types added after abiVersion 1, so modules can fall back on older hosts.
             "uiNodes": ["slider", "colorPicker", "tabStrip", "securityPreferences", "surface", "icon", "meter", "spinner", "ring"],
-            // Well-known folders, so modules name system tools by absolute path.
-            "windows": if cfg!(windows) { json!({
-                "systemRoot": std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into()),
-                "programFiles": std::env::var("ProgramFiles").unwrap_or_else(|_| r"C:\Program Files".into()),
-                "localAppData": std::env::var("LOCALAPPDATA").ok(),
-                "appData": std::env::var("APPDATA").ok(),
-            }) } else { Value::Null },
+            // Well-known folders, so modules name system tools by absolute path on any OS.
+            "knownDirs": known_dirs(),
         })),
         "state.get" => {
             let key = arg_str(&args, "key")?;
@@ -1432,6 +1428,36 @@ fn check_target(g: &ScopeGrant, req: &Value) -> HResult<()> {
         }
     }
     Ok(())
+}
+
+/// Host capabilities advertised in `env.info().hostFeatures`.
+fn host_features() -> Vec<&'static str> {
+    let mut f = vec!["pty.spawn", "pty.shellCandidates"];
+    if cfg!(windows) { f.push("process.verbatimArgs"); }
+    if cfg!(unix) { f.push("daemon.local"); }
+    f
+}
+
+/// OS-neutral well-known folders: `system` (Windows: %SystemRoot%), `programs` (Program Files),
+/// `localData` / `roamingData` (per-user application data). Unknown entries are null.
+fn known_dirs() -> Value {
+    let s = |p: Option<std::path::PathBuf>| p.map(|p| p.to_string_lossy().into_owned());
+    let var = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
+    if cfg!(windows) {
+        json!({
+            "home": s(dirs::home_dir()),
+            "system": var("SystemRoot").unwrap_or_else(|| r"C:\Windows".into()),
+            "programs": var("ProgramFiles").unwrap_or_else(|| r"C:\Program Files".into()),
+            "localData": var("LOCALAPPDATA").or_else(|| s(dirs::data_local_dir())),
+            "roamingData": var("APPDATA").or_else(|| s(dirs::data_dir())),
+        })
+    } else {
+        json!({
+            "home": s(dirs::home_dir()), "system": Value::Null,
+            "programs": if cfg!(target_os = "macos") { json!("/Applications") } else { Value::Null },
+            "localData": s(dirs::data_local_dir()), "roamingData": s(dirs::data_dir()),
+        })
+    }
 }
 
 /// First entry of `shellCandidates` (`[{program, args}]`) whose program exists on this machine.

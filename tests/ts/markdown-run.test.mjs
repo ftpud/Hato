@@ -47,7 +47,7 @@ test('Markdown renders one Run button per shell block and dispatches each to its
     assert.equal(executions[1].key, 'md:README.md:1');
     assert.equal(executions[2].key, executions[0].key);
     assert.equal(selected.view.ui.terminalTabs.keys.filter(key => key.startsWith('md:')).length, 2);
-    assert.match(executions[0].command, /echo first/);
-    assert.match(executions[1].command, /echo second/);
+    assert.match(executions[0].code, /echo first/);
+    assert.match(executions[1].code, /echo second/); assert.equal(executions[0].command, undefined, 'the terminals service types the block for its shell');
   } finally { await viewer.deactivate(ctx); terminal.deactivate(); }
 });

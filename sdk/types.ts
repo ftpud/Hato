@@ -270,7 +270,10 @@ export interface NativeHost {
   };
 }
 
+export interface KnownDirs { home: string | null; system: string | null; programs: string | null; localData: string | null; roamingData: string | null }
 export interface EnvInfo {
+  /** Host capabilities, e.g. `pty.spawn`, `pty.shellCandidates`, `process.verbatimArgs` (Windows),
+   *  `daemon.local` (a workspace daemon for local projects). Test these rather than `platform`. */
   hostFeatures?: string[];
   abiVersion: 1; appName: string; platform: string; arch: string; home: string | null;
   dataDir: string; sharedDir: string; initialRoot: string | null;
@@ -278,8 +281,10 @@ export interface EnvInfo {
   initialRootExplicit?: boolean; repoRoot: string; uptimeMs: number; headless: boolean;
   /** UiNode types added after abiVersion 1 that this host renders (absent on older hosts). */
   uiNodes?: string[];
-  /** Windows hosts: well-known folders (null elsewhere and absent on older hosts). */
-  windows?: { systemRoot: string; programFiles: string; localAppData: string | null; appData: string | null } | null;
+  /** Well-known folders on this host (absent on older hosts): `system` (Windows: %SystemRoot%), `programs`
+   *  (Program Files, /Applications), `localData` / `roamingData` (per-user application data). Use
+   *  `knownDirs` from `@hato/sdk/platform`, which fills defaults. */
+  knownDirs?: KnownDirs;
 }
 
 export interface ModuleStatus {
