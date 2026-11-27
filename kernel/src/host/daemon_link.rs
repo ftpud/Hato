@@ -195,16 +195,7 @@ fn install(master: &Arc<SshMaster>, data_dir: &std::path::Path, repo_root: &std:
     let (size, digest) = binary_digest(&local)?;
     let tag = format!("{}-{}", crate::daemon::VERSION, &digest[..12]);
     let sftp = master.sftp()?;
-    let home = sftp.realpath(".")?;
-    // `HATO_REMOTE_DAEMON_DIR` (absolute, or relative to the remote home) relocates the daemon.
-    let dir = if let Some(dir) = daemon_home {
-        crate::grants::normalize_posix(dir).filter(|path| path != "/" && !path.chars().any(char::is_control))
-            .ok_or_else(|| HostError::invalid("Invalid remote daemon home"))?
-    } else { match std::env::var("HATO_REMOTE_DAEMON_DIR") {
-        Ok(d) if d.starts_with('/') => d,
-        Ok(d) if !d.is_empty() => format!("{home}/{d}"),
-        _ => format!("{home}/.hato"),
-    }};
+    let dir = remote_daemon_dir(&sftp, daemon_home)?;
     let bin = format!("{dir}/bin/hato-{tag}");
     let present = sftp.stat(&bin).map(|a| a.size == Some(size)).unwrap_or(false);
     if !present {
@@ -219,6 +210,29 @@ fn install(master: &Arc<SshMaster>, data_dir: &std::path::Path, repo_root: &std:
         }
     }
     Ok((bin, dir))
+}
+
+/// The daemon home on an SSH machine. `HATO_REMOTE_DAEMON_DIR` (absolute, or relative to the
+/// remote home) relocates the default `~/.hato`.
+fn remote_daemon_dir(sftp: &super::sftp::Sftp, daemon_home: Option<&str>) -> HResult<String> {
+    if let Some(dir) = daemon_home {
+        return crate::grants::normalize_posix(dir).filter(|path| path != "/" && !path.chars().any(char::is_control))
+            .ok_or_else(|| HostError::invalid("Invalid remote daemon home"));
+    }
+    let home = sftp.realpath(".")?;
+    Ok(match std::env::var("HATO_REMOTE_DAEMON_DIR") {
+        Ok(d) if d.starts_with('/') => d,
+        Ok(d) if !d.is_empty() => format!("{home}/{d}"),
+        _ => format!("{home}/.hato"),
+    })
+}
+
+/// Whether a daemon was installed on this SSH/WSL machine before (any version): its home holds
+/// daemon binaries. Also the home's path, for telling the user where it goes.
+pub fn ssh_daemon_installed(master: &SshMaster) -> HResult<(bool, String)> {
+    let sftp = master.sftp()?;
+    let dir = remote_daemon_dir(&sftp, None)?;
+    Ok((sftp.stat(&format!("{dir}/bin")).is_ok(), dir))
 }
 
 /// Size and SHA-256 of a local daemon binary, remembered while its size and mtime are unchanged

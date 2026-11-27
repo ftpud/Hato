@@ -97,13 +97,16 @@ fn capture(reg: &Rc<RefCell<HashMap<String, Bounds<Pixels>>>>, id: String) -> im
 pub struct Detached {
     shell: Entity<Shell>,
     id: String,
+    /// The OS title last applied, so a renamed node retitles the open window.
+    title: Option<String>,
     _obs: Subscription,
 }
 
 impl Detached {
     fn new(shell: Entity<Shell>, id: String, cx: &mut Context<Self>) -> Self {
         let obs = cx.observe(&shell, |_, _, cx| cx.notify());
-        Detached { shell, id, _obs: obs }
+        let title = shell.read(cx).lay.window_nodes.get(&id).and_then(|(_, _, n)| s(n, "title"));
+        Detached { shell, id, title, _obs: obs }
     }
 }
 
@@ -111,6 +114,11 @@ impl Render for Detached {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         crate::ui::redraw_stats::cause("view:detached");
         let id = self.id.clone();
+        let title = self.shell.read(cx).lay.window_nodes.get(&id).and_then(|(_, _, n)| s(n, "title"));
+        if title.is_some() && title != self.title {
+            window.set_window_title(title.as_deref().unwrap_or_default());
+            self.title = title;
+        }
         let body = self.shell.update(cx, |sh, cx| sh.render_window_body(&id, window, cx));
         div().size_full().flex().flex_col().overflow_hidden().bg(cx.theme().background).text_color(cx.theme().foreground)
             .font_family(cx.theme().font_family.clone()).child(body)
@@ -360,6 +368,7 @@ impl Shell {
         let start = |resize: bool, id: String, module: String, key: String, action: Option<String>| {
             move |this: &mut Shell, ev: &MouseDownEvent, _w: &mut Window, cx: &mut Context<Shell>| {
                 this.lay.drag = Some(Drag::Float { id: id.clone(), module: module.clone(), key: key.clone(), resize, start: ev.position, orig: g, node: node_g, action: action.clone() });
+                GlobalState::suppress_text_selection(cx);
                 cx.stop_propagation();
             }
         };

@@ -173,6 +173,37 @@ test('workflow navigation discards delayed lists after a workspace switch', asyn
   assert.deepEqual(ctx.state.get('workflows-panel.panelChildren.workflows').map(c => c.id), ['workflow:current']);
 });
 
+test('an empty workflow list offers Create new workflow, which reveals the panel and opens the designer', async t => {
+  const layout = await load('workspace-layout'), left = await load('left-sidebar'), workflows = await load('workflows-panel');
+  const { ctx } = stateCtx();
+  const calls = [];
+  let list = [];
+  const fallback = ctx.modules.call.bind(ctx.modules);
+  ctx.modules.call = async (target, method, args) => {
+    if (target !== 'workflows') return fallback(target, method, args);
+    calls.push([method, args]);
+    if (method === 'list') return list;
+    if (method === 'catalog') return { templates: [{ id: 'blank', name: 'Blank' }], profiles: [], mcps: [] };
+    if (method === 'runs') return [];
+    if (method === 'create') { list = [{ id: 'fresh', name: 'Untitled', blocks: 0 }]; return { id: 'fresh', definition: { id: 'fresh', name: 'Untitled', blocks: [], edges: [] } }; }
+    if (method === 'get') return { definition: { id: args.id, name: 'Untitled', blocks: [], edges: [] }, revision: 1, issues: [] };
+    throw new Error(method);
+  };
+  ctx.state.set('workspace.selected', { id: 'ws' });
+  await layout.activate(ctx, { sidebarButtons: {}, sidebarOrder: {}, panelSharing: {} });
+  await left.activate(ctx);
+  await workflows.activate(ctx);
+  t.after(() => workflows.deactivate());
+  assert.deepEqual(ctx.state.get('workflows-panel.panelChildren.workflows').map(c => [c.id, c.label]), [['create-workflow', 'Create new workflow…']]);
+  await left.onEvent(ctx, { action: 'child', value: { panel: 'workflows', child: 'create-workflow' } });
+  for (let i = 0; i < 5; i++) await new Promise(r => setImmediate(r));
+  assert.equal(ctx.state.get('workspace-layout.panels').workflows, true, 'the Workflows panel opens');
+  assert.deepEqual(calls.find(([m]) => m === 'create')?.[1]?.templateId, 'blank');
+  assert.equal(workflows.snapshot().designerOpen, true, 'the new workflow opens in the designer');
+  assert.equal(workflows.snapshot().selectedId, 'fresh');
+  assert.deepEqual(ctx.state.get('workflows-panel.panelChildren.workflows').map(c => c.id), ['workflow:fresh'], 'the new workflow replaces the create entry');
+});
+
 test('rail drawings are module data and a new module build picks up edited SVGs', async () => {
   const sidebar = await load('sidebar'), left = await load('left-sidebar');
   const { ctx } = stateCtx();

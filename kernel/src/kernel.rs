@@ -54,6 +54,8 @@ pub struct Kernel {
     pub ssh: SshTable,
     /// Remote runtimes started on machines (by machine id).
     pub daemons: crate::host::daemon_link::DaemonTable,
+    /// Whether the user agreed to install the daemon on each machine (asked once).
+    pub daemon_consent: crate::host::daemon_consent::DaemonConsent,
     pub subs: Mutex<HashMap<String, StreamSub>>,
     render: Mutex<HashMap<String, RenderSched>>,
     pub manifests: Mutex<HashMap<String, (Manifest, PathBuf)>>,
@@ -93,6 +95,7 @@ impl Kernel {
         let logs = ModuleLogs::open(cfg.logs_dir().join("modules.log"));
         let artifacts = ArtifactStore::open(cfg.artifacts_dir(), cfg.registry_file());
         let plugin_registry = cfg.plugin_registry_file();
+        let daemon_consent = crate::host::daemon_consent::DaemonConsent::load(&cfg.data_dir);
         let k = Arc::new_cyclic(|me| Kernel {
             approvals: Approvals::with_audit(ui.clone(), audit.clone(), security_file),
             cfg,
@@ -107,6 +110,7 @@ impl Kernel {
             ui,
             ssh: SshTable::default(),
             daemons: Default::default(),
+            daemon_consent,
             subs: Mutex::new(HashMap::new()),
             render: Mutex::new(HashMap::new()),
             manifests: Mutex::new(HashMap::new()),

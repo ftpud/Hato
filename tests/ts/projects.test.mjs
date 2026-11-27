@@ -114,6 +114,38 @@ test('the SSH form validates per field and never collects a password', async () 
   assert.ok(!nodes.some(n => n.key === 'ssh-key' || n.secret), 'the kernel prompt is the only place a password is typed');
 });
 
+test('Cloud host is offered only while the Cloud plugin is available', async () => {
+  const { addProjectModal, sourcesFor } = await addProject();
+  assert.ok(sourcesFor(false).some(s => s.id === 'cloud'));
+  assert.deepEqual(sourcesFor(true, false).map(s => s.id), ['local', 'wsl', 'ssh']);
+  const view = { windows: false, source: 'local', sshAuth: 'key', values: {}, errors: {}, error: null, busy: null, distros: [], distro: '', cloudAvailable: false };
+  assert.ok(!walk(addProjectModal(view)).some(n => n.key === 'source:cloud'));
+  assert.ok(walk(addProjectModal({ ...view, cloudAvailable: true })).some(n => n.key === 'source:cloud'));
+});
+
+test('without the Cloud plugin the add dialog skips Cloud and the menu hides Move to Hato Cloud', async () => {
+  const built = await esbuild.build({ entryPoints: ['Hato-plugins/modules/ui/projects-panel/src/index.ts'], bundle: true, format: 'esm', write: false });
+  const mod = (await import('data:text/javascript;base64,' + Buffer.from(built.outputFiles[0].text).toString('base64'))).default;
+  const project = { id: 'r', name: 'Remote', rootPath: '/srv', host: 'me@box', kind: 'ssh', tasks: [], expanded: false };
+  const ctx = { state: { set() {}, get: () => null, watch() {} }, events: { on() {} }, ui: { invalidate() {} }, host: { env: { info: () => ({ platform: 'linux' }) } },
+    modules: { async call(m, f) {
+      if (f === 'tree') return [project];
+      if (f === 'cloudHosts') return { available: false, server: null, signedIn: false, hosts: [], projectIds: [] };
+      return {};
+    } } };
+  await mod.activate(ctx);
+  await new Promise(r => setImmediate(r));
+  await mod.onEvent(ctx, { action: 'filter', value: '', inputs: {} });
+  const menu = walk(mod.render()).find(n => n.type === 'tree').rows[0].contextMenu.map(i => i.text);
+  assert.ok(menu.some(t => t.startsWith('Remove from Hato')));
+  assert.ok(!menu.includes('Move to Hato Cloud…'));
+  await mod.onEvent(ctx, { action: 'addSource', value: 'cloud', inputs: {} });
+  const nodes = walk(mod.render());
+  assert.ok(nodes.some(n => n.key === 'add-modal'));
+  assert.ok(!nodes.some(n => n.key === 'source:cloud'), 'no Cloud source without the plugin');
+  assert.ok(nodes.some(n => n.key === 'source:local' && n.selected), 'falls back to the first available source');
+});
+
 test('locked password projects connect on click, then select', async () => {
   const built = await esbuild.build({ entryPoints: ['Hato-plugins/modules/ui/projects-panel/src/index.ts'], bundle: true, format: 'esm', write: false });
   const mod = (await import('data:text/javascript;base64,' + Buffer.from(built.outputFiles[0].text).toString('base64'))).default;

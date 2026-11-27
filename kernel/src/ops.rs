@@ -389,7 +389,7 @@ fn dispatch(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: &Value) -> H
             }
             let bin = if let Some(master) = &ssh {
                 gen.caps.require("remote.daemon")?;
-                daemon_link::ensure_ssh(&k.daemons, master, &k.cfg.data_dir, &k.cfg.repo_root)?.bin
+                ensure_daemon(k, gen, Some(master))?.bin
             } else if let Some(connection) = &cloud {
                 cloud_status(connection)?["bin"].as_str().map(str::to_owned)
                     .ok_or_else(|| HostError::new("ECLOUD", "Cloud daemon did not provide its executable"))?
@@ -1239,10 +1239,7 @@ fn dispatch(k: &Arc<Kernel>, gen: &Arc<Generation>, op: &str, args: &Value) -> H
             if let Some(connection) = cloud_target(k, owner, args)? {
                 return cloud_status(&connection);
             }
-            let info = match daemon_target(k, owner, args)? {
-                None => daemon_link::ensure_local(&k.daemons)?,
-                Some(m) => daemon_link::ensure_ssh(&k.daemons, &m, &k.cfg.data_dir, &k.cfg.repo_root)?,
-            };
+            let info = ensure_daemon(k, gen, daemon_target(k, owner, args)?.as_ref())?;
             k.audit.record(owner, gen.gen_id, "daemon.ensure", &info.machine_id, "ok", None);
             Ok(daemon_link::status_json(&info))
         }
@@ -1553,13 +1550,23 @@ fn persist_target(k: &Kernel, gen: &Generation, req: &Value, target: &Target) ->
     let info = match target {
         Target::Local => match k.daemons.get("local") {
             Some(i) => i,
-            None => daemon_link::ensure_local(&k.daemons)?,
+            None => ensure_daemon(k, gen, None)?,
         },
         Target::Cloud { .. } => return Err(HostError::invalid("Persistent Cloud process attachment is unavailable")),
         Target::Ssh { machine_id, .. } => k.daemons.get(machine_id)
             .ok_or_else(|| HostError::new("EDAEMON", format!("no daemon on {machine_id}; call daemon.ensure first")))?,
     };
     Ok(Some(process::Persist { bin: info.bin, dir: info.dir, key }))
+}
+
+/// Start (installing if needed) the daemon on this machine (`None`) or an SSH/WSL machine. The
+/// first install on a machine asks the user once (`DaemonConsent`).
+fn ensure_daemon(k: &Kernel, gen: &Generation, master: Option<&Arc<SshMaster>>) -> HResult<daemon_link::DaemonInfo> {
+    k.daemon_consent.require(k, gen, master)?;
+    match master {
+        None => daemon_link::ensure_local(&k.daemons),
+        Some(m) => daemon_link::ensure_ssh(&k.daemons, m, &k.cfg.data_dir, &k.cfg.repo_root),
+    }
 }
 
 /// `target` of a daemon op: absent/local → None, ssh → the connection's master.

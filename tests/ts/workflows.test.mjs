@@ -456,8 +456,8 @@ test('workflows panel renders the designer canvas and edits a draft', async () =
   const nodes = () => walk(mod.render());
   const canvas = () => nodes().find(n => n.type === 'canvas' && n.moveAction === 'moveBlock');
   assert.ok(nodes().some(n => n.type === 'window'), 'designer opens in its own window');
-  assert.equal(nodes().find(n => n.type === 'window').titlebar, false);
-  assert.ok(nodes().some(n => n.windowDrag === true));
+  assert.notEqual(nodes().find(n => n.type === 'window').titlebar, false, 'the OS title bar moves the designer window');
+  assert.ok(!nodes().some(n => n.windowDrag === true));
   assert.deepEqual(canvas().items.map(i => [i.key, i.x, i.port]), [['start', 10, true], ['lead', 300, true]]);
   await event('connect', { from: 'start', to: 'lead' });
   assert.deepEqual(canvas().edges.map(e => [e.from, e.to, e.label]), [['start', 'lead', 'follow']]);

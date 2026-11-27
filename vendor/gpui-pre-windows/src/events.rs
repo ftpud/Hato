@@ -1057,6 +1057,21 @@ impl WindowsWindowInner {
         wparam: WPARAM,
         lparam: LPARAM,
     ) -> Option<isize> {
+        // Hato patch: a press on an OS-drawn caption or frame lies outside the client area, so no
+        // element is under it, and the move/size loop that follows swallows the release. Passing
+        // it on only let window-level listeners (text selection) start a gesture that never ends.
+        if !self.hide_title_bar {
+            let mut point = POINT {
+                x: lparam.signed_loword().into(),
+                y: lparam.signed_hiword().into(),
+            };
+            let mut client = RECT::default();
+            let inside = unsafe { ScreenToClient(handle, &mut point).as_bool() && GetClientRect(handle, &mut client).is_ok() }
+                && point.x >= client.left && point.x < client.right && point.y >= client.top && point.y < client.bottom;
+            if !inside {
+                return None;
+            }
+        }
         if let Some(mut func) = self.state.callbacks.input.take() {
             let scale_factor = self.state.scale_factor.get();
             let mut cursor_point = POINT {

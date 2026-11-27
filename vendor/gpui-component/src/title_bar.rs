@@ -357,8 +357,12 @@ impl RenderOnce for TitleBar {
                 }))
                 .on_mouse_down(
                     MouseButton::Left,
-                    window.listener_for(&state, |state, _, _, _| {
+                    window.listener_for(&state, |state, _, _, cx| {
                         state.should_move = true;
+                        // A press here moves the window. On Windows the OS move loop also
+                        // swallows the release, so a selection started now would keep
+                        // extending after the move.
+                        crate::global_state::GlobalState::suppress_text_selection(cx);
                     }),
                 )
                 .on_mouse_up(
