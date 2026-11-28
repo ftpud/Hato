@@ -9,7 +9,9 @@ cd "$(dirname "$0")/../.."
 version="${RELEASE_VERSION:-$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)}"
 esbuild_version="$(node -p "require('./package.json').devDependencies.esbuild")"
 
-npm ci --no-audit --no-fund >/dev/null
+if [ ! -f node_modules/@esbuild/win32-x64/esbuild.exe ] && [ ! -d node_modules/esbuild ]; then
+  npm ci --no-audit --no-fund >/dev/null
+fi
 cargo build --release --locked --target x86_64-pc-windows-gnu
 
 # Prefer static musl daemons (any distribution); fall back to glibc from this machine.
@@ -33,10 +35,14 @@ x86_64-w64-mingw32-strip -o "$stage/hato.exe" target/x86_64-pc-windows-gnu/relea
 cp -R grants sdk "$stage/"
 cp plugins.lock.json "$stage/"
 # Keeps in-app module builds working without Node on the Windows side.
-work="$(mktemp -d)"
-trap 'rm -rf "$work"' EXIT
-(cd "$work" && npm pack --silent "@esbuild/win32-x64@$esbuild_version" >/dev/null && tar -xzf ./*.tgz)
-cp "$work/package/esbuild.exe" "$stage/node_modules/@esbuild/win32-x64/"
+if [ -f node_modules/@esbuild/win32-x64/esbuild.exe ]; then
+  cp node_modules/@esbuild/win32-x64/esbuild.exe "$stage/node_modules/@esbuild/win32-x64/"
+else
+  work="$(mktemp -d)"
+  trap 'rm -rf "$work"' EXIT
+  (cd "$work" && npm pack --silent "@esbuild/win32-x64@$esbuild_version" >/dev/null && tar -xzf ./*.tgz)
+  cp "$work/package/esbuild.exe" "$stage/node_modules/@esbuild/win32-x64/"
+fi
 for triple in "${daemon_triples[@]}"; do
   mkdir -p "$stage/target/$triple/release"
   install -m 755 "target/$triple/release/hato" "$stage/target/$triple/release/hato"

@@ -95,7 +95,7 @@ fn limit_tree_memory(pid: u32, mb: u64) -> std::io::Result<()> {
 }
 
 pub fn spawn(spec: SpawnSpec) -> HResult<Arc<ProcessRes>> {
-    let local = |mut c: std::process::Command| {
+    let local = |#[allow(unused_mut)] mut c: std::process::Command| -> HResult<Spawned> {
         #[cfg(unix)]
         {
             use std::os::unix::process::CommandExt;
