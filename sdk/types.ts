@@ -523,7 +523,8 @@ export type UiNode =
        *  view. Use for long uniform lists; taller children are clipped. Children must not contain
        *  `modal`, `floating` or `window` nodes. */ itemHeight?: number })
   | (Base & { type: "split"; direction: "horizontal" | "vertical"; sizes?: number[]; children: UiNode[];
-      /** Fixed size in px per child (null = flexible). */ fixed?: (number | null)[]; minSize?: number; resizable?: boolean;
+      /** Fixed size in px per child (null = flexible). */ fixed?: (number | null)[];
+      /** Floor in px per flexible child (null = none), kept when the split is short; others shrink first. */ minSizes?: (number | null)[]; minSize?: number; resizable?: boolean;
       /** Fired once when a divider drag ends: value {sizes}. */ resizeAction?: string;
       /** Experimental motion keyed by each direct child’s stable key. Keep the child and descriptor
        *  present while closed. Use ordinary `sizes` and `fixed` entries while open and `fixed: 0`

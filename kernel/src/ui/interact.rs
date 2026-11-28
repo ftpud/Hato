@@ -3,7 +3,8 @@
 //! event, and decide what it means (persist sizes, collapse, re-dock, detach…).
 //!
 //! Node types handled here:
-//! * `split`      — `sizes`, `fixed` (px per child or null), `minSize`, `resizable`, `resizeAction`,
+//! * `split`      — `sizes`, `fixed` (px per child or null), `minSizes` (px per flexible child or
+//!                  null: kept even when the split is short), `minSize`, `resizable`, `resizeAction`,
 //!                  `collapseAction` (+ `collapsible` per child). Dividers are draggable.
 //! * `dragHandle` — `payload`, `label`, optional `clickAction`. Starts a drag after 4px movement.
 //! * `dropZone`   — `action`, `regions` (subset of left/right/top/bottom/center). Highlights the
@@ -181,6 +182,10 @@ impl Shell {
         };
         let resizable = n.get("resizable").and_then(|r| r.as_bool()).unwrap_or(true);
         let min = f(n, "minSize").unwrap_or(80.0);
+        // Per-child floors for flexible cells: a short split takes the space from the others.
+        let min_sizes: Vec<Option<f32>> = (0..count)
+            .map(|i| n["minSizes"].get(i).and_then(Value::as_f64).map(|v| v as f32).filter(|v| v.is_finite() && *v > 0.0))
+            .collect();
         let resize_action = s(n, "resizeAction");
         let collapse_action = s(n, "collapseAction");
         let visible_count = fixed.iter().filter(|size| !matches!(size, Some(value) if *value <= 0.0)).count();
@@ -226,6 +231,10 @@ impl Shell {
                 Some(p) => if horizontal { cell.w(px(p)).h_full().flex_none() } else { cell.h(px(p)).w_full().flex_none() },
                 None => {
                     let c = cell.flex_grow(grow_weights[i]).flex_shrink(1.0).flex_basis(px(0.0));
+                    let c = match min_sizes[i] {
+                        Some(m) => if horizontal { c.min_w(px(m)) } else { c.min_h(px(m)) },
+                        None => c,
+                    };
                     if horizontal { c.h_full() } else { c.w_full() }
                 }
             };
